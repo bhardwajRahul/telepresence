@@ -226,7 +226,7 @@ func ParseConfigYAML(ctx context.Context, path string, data []byte) (Config, err
 	cfg, err := UnmarshalJSONConfig(data, true)
 	if err != nil {
 		var semanticErr *json.SemanticError
-		if errors.As(err, &semanticErr) && strings.Contains(semanticErr.Error(), "unknown name ") {
+		if errors.As(err, &semanticErr) && strings.Contains(semanticErr.Error(), "unknown object member name ") {
 			s := semanticErr.Error()
 			// Strip unnecessarily verbose text from the message, but retain the type.
 			if m := regexp.MustCompile(`json:.+ of type (.*)$`).FindStringSubmatch(s); len(m) == 2 {
