@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"sort"
 )
 
@@ -145,21 +146,20 @@ func Covers(a, b netip.Prefix) bool {
 // returned unless it is equal or larger than the given end, in which case nil is returned.
 func incIP4(ip, end netip.Addr) netip.Addr {
 	ipc := ip.As4()
-	for bi := 2; bi >= 0; bi-- {
-		if bv := ipc[bi]; bv < 255 {
-			ipc[bi] = bv + 1
-			// set bytes to the right of the increased byte to zero.
-			for xi := bi + 1; xi < len(ipc)-1; xi++ {
-				ipc[xi] = 0
-			}
+	ipc[3] = 0
+	for i := 2; i >= 0; i-- {
+		if ipc[i] < 255 {
+			ipc[i]++
 			ip = netip.AddrFrom4(ipc)
-			if ip.Less(end) {
-				return ip
+			if !ip.Less(end) {
+				ip = netip.Addr{}
 			}
 			break
+		} else {
+			ipc[i] = 0
 		}
 	}
-	return netip.Addr{}
+	return ip
 }
 
 // RandomIPv4Prefix finds a random free subnet using the given mask. A subnet is considered
@@ -179,7 +179,7 @@ func RandomIPv4Prefix(bits int, avoid []netip.Prefix) (netip.Prefix, error) {
 			cidrs = append(cidrs, cidr)
 		}
 	}
-	cidrs = append(cidrs, avoid...)
+	avoid = Unique(append(cidrs, avoid...))
 
 	// IP address range pairs, from - to (to is non-inclusive)
 	ranges := []netip.Addr{
@@ -190,23 +190,15 @@ func RandomIPv4Prefix(bits int, avoid []netip.Prefix) (netip.Prefix, error) {
 
 	for i := 0; i < len(ranges); i += 2 {
 		ip := ranges[i]
-
 		end := ranges[i+1]
 		for {
 			ip1 := ip.As4()
 			ip1[3] = 1
 			sn := netip.PrefixFrom(netip.AddrFrom4(ip1), bits)
-			inUse := false
-			for _, cidr := range cidrs {
-				if cidr.Overlaps(sn) {
-					inUse = true
-					break
-				}
-			}
-			if !inUse {
+			if !slices.ContainsFunc(avoid, func(cidr netip.Prefix) bool { return cidr.Overlaps(sn) }) {
 				return sn, nil
 			}
-			if ip = incIP4(ip, end); ip.IsValid() {
+			if ip = incIP4(ip, end); !ip.IsValid() {
 				break
 			}
 		}

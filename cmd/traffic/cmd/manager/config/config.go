@@ -60,7 +60,7 @@ func (c *config) Run(ctx context.Context) error {
 	for ctx.Err() == nil {
 		w, err := api.ConfigMaps(c.namespace).Watch(ctx, meta.SingleObject(meta.ObjectMeta{Name: cfgConfigMapName}))
 		if err != nil {
-			return fmt.Errorf("unable to create configmap watcher: %v", err)
+			return fmt.Errorf("unable to create configmap watcher for %s.%s: %v", cfgConfigMapName, c.namespace, err)
 		}
 		if !c.configMapEventHandler(ctx, w.ResultChan()) {
 			return nil
