@@ -137,18 +137,14 @@ func (cfg *BasicGeneratorConfig) Generate(
 	if err != nil {
 		return nil, err
 	}
-	if len(ports) == 0 {
-		if len(ccs) == 0 {
-			return nil, fmt.Errorf("found no service with a port that matches a container in pod %s.%s", pod.Name, pod.Namespace)
-		}
-	} else {
+	if len(ports) > 0 {
 		if ccs, err = appendServiceLessAgentContainerConfigs(ctx, pod, ports, agentPortNumberFunc, ccs, existingConfig, cfg.AppProtocolStrategy, ignoredVolumeMounts); err != nil {
 			return nil, err
 		}
 	}
 
 	// Append other containers even though they aren't directly interceptable. They might be fronted by a
-	// dispatching container that is.
+	// dispatching container that is, or they might be an ingest candidates.
 	for i := range cns {
 		cn := &cns[i]
 		if cn.Name == agentconfig.ContainerName {

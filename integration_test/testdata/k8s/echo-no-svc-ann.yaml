@@ -1,18 +1,20 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: echo-no-svc
+  name: echo-no-svc-ann
   labels:
-    app: echo-no-svc
+    app: echo-no-svc-ann
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: echo-no-svc
+      app: echo-no-svc-ann
   template:
     metadata:
       labels:
-        app: echo-no-svc
+        app: echo-no-svc-ann
+      annotations:
+        telepresence.getambassador.io/inject-container-ports: http
     spec:
       automountServiceAccountToken: false
       containers:

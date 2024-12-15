@@ -30,9 +30,6 @@ func AgentContainer(
 			})
 		}
 	}
-	if len(ports) == 0 {
-		return nil
-	}
 
 	evs := make([]core.EnvVar, 0, len(config.Containers)*5)
 	efs := make([]core.EnvFromSource, 0, len(config.Containers)*3)
