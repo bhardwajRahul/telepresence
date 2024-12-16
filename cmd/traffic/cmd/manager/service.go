@@ -41,7 +41,6 @@ type Service interface {
 	rpc.ManagerServer
 	ID() string
 	InstallID() string
-	ClusterID() string
 	MakeInterceptID(context.Context, string, string) (string, error)
 	RegisterServers(*grpc.Server)
 	State() state.State
@@ -133,10 +132,6 @@ func (s *service) InstallID() string {
 	return s.clusterInfo.ID()
 }
 
-func (s *service) ClusterID() string {
-	return s.clusterInfo.ClusterID()
-}
-
 func (s *service) runConfigWatcher(ctx context.Context) error {
 	return s.configWatcher.Run(ctx)
 }
@@ -211,9 +206,9 @@ func (s *service) ArriveAsClient(ctx context.Context, client *rpc.ClientInfo) (*
 	SetGauge(s.state.GetConnectActiveStatus(), client.Name, client.InstallId, nil, 1)
 
 	return &rpc.SessionInfo{
-		SessionId: s.state.AddClient(client, s.clock.Now()),
-		ClusterId: s.clusterInfo.ID(),
-		InstallId: &installId,
+		SessionId:        s.state.AddClient(client, s.clock.Now()),
+		ManagerInstallId: s.clusterInfo.ID(),
+		InstallId:        &installId,
 	}, nil
 }
 
@@ -232,8 +227,8 @@ func (s *service) ArriveAsAgent(ctx context.Context, agent *rpc.AgentInfo) (*rpc
 	sessionID := s.state.AddAgent(agent, s.clock.Now())
 
 	return &rpc.SessionInfo{
-		SessionId: sessionID,
-		ClusterId: s.clusterInfo.ID(),
+		SessionId:        sessionID,
+		ManagerInstallId: s.clusterInfo.ID(),
 	}, nil
 }
 

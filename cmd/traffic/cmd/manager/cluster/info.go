@@ -39,9 +39,6 @@ type Info interface {
 	// ID of the installed ns
 	ID() string
 
-	// clusterID of the cluster
-	ClusterID() string
-
 	// SetAdditionalAlsoProxy assigns a slice that will be added to the Routing.AlsoProxySubnets slice
 	// when notifications are sent.
 	SetAdditionalAlsoProxy(ctx context.Context, subnets []*rpc.IPNet)
@@ -64,9 +61,6 @@ type info struct {
 
 	// installID is the UID of the manager's namespace
 	installID string
-
-	// clusterID is the UID of the default namespace
-	clusterID string
 }
 
 const IDZero = "00000000-0000-0000-0000-000000000000"
@@ -101,21 +95,10 @@ func NewInfo(ctx context.Context) Info {
 
 	client := ki.CoreV1()
 	if oi.installID, err = GetInstallIDFunc(ctx, client, env.ManagerNamespace); err != nil {
-		// We use a default clusterID because we don't want to fail if
-		// the traffic-manager doesn't have the ability to get the namespace
+		// Use a default installID because we don't want to fail if the traffic-manager can't get the namespace
 		oi.installID = IDZero
 		dlog.Warnf(ctx, "unable to get namespace \"%s\", will use default installID: %s: %v",
 			env.ManagerNamespace, oi.installID, err)
-	}
-
-	// backwards compat
-	// TODO delete after default ns licenses expire
-	if oi.clusterID, err = GetInstallIDFunc(ctx, client, "default"); err != nil {
-		// We use a default clusterID because we don't want to fail if
-		// the traffic-manager doesn't have the ability to get the namespace
-		oi.clusterID = IDZero
-		dlog.Infof(ctx,
-			"unable to get namespace \"default\", but it is only necessary for compatibility with old licesnses: %v", err)
 	}
 
 	dummyIP := "1.1.1.1"
@@ -377,6 +360,12 @@ func (oi *info) watchPodSubnets(ctx context.Context, namespaces []string) {
 func (oi *info) setSubnetsFromEnv(ctx context.Context) bool {
 	subnets := managerutil.GetEnv(ctx).PodCIDRs
 	if len(subnets) > 0 {
+		mgrIp, _ := netip.AddrFromSlice(oi.ManagerPodIp)
+		if !slices.ContainsFunc(subnets, func(s netip.Prefix) bool { return s.Contains(mgrIp) }) {
+			sn := netip.PrefixFrom(mgrIp, mgrIp.BitLen())
+			dlog.Infof(ctx, "Adding %s for the traffic-manager pod, because it was not included in POD_CIDRS environment", sn)
+			subnets = append(subnets, sn)
+		}
 		oi.PodSubnets = iputil.PrefixesToRPC(subnets)
 		oi.ciSubs.notify(ctx, oi.clusterInfo())
 		dlog.Infof(ctx, "Using subnets from POD_CIDRS environment variable")
@@ -405,10 +394,6 @@ func (oi *info) SetAdditionalAlsoProxy(ctx context.Context, subnets []*rpc.IPNet
 
 func (oi *info) ID() string {
 	return oi.installID
-}
-
-func (oi *info) ClusterID() string {
-	return oi.clusterID
 }
 
 func (oi *info) ClusterDomain() string {

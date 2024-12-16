@@ -510,7 +510,7 @@ func (s *state) WatchWorkloads(ctx context.Context, sessionID string) (ch <-chan
 
 // Intercepts //////////////////////////////////////////////////////////////////////////////////////
 
-func (s *state) AddIntercept(ctx context.Context, sessionID, clusterID string, cir *rpc.CreateInterceptRequest) (client *rpc.ClientInfo, ret *rpc.InterceptInfo, err error) {
+func (s *state) AddIntercept(ctx context.Context, sessionID, managerID string, cir *rpc.CreateInterceptRequest) (client *rpc.ClientInfo, ret *rpc.InterceptInfo, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -523,9 +523,9 @@ func (s *state) AddIntercept(ctx context.Context, sessionID, clusterID string, c
 	interceptID := fmt.Sprintf("%s:%s", sessionID, spec.Name)
 	installID := client.GetInstallId()
 	clientSession := rpc.SessionInfo{
-		SessionId: sessionID,
-		ClusterId: clusterID,
-		InstallId: &installID,
+		SessionId:        sessionID,
+		ManagerInstallId: managerID,
+		InstallId:        &installID,
 	}
 
 	cept := s.self.NewInterceptInfo(interceptID, &clientSession, cir)
