@@ -129,7 +129,7 @@ func (s *connectedSuite) Test_InterceptsContainerAndReplace() {
 	require.True(st.IsDir())
 	dataFile := filepath.Join(dataDir, "text")
 	content, err := os.ReadFile(dataFile)
-	require.NoError(err, "unable to read", dataFile)
+	require.NoErrorf(err, "unable to read %s", dataFile)
 	s.Equal("Hello from echo\n", string(content))
 
 	// Verify that the container is replaced.

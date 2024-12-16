@@ -226,7 +226,7 @@ func ParseConfigYAML(ctx context.Context, path string, data []byte) (Config, err
 	cfg, err := UnmarshalJSONConfig(data, true)
 	if err != nil {
 		var semanticErr *json.SemanticError
-		if errors.As(err, &semanticErr) && strings.Contains(semanticErr.Error(), "unknown name ") {
+		if errors.As(err, &semanticErr) && strings.Contains(semanticErr.Error(), "unknown object member name ") {
 			s := semanticErr.Error()
 			// Strip unnecessarily verbose text from the message, but retain the type.
 			if m := regexp.MustCompile(`json:.+ of type (.*)$`).FindStringSubmatch(s); len(m) == 2 {
@@ -845,6 +845,7 @@ type Routing struct {
 	NeverProxy             []netip.Prefix `json:"neverProxySubnets,omitempty"`
 	AllowConflicting       []netip.Prefix `json:"allowConflictingSubnets,omitempty"`
 	RecursionBlockDuration time.Duration  `json:"recursionBlockDuration,omitempty"`
+	RecursionBlockTreads   int            `json:"recursionBlockTreads,omitempty"`
 	VirtualSubnet          netip.Prefix   `json:"virtualSubnet"`
 	AutoResolveConflicts   bool           `json:"autoResolveConflicts"`
 
@@ -854,11 +855,15 @@ type Routing struct {
 	OldAllowConflicting []netip.Prefix `json:"allowConflicting,omitempty"`
 }
 
-const defaultAutoResolveConflicts = true
+const (
+	defaultAutoResolveConflicts  = true
+	defaultRecursionBlockThreads = 5
+)
 
 var defaultRouting = Routing{ //nolint:gochecknoglobals // constant
 	VirtualSubnet:        defaultVirtualSubnet,
 	AutoResolveConflicts: defaultAutoResolveConflicts,
+	RecursionBlockTreads: defaultRecursionBlockThreads,
 }
 
 func (r *Routing) defaults() DefaultsAware {
@@ -886,6 +891,9 @@ func (r *Routing) merge(o *Routing) {
 	}
 	if o.RecursionBlockDuration > 0 {
 		r.RecursionBlockDuration = o.RecursionBlockDuration
+	}
+	if o.RecursionBlockTreads != defaultRecursionBlockThreads {
+		r.RecursionBlockTreads = o.RecursionBlockTreads
 	}
 	if o.VirtualSubnet != defaultVirtualSubnet {
 		r.VirtualSubnet = o.VirtualSubnet

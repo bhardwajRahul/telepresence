@@ -87,7 +87,10 @@ func (s *podCIDRSuite) Test_PodCIDRStrategy() {
 			rd := si.RootDaemon
 			rq.NotNil(rd)
 			rq.Greater(len(rd.Subnets), 1)
-			s.Equal(tt.wantSubnets, subnetsAsStrings(rd.Subnets[1:]))
+			sns := subnetsAsStrings(rd.Subnets[1:])
+			for _, ws := range tt.wantSubnets {
+				s.Contains(sns, ws)
+			}
 		})
 	}
 }

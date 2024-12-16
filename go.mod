@@ -7,16 +7,16 @@ require (
 	github.com/blang/semver/v4 v4.0.0
 	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/coreos/go-iptables v0.8.0
-	github.com/datawire/argo-rollouts-go-client v0.0.0-20240820134429-7eacf8d19d55
+	github.com/datawire/argo-rollouts-go-client v0.0.0-20241216133646-cb1073556c99
 	github.com/datawire/dlib v1.3.1
 	github.com/datawire/dtest v0.0.0-20210928162311-722b199c4c2f
 	github.com/datawire/envconfig v0.0.0-20221012222025-09524dc7d59b
 	github.com/datawire/go-ftpserver v0.1.3
-	github.com/datawire/k8sapi v0.1.6-0.20240820125232-ee712486e677
-	github.com/docker/docker v27.3.1+incompatible
+	github.com/datawire/k8sapi v0.1.7
+	github.com/docker/docker v27.4.0+incompatible
 	github.com/docker/go-connections v0.5.0
 	github.com/fsnotify/fsnotify v1.8.0
-	github.com/go-json-experiment/json v0.0.0-20241127185351-9802db03f36a
+	github.com/go-json-experiment/json v0.0.0-20241214200608-68309ebe5fa2
 	github.com/godbus/dbus/v5 v5.1.0
 	github.com/golang/mock v1.7.0-rc.1
 	github.com/google/go-cmp v0.6.0
@@ -38,22 +38,22 @@ require (
 	github.com/telepresenceio/go-fuseftp/rpc v0.5.0
 	github.com/telepresenceio/telepresence/rpc/v2 v2.21.0
 	github.com/vishvananda/netlink v1.3.0
-	golang.org/x/exp v0.0.0-20241204233417-43b7b7cde48d
+	golang.org/x/exp v0.0.0-20241210194714-1829a127f884
 	golang.org/x/net v0.32.0
 	golang.org/x/sys v0.28.0
 	golang.org/x/term v0.27.0
 	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173
 	golang.zx2c4.com/wireguard/windows v0.5.3
-	google.golang.org/grpc v1.68.1
+	google.golang.org/grpc v1.69.0
 	google.golang.org/protobuf v1.35.2
-	gvisor.dev/gvisor v0.0.0-20241205222027-1a41c298e490
+	gvisor.dev/gvisor v0.0.0-20241210225239-aa8ecac76a04
 	helm.sh/helm/v3 v3.16.3
-	k8s.io/api v0.31.3
-	k8s.io/apimachinery v0.31.3
-	k8s.io/cli-runtime v0.31.3
-	k8s.io/client-go v0.31.3
-	k8s.io/kubectl v0.31.3
-	k8s.io/utils v0.0.0-20241104163129-6fe5fd82f078
+	k8s.io/api v0.32.0
+	k8s.io/apimachinery v0.32.0
+	k8s.io/cli-runtime v0.32.0
+	k8s.io/client-go v0.32.0
+	k8s.io/kubectl v0.32.0
+	k8s.io/utils v0.0.0-20241210054802-24370beab758
 	sigs.k8s.io/yaml v1.4.0
 )
 
@@ -79,7 +79,7 @@ require (
 	github.com/cyphar/filepath-securejoin v0.3.5 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/distribution/reference v0.6.0 // indirect
-	github.com/docker/cli v27.3.1+incompatible // indirect
+	github.com/docker/cli v27.4.0+incompatible // indirect
 	github.com/docker/distribution v2.8.3+incompatible // indirect
 	github.com/docker/docker-credential-helpers v0.8.2 // indirect
 	github.com/docker/go-metrics v0.0.1 // indirect
@@ -89,7 +89,7 @@ require (
 	github.com/exponent-io/jsonpath v0.0.0-20210407135951-1de76d718b3f // indirect
 	github.com/fatih/camelcase v1.0.0 // indirect
 	github.com/fatih/color v1.18.0 // indirect
-	github.com/fclairamb/ftpserverlib v0.24.1 // indirect
+	github.com/fclairamb/ftpserverlib v0.25.0 // indirect
 	github.com/fclairamb/go-log v0.5.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fxamacker/cbor/v2 v2.7.0 // indirect
@@ -113,7 +113,6 @@ require (
 	github.com/gregjones/httpcache v0.0.0-20190611155906-901d90724c79 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
-	github.com/imdario/mergo v0.3.16 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jmoiron/sqlx v1.4.0 // indirect
 	github.com/josharian/intern v1.0.1-0.20211109044230-42b52b674af5 // indirect
@@ -149,7 +148,7 @@ require (
 	github.com/prometheus/common v0.61.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/rubenv/sql-migrate v1.7.0 // indirect
+	github.com/rubenv/sql-migrate v1.7.1 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/spf13/cast v1.7.0 // indirect
@@ -159,11 +158,12 @@ require (
 	github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415 // indirect
 	github.com/xeipuuv/gojsonschema v1.2.0 // indirect
 	github.com/xlab/treeprint v1.2.0 // indirect
-	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.53.0 // indirect
-	go.opentelemetry.io/otel v1.28.0 // indirect
-	go.opentelemetry.io/otel/metric v1.28.0 // indirect
-	go.opentelemetry.io/otel/trace v1.28.0 // indirect
-	golang.org/x/crypto v0.30.0 // indirect
+	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
+	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.58.0 // indirect
+	go.opentelemetry.io/otel v1.33.0 // indirect
+	go.opentelemetry.io/otel/metric v1.33.0 // indirect
+	go.opentelemetry.io/otel/trace v1.33.0 // indirect
+	golang.org/x/crypto v0.31.0 // indirect
 	golang.org/x/mod v0.22.0 // indirect
 	golang.org/x/oauth2 v0.24.0 // indirect
 	golang.org/x/sync v0.10.0 // indirect
@@ -171,22 +171,20 @@ require (
 	golang.org/x/time v0.8.0 // indirect
 	golang.org/x/tools v0.28.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20241206012308-a4fef0638583 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20241206012308-a4fef0638583 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20241209162323-e6fa225c2576 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
-	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	k8s.io/apiextensions-apiserver v0.31.3 // indirect
-	k8s.io/apiserver v0.31.3 // indirect
-	k8s.io/component-base v0.31.3 // indirect
+	k8s.io/apiextensions-apiserver v0.32.0 // indirect
+	k8s.io/apiserver v0.32.0 // indirect
+	k8s.io/component-base v0.32.0 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
-	k8s.io/kube-openapi v0.0.0-20241127205056-99599406b04f // indirect
+	k8s.io/kube-openapi v0.0.0-20241212222426-2c72e554b1e7 // indirect
 	oras.land/oras-go v1.2.6 // indirect
 	sigs.k8s.io/json v0.0.0-20241014173422-cfa47c3a1cc8 // indirect
 	sigs.k8s.io/kustomize/api v0.18.0 // indirect
 	sigs.k8s.io/kustomize/kyaml v0.18.1 // indirect
-	sigs.k8s.io/structured-merge-diff/v4 v4.4.3 // indirect
+	sigs.k8s.io/structured-merge-diff/v4 v4.5.0 // indirect
 )
 
 replace github.com/telepresenceio/telepresence/rpc/v2 => ./rpc

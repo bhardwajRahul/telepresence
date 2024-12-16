@@ -33,6 +33,16 @@ docDescription: >-
   environments, access to instantaneous feedback loops, and highly
   customizable development environments.
 items:
+  - version: 2.21.1
+    date: (TBD)
+    notes:
+      - type: bugfix
+        title: Allow ingest of serverless deployments without specifying an inject-container-ports annotation
+        body: >-
+          The ability to intercept a workload without a service is built around the
+          `telepresence.getambassador.io/inject-container-ports` annotation, and it was also required in order to ingest
+          such a workload. This was counterintuitive and the requirement was removed. An ingest doesn't use a port.
+        docs: https://github.com/telepresenceio/telepresence/issues/3741
   - version: 2.21.0
     date: 2024-12-13
     notes:

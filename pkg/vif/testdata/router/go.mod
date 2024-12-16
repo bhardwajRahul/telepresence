@@ -11,15 +11,15 @@ require (
 require (
 	github.com/Azure/go-ansiterm v0.0.0-20230124172434-306776ec8161 // indirect
 	github.com/blang/semver/v4 v4.0.0 // indirect
-	github.com/datawire/argo-rollouts-go-client v0.0.0-20240820134429-7eacf8d19d55 // indirect
+	github.com/datawire/argo-rollouts-go-client v0.0.0-20241216133646-cb1073556c99 // indirect
 	github.com/datawire/envconfig v0.0.0-20221012222025-09524dc7d59b // indirect
-	github.com/datawire/k8sapi v0.1.6-0.20240820125232-ee712486e677 // indirect
+	github.com/datawire/k8sapi v0.1.7 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/emicklei/go-restful/v3 v3.12.1 // indirect
 	github.com/fsnotify/fsnotify v1.8.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.7.0 // indirect
 	github.com/go-errors/errors v1.5.1 // indirect
-	github.com/go-json-experiment/json v0.0.0-20241127185351-9802db03f36a // indirect
+	github.com/go-json-experiment/json v0.0.0-20241214200608-68309ebe5fa2 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-openapi/jsonpointer v0.21.0 // indirect
 	github.com/go-openapi/jsonreference v0.21.0 // indirect
@@ -35,7 +35,6 @@ require (
 	github.com/gregjones/httpcache v0.0.0-20190611155906-901d90724c79 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
-	github.com/imdario/mergo v0.3.16 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/josharian/intern v1.0.1-0.20211109044230-42b52b674af5 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -56,7 +55,7 @@ require (
 	github.com/vishvananda/netns v0.0.5 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xlab/treeprint v1.2.0 // indirect
-	golang.org/x/exp v0.0.0-20241204233417-43b7b7cde48d // indirect
+	golang.org/x/exp v0.0.0-20241210194714-1829a127f884 // indirect
 	golang.org/x/net v0.32.0 // indirect
 	golang.org/x/oauth2 v0.24.0 // indirect
 	golang.org/x/sync v0.10.0 // indirect
@@ -67,28 +66,29 @@ require (
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173 // indirect
 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20241206012308-a4fef0638583 // indirect
-	google.golang.org/grpc v1.68.1 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20241209162323-e6fa225c2576 // indirect
+	google.golang.org/grpc v1.69.0 // indirect
 	google.golang.org/protobuf v1.35.2 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
-	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	gvisor.dev/gvisor v0.0.0-20241205222027-1a41c298e490 // indirect
-	k8s.io/api v0.31.3 // indirect
-	k8s.io/apimachinery v0.31.3 // indirect
-	k8s.io/cli-runtime v0.31.3 // indirect
-	k8s.io/client-go v0.31.3 // indirect
+	gvisor.dev/gvisor v0.0.0-20241210225239-aa8ecac76a04 // indirect
+	k8s.io/api v0.32.0 // indirect
+	k8s.io/apimachinery v0.32.0 // indirect
+	k8s.io/cli-runtime v0.32.0 // indirect
+	k8s.io/client-go v0.32.0 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
-	k8s.io/kube-openapi v0.0.0-20241127205056-99599406b04f // indirect
-	k8s.io/utils v0.0.0-20241104163129-6fe5fd82f078 // indirect
+	k8s.io/kube-openapi v0.0.0-20241212222426-2c72e554b1e7 // indirect
+	k8s.io/utils v0.0.0-20241210054802-24370beab758 // indirect
 	sigs.k8s.io/json v0.0.0-20241014173422-cfa47c3a1cc8 // indirect
 	sigs.k8s.io/kustomize/api v0.18.0 // indirect
 	sigs.k8s.io/kustomize/kyaml v0.18.1 // indirect
-	sigs.k8s.io/structured-merge-diff/v4 v4.4.3 // indirect
+	sigs.k8s.io/structured-merge-diff/v4 v4.5.0 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
 
 replace github.com/telepresenceio/telepresence/rpc/v2 => ./../../../../rpc
 
 replace github.com/telepresenceio/telepresence/v2 => ./../../../..
+
+replace github.com/datawire/k8sapi => github.com/thallgren/k8sapi v0.0.0-20241214214806-eba2ff884c63

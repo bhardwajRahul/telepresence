@@ -82,6 +82,35 @@ func TestTrafficAgentConfigGenerator(t *testing.T) {
 	secretMode := int32(0o644)
 	yes := true
 	no := false
+	podNoPort := core.Pod{
+		ObjectMeta: podObjectMeta("no-port", "service"),
+		Spec: core.PodSpec{
+			AutomountServiceAccountToken: &yes,
+			Containers: []core.Container{
+				{
+					Name: "some-container",
+					VolumeMounts: []core.VolumeMount{
+						{
+							Name:      "default-token-nkspp",
+							MountPath: serviceAccountMountPath,
+						},
+					},
+				},
+			},
+			Volumes: []core.Volume{
+				{
+					Name: "default-token-nkspp",
+					VolumeSource: core.VolumeSource{
+						Secret: &core.SecretVolumeSource{
+							SecretName:  "default-token-nkspp",
+							DefaultMode: &secretMode,
+						},
+					},
+				},
+			},
+		},
+	}
+
 	podNamedPort := core.Pod{
 		ObjectMeta: podObjectMeta("named-port", "service"),
 		Spec: core.PodSpec{
@@ -456,12 +485,14 @@ func TestTrafficAgentConfigGenerator(t *testing.T) {
 				},
 			},
 		},
+		&podNoPort,
 		&podNamedPort,
 		&podNumericPort,
 		&podGRPCPort,
 		&podNamedAndNumericPort,
 		&podMultiPort,
 		&podMultiSplitPort,
+		deployment(&podNoPort),
 		deployment(&podNamedPort),
 		deployment(&podNumericPort),
 		deployment(&podGRPCPort),
@@ -480,16 +511,25 @@ func TestTrafficAgentConfigGenerator(t *testing.T) {
 	tests := []testInput{
 		{
 			"Error Precondition: No port specified",
-			&core.Pod{
-				ObjectMeta: podObjectMeta("named-port", "service"),
-				Spec: core.PodSpec{
-					Containers: []core.Container{
-						{Ports: []core.ContainerPort{}},
+			&podNoPort,
+			&agentconfig.Sidecar{
+				AgentName:    "no-port",
+				AgentImage:   "ghcr.io/telepresenceio/tel2:2.13.3",
+				Namespace:    "some-ns",
+				WorkloadName: "no-port",
+				WorkloadKind: "Deployment",
+				ManagerHost:  "traffic-manager.default",
+				ManagerPort:  8081,
+				Containers: []*agentconfig.Container{
+					{
+						Name:       "some-container",
+						EnvPrefix:  "A_",
+						MountPoint: "/tel_app_mounts/some-container",
+						Mounts:     []string{"/var/run/secrets/kubernetes.io/serviceaccount"},
 					},
 				},
 			},
-			nil,
-			"found no service with a port that matches a container in pod <PODNAME>",
+			"",
 		},
 		{
 			"Error Precondition: Sidecar has port collision",

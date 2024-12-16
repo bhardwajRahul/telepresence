@@ -10,7 +10,7 @@ import (
 func (s *connectedSuite) successfulIntercept(tp, wl, port string) {
 	ctx := s.Context()
 	s.ApplyApp(ctx, wl, strings.ToLower(tp)+"/"+wl)
-	defer s.DeleteSvcAndWorkload(ctx, "deploy", "echo-auto-inject")
+	defer s.DeleteSvcAndWorkload(ctx, tp, wl)
 
 	require := s.Require()
 
@@ -51,6 +51,50 @@ func (s *connectedSuite) successfulIntercept(tp, wl, port string) {
 	)
 }
 
+func (s *connectedSuite) successfulIngest(tp, wl string) {
+	ctx := s.Context()
+	s.ApplyApp(ctx, wl, strings.ToLower(tp)+"/"+wl)
+	defer s.DeleteSvcAndWorkload(ctx, tp, wl)
+
+	require := s.Require()
+
+	require.Eventually(
+		func() bool {
+			stdout, _, err := itest.Telepresence(ctx, "list")
+			return err == nil && strings.Contains(stdout, wl)
+		},
+		6*time.Second, // waitFor
+		2*time.Second, // polling interval
+	)
+
+	stdout := itest.TelepresenceOk(ctx, "ingest", "--mount", "false", wl)
+	require.Contains(stdout, "Using "+tp+" "+wl)
+	stdout = itest.TelepresenceOk(ctx, "list", "--ingests")
+	require.Contains(stdout, wl+": ingested")
+	require.NotContains(stdout, "Volume Mount Point")
+	s.CapturePodLogs(ctx, wl, "traffic-agent", s.AppNamespace())
+	itest.TelepresenceOk(ctx, "leave", wl)
+	stdout = itest.TelepresenceOk(ctx, "list", "--ingests")
+	require.NotContains(stdout, wl+": ingested")
+
+	itest.TelepresenceDisconnectOk(ctx)
+
+	dfltCtx := itest.WithUser(ctx, "default")
+	itest.TelepresenceOk(dfltCtx, "connect", "--namespace", s.AppNamespace(), "--manager-namespace", s.ManagerNamespace())
+	itest.TelepresenceOk(dfltCtx, "uninstall", wl)
+	itest.TelepresenceDisconnectOk(dfltCtx)
+	s.TelepresenceConnect(ctx)
+
+	require.Eventually(
+		func() bool {
+			stdout, _, err := itest.Telepresence(ctx, "list", "--agents")
+			return err == nil && !strings.Contains(stdout, wl)
+		},
+		180*time.Second, // waitFor
+		6*time.Second,   // polling interval
+	)
+}
+
 func (s *connectedSuite) Test_SuccessfullyInterceptsDeploymentWithProbes() {
 	s.successfulIntercept("Deployment", "with-probes", "9090")
 }
@@ -68,5 +112,25 @@ func (s *connectedSuite) Test_SuccessfullyInterceptsDeploymentWithNoVolumes() {
 }
 
 func (s *connectedSuite) Test_SuccessfullyInterceptsDeploymentWithoutService() {
-	s.successfulIntercept("Deployment", "echo-no-svc", "9094")
+	s.successfulIntercept("Deployment", "echo-no-svc-ann", "9094")
+}
+
+func (s *connectedSuite) Test_SuccessfullyIngestsDeploymentWithProbes() {
+	s.successfulIngest("Deployment", "with-probes")
+}
+
+func (s *connectedSuite) Test_SuccessfullyIngestsReplicaSet() {
+	s.successfulIngest("ReplicaSet", "rs-echo")
+}
+
+func (s *connectedSuite) Test_SuccessfullyIngestsStatefulSet() {
+	s.successfulIngest("StatefulSet", "ss-echo")
+}
+
+func (s *connectedSuite) Test_SuccessfullyIngestsDeploymentWithNoVolumes() {
+	s.successfulIngest("Deployment", "echo-no-vols")
+}
+
+func (s *connectedSuite) Test_SuccessfullyIngestsDeploymentWithoutService() {
+	s.successfulIngest("Deployment", "echo-no-svc")
 }

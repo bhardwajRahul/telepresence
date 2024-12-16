@@ -32,11 +32,19 @@ func checkRecursion(p int, ip net.IP, sn netip.Prefix) (err error) {
 	return err
 }
 
+type recursiveBlock struct {
+	start time.Time
+	count int
+	timer *time.Timer
+}
+
 func (s *Session) streamCreator(ctx context.Context) tunnel.StreamCreator {
-	var recursionBlockMap *xsync.MapOf[netip.AddrPort, struct{}]
-	recursionBlockDuration := client.GetConfig(ctx).Routing().RecursionBlockDuration
+	var recursionBlockMap *xsync.MapOf[netip.AddrPort, recursiveBlock]
+	routing := client.GetConfig(ctx).Routing()
+	recursionBlockDuration := routing.RecursionBlockDuration
+	recursionBlockThreads := routing.RecursionBlockTreads
 	if recursionBlockDuration != 0 {
-		recursionBlockMap = xsync.NewMapOf[netip.AddrPort, struct{}]()
+		recursionBlockMap = xsync.NewMapOf[netip.AddrPort, recursiveBlock]()
 	}
 
 	return func(c context.Context, id tunnel.ConnID) (tunnel.Stream, error) {
@@ -61,13 +69,28 @@ func (s *Session) streamCreator(ctx context.Context) tunnel.StreamCreator {
 
 		if recursionBlockDuration > 0 {
 			dst := netip.AddrPortFrom(destAddr, id.DestinationPort())
-			_, recursive := recursionBlockMap.LoadOrCompute(dst, func() struct{} {
-				time.AfterFunc(recursionBlockDuration, func() {
+			block := false
+			recursionBlockMap.Compute(dst, func(v recursiveBlock, loaded bool) (recursiveBlock, bool) {
+				if loaded {
+					if time.Since(v.start) < recursionBlockDuration {
+						v.count++
+						if v.count < recursionBlockThreads {
+							return v, false
+						}
+						block = true
+					}
+					v.timer.Stop()
+					return v, true
+				}
+
+				// Ensure deletion in case it's only called once
+				v.timer = time.AfterFunc(recursionBlockDuration*3, func() {
 					recursionBlockMap.Delete(dst)
 				})
-				return struct{}{}
+				v.start = time.Now()
+				return v, false
 			})
-			if recursive {
+			if block {
 				return nil, fmt.Errorf("refusing recursive dispatch to %s", dst)
 			}
 		}
