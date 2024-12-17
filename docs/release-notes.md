@@ -8,6 +8,12 @@
 The ability to intercept a workload without a service is built around the `telepresence.getambassador.io/inject-container-ports` annotation, and it was also required in order to ingest such a workload. This was counterintuitive and the requirement was removed. An ingest doesn't use a port.
 </div>
 
+## <div style="display:flex;"><img src="images/bugfix.png" alt="bugfix" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">Upgrade module dependencies to get rid of critical vulnerability.</div></div>
+<div style="margin-left: 15px">
+
+Upgrade module dependencies to latest available stable. This includes upgrading golang.org/x/crypto, which had critical issues, from 0.30.0 to 0.31.0 where those issues are resolved.
+</div>
+
 ## Version 2.21.0 <span style="font-size: 16px;">(December 13)</span>
 ## <div style="display:flex;"><img src="images/feature.png" alt="feature" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">[Automatic VPN conflict avoidance](reference/vpn)</div></div>
 <div style="margin-left: 15px">
