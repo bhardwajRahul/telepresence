@@ -284,11 +284,6 @@ func (kc *Cluster) GetCurrentNamespaces(forClientAccess bool) []string {
 	return nss
 }
 
-func (kc *Cluster) GetClusterId(ctx context.Context) string {
-	clusterID, _ := k8sapi.GetClusterID(ctx)
-	return clusterID
-}
-
 func (kc *Cluster) GetManagerInstallId(ctx context.Context) string {
 	managerID, _ := k8sapi.GetNamespaceID(ctx, GetManagerNamespace(ctx))
 	return managerID

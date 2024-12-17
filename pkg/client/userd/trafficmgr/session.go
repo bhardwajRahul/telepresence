@@ -212,7 +212,6 @@ func NewSession(
 	ctx = portforward.WithRestConfig(ctx, cluster.Kubeconfig.RestConfig)
 
 	ctx = cluster.WithJoinedClientSetInterface(ctx)
-	scout.SetMetadatum(ctx, "cluster_id", cluster.GetClusterId(ctx))
 
 	dlog.Info(ctx, "Connecting to traffic manager...")
 	installID, err := client.InstallID(ctx)
@@ -822,7 +821,6 @@ func (s *session) UpdateStatus(c context.Context, cri userd.ConnectRequest) *rpc
 				Error:            rpc.ConnectInfo_MUST_RESTART,
 				ClusterContext:   s.Kubeconfig.Context,
 				ClusterServer:    s.Kubeconfig.Server,
-				ClusterId:        s.GetClusterId(c),
 				ManagerInstallId: s.GetManagerInstallId(c),
 			}
 		}
@@ -857,7 +855,6 @@ func (s *session) status(c context.Context, initial bool) *rpc.ConnectInfo {
 	ret := &rpc.ConnectInfo{
 		ClusterContext:   cfg.Context,
 		ClusterServer:    cfg.Server,
-		ClusterId:        s.GetClusterId(c),
 		ManagerInstallId: s.GetManagerInstallId(c),
 		SessionInfo:      s.SessionInfo(),
 		ConnectionName:   s.daemonID.Name,

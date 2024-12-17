@@ -15,7 +15,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
 )
 
-func TestNewInfo_GetClusterID(t *testing.T) {
+func TestNewInfo_GetInstallID(t *testing.T) {
 	env := managerutil.Env{
 		ManagedNamespaces: []string{"ambassador test"},
 		ManagerNamespace:  "test",
@@ -41,7 +41,7 @@ func TestNewInfo_GetClusterID(t *testing.T) {
 	t.Run("from default namespace", func(t *testing.T) {
 		ctx := context.Background()
 
-		cs := fake.NewSimpleClientset(append(namespaces,
+		cs := fake.NewClientset(append(namespaces,
 			&v1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "default",
@@ -62,7 +62,7 @@ func TestNewInfo_GetClusterID(t *testing.T) {
 	t.Run("from non-default namespace", func(t *testing.T) {
 		ctx := context.Background()
 
-		cs := fake.NewSimpleClientset(namespaces...)
+		cs := fake.NewClientset(namespaces...)
 
 		ctx = k8sapi.WithK8sInterface(ctx, cs)
 		ctx = managerutil.WithEnv(ctx, &env)
