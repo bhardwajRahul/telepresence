@@ -43,6 +43,11 @@ items:
           `telepresence.getambassador.io/inject-container-ports` annotation, and it was also required in order to ingest
           such a workload. This was counterintuitive and the requirement was removed. An ingest doesn't use a port.
         docs: https://github.com/telepresenceio/telepresence/issues/3741
+      - type: bugfix
+        title: Upgrade module dependencies to get rid of critical vulnerability.
+        body: >-
+          Upgrade module dependencies to latest available stable. This includes upgrading golang.org/x/crypto, which
+          had critical issues, from 0.30.0 to 0.31.0 where those issues are resolved.
   - version: 2.21.0
     date: 2024-12-13
     notes:
