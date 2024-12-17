@@ -34,7 +34,7 @@ docDescription: >-
   customizable development environments.
 items:
   - version: 2.21.1
-    date: (TBD)
+    date: 2024-12-17
     notes:
       - type: bugfix
         title: Allow ingest of serverless deployments without specifying an inject-container-ports annotation
