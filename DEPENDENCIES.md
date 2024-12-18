@@ -31,7 +31,6 @@ following Free and Open Source software:
     github.com/datawire/dtest                                      v0.0.0-20210928162311-722b199c4c2f    Apache License 2.0
     github.com/datawire/envconfig                                  v0.0.0-20221012222025-09524dc7d59b    Apache License 2.0
     github.com/datawire/go-ftpserver                               v0.1.3                                Apache License 2.0
-    github.com/datawire/k8sapi                                     v0.1.7                                Apache License 2.0
     github.com/davecgh/go-spew                                     v1.1.2-0.20180830191138-d8f796af33cc  ISC license
     github.com/distribution/reference                              v0.6.0                                Apache License 2.0
     github.com/docker/cli                                          v27.4.0+incompatible                  Apache License 2.0

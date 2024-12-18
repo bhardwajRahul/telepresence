@@ -6,12 +6,13 @@ import (
 	"strings"
 	"sync"
 
-	argoRollouts "github.com/datawire/argo-rollouts-go-client/pkg/client/clientset/versioned"
-	"github.com/datawire/dlib/dlog"
 	core "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
+
+	argoRollouts "github.com/datawire/argo-rollouts-go-client/pkg/client/clientset/versioned"
+	"github.com/datawire/dlib/dlog"
 )
 
 func WithJoinedClientSetInterface(ctx context.Context, ki kubernetes.Interface, ari argoRollouts.Interface) context.Context {
@@ -123,7 +124,7 @@ func listOptions(labelSelector labels.Set) meta.ListOptions {
 }
 
 // Subscribe writes to the given channel whenever relevant information has changed
-// in the current snapshot
+// in the current snapshot.
 func Subscribe(c context.Context, cond *sync.Cond) <-chan struct{} {
 	ch := make(chan struct{})
 	go func() {

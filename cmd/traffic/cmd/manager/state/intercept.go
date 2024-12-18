@@ -22,13 +22,13 @@ import (
 
 	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dlog"
-	"github.com/datawire/k8sapi/pkg/k8sapi"
 	managerrpc "github.com/telepresenceio/telepresence/rpc/v2/manager"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/mutator"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
+	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 )
 
 // PrepareIntercept ensures that the given request can be matched against the intercept configuration of

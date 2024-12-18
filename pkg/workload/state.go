@@ -7,8 +7,8 @@ import (
 	core "k8s.io/api/core/v1"
 
 	argorollouts "github.com/datawire/argo-rollouts-go-client/pkg/apis/rollouts/v1alpha1"
-	"github.com/datawire/k8sapi/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/rpc/v2/manager"
+	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 )
 
 type State int
