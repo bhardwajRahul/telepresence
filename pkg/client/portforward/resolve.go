@@ -16,7 +16,7 @@ import (
 	"k8s.io/kubectl/pkg/polymorphichelpers"
 	"k8s.io/kubectl/pkg/util/podutils"
 
-	"github.com/datawire/k8sapi/pkg/k8sapi"
+	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 )
 
 func resolveSvcToPod(ctx context.Context, name, namespace, portName string) (pa podAddress, err error) {

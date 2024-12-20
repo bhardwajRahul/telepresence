@@ -13,7 +13,6 @@ require (
 	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/datawire/argo-rollouts-go-client v0.0.0-20241216133646-cb1073556c99 // indirect
 	github.com/datawire/envconfig v0.0.0-20221012222025-09524dc7d59b // indirect
-	github.com/datawire/k8sapi v0.1.7 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/emicklei/go-restful/v3 v3.12.1 // indirect
 	github.com/fsnotify/fsnotify v1.8.0 // indirect
@@ -90,5 +89,3 @@ require (
 replace github.com/telepresenceio/telepresence/rpc/v2 => ./../../../../rpc
 
 replace github.com/telepresenceio/telepresence/v2 => ./../../../..
-
-replace github.com/datawire/k8sapi => github.com/thallgren/k8sapi v0.0.0-20241214214806-eba2ff884c63

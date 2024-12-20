@@ -8,7 +8,7 @@ import (
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/datawire/dlib/dlog"
-	"github.com/datawire/k8sapi/pkg/k8sapi"
+	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 )
 
 func CanI(ctx context.Context, ra *v1.ResourceAttributes) (bool, error) {

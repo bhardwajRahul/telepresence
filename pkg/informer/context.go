@@ -6,7 +6,7 @@ import (
 	"k8s.io/client-go/informers"
 
 	argorolloutsinformer "github.com/datawire/argo-rollouts-go-client/pkg/client/informers/externalversions"
-	"github.com/datawire/k8sapi/pkg/k8sapi"
+	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 )
 
 type factoryKey string
