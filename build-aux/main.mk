@@ -359,7 +359,6 @@ promote-nightly: ## (Release) Update nightly.txt in S3
 
 .PHONY: lint-deps
 lint-deps: build-deps ## (QA) Everything necessary to lint
-lint-deps: $(tools/golangci-lint)
 lint-deps: $(tools/protolint)
 lint-deps: $(tools/gosimports)
 ifneq ($(GOHOSTOS), windows)
@@ -376,13 +375,17 @@ shellscripts += ./packaging/windows-package.sh
 
 lint: lint-rpc lint-go
 
+GOLANGCI_VERSION:=v1.62.2
+
 lint-go: lint-deps ## (QA) Run the golangci-lint
 	$(eval badimports = $(shell find cmd integration_test pkg -name '*.go' | grep -v '/mocks/' | xargs $(tools/gosimports) --local github.com/datawire/,github.com/telepresenceio/ -l))
 	$(if $(strip $(badimports)), echo "The following files have bad import ordering (use make format to fix): " $(badimports) && false)
 ifeq ($(GOHOSTOS),windows)
-	CGO_ENABLED=$(CGO_ENABLED) $(tools/golangci-lint) run --timeout 8m ./cmd/telepresence/... ./integration_test/... ./pkg/...
+	docker run -e GOOS=$(GOOS) --rm -v $$(pwd):/app -v ~/.cache/golangci-lint/$(GOLANGCI_VERSION):/root/.cache -w /app golangci/golangci-lint:$(GOLANGCI_VERSION) golangci-lint \
+	run --timeout 8m ./cmd/telepresence/... ./integration_test/... ./pkg/...
 else
-	CGO_ENABLED=$(CGO_ENABLED) $(tools/golangci-lint) run --timeout 8m ./...
+	docker run -e GOOS=$(GOOS) --rm -v $$(pwd):/app -v ~/.cache/golangci-lint/$(GOLANGCI_VERSION):/root/.cache -w /app golangci/golangci-lint:$(GOLANGCI_VERSION) golangci-lint \
+	run --timeout 8m ./...
 endif
 
 lint-rpc: lint-deps ## (QA) Run rpc linter
@@ -394,7 +397,13 @@ endif
 .PHONY: format
 format: lint-deps ## (QA) Automatically fix linter complaints
 	find cmd integration_test pkg -name '*.go' | grep -v '/mocks/' | xargs $(tools/gosimports) --local github.com/datawire/,github.com/telepresenceio/ -w
-	$(tools/golangci-lint) run --fix --timeout 2m ./... || true
+ifeq ($(GOHOSTOS),windows)
+	docker run -e GOOS=$(GOOS) --rm -v $$(pwd):/app -v ~/.cache/golangci-lint/$(GOLANGCI_VERSION):/root/.cache -w /app golangci/golangci-lint:$(GOLANGCI_VERSION) golangci-lint \
+	run --timeout 8m --fix ./cmd/telepresence/... ./integration_test/... ./pkg/...
+else
+	docker run -e GOOS=$(GOOS) --rm -v $$(pwd):/app -v ~/.cache/golangci-lint/$(GOLANGCI_VERSION):/root/.cache -w /app golangci/golangci-lint:$(GOLANGCI_VERSION) golangci-lint \
+	run --timeout 8m --fix ./...
+endif
 	$(tools/protolint) lint --fix rpc || true
 
 .PHONY: check-all

@@ -21,7 +21,15 @@ jobs:
       - name: install dependencies
         uses: ./.github/actions/install-dependencies
       - name: Lint
-        run: make lint
+        if: ${{ runner.os != 'Windows' }}
+        uses: golangci/golangci-lint-action@v6
+        with:
+          args: --timeout 8m ./...
+      - name: Lint (limited on windows)
+        if: ${{ runner.os == 'Windows' }}
+        uses: golangci/golangci-lint-action@v6
+        with:
+          args: --timeout 8m ./cmd/telepresence/... ./integration_test/... ./pkg/...
       - name: Build
         run: make build
       - name: Run tests

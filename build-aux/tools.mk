@@ -147,7 +147,6 @@ $(TOOLSDIR)/$(notdir $(HELM_TGZ)):
 tools/protoc-gen-go      = $(TOOLSBINDIR)/protoc-gen-go$(EXE)
 tools/protoc-gen-go-grpc = $(TOOLSBINDIR)/protoc-gen-go-grpc$(EXE)
 tools/ko                 = $(TOOLSBINDIR)/ko$(EXE)
-tools/golangci-lint      = $(TOOLSBINDIR)/golangci-lint$(EXE)
 tools/gosimports         = $(TOOLSBINDIR)/gosimports$(EXE)
 tools/go-mkopensource    = $(TOOLSBINDIR)/go-mkopensource$(EXE)
 $(TOOLSBINDIR)/%$(EXE): $(TOOLSSRCDIR)/%/go.mod $(TOOLSSRCDIR)/%/pin.go
