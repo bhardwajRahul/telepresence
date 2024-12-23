@@ -187,7 +187,17 @@ const (
 	tel2SubDomainDot = tel2SubDomain + "."
 )
 
-var excludePrefixes = []string{"wpad.", "_grpc_config."} //nolint:gochecknoglobals // constant
+// excludePrefixes are prefixes for name queries that we just want to respond NXNAME to
+// without dispatching them to the cluster.
+//
+//nolint:gochecknoglobals // constant
+var excludePrefixes = []string{
+	"wpad.",
+	"_grpc_config.",
+	"lb._dns-sd.",
+	"db._dns-sd.",
+	"b._dns-sd.",
+}
 
 var (
 	localhostIPv4 = net.IP{127, 0, 0, 1}                                   //nolint:gochecknoglobals // constant

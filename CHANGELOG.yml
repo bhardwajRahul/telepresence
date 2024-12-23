@@ -41,6 +41,11 @@ items:
         body: >-
           The clusterID was deprecated some time ago, and replaced by the ID of the namespace where the traffic-manager
           is installed.
+      - type: bugfix
+        title: Don't dispatch DNS discovery queries to the cluster.
+        body: >-
+          macOS based systems will often PTR queries using nameslike `b._dns-sd._udp`, lb._dns-sd._udp, or
+          `db-dns-sd._udp`. Those queries are no longer dispatched to the cluster.
   - version: 2.21.1
     date: 2024-12-17
     notes:

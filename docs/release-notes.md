@@ -8,6 +8,12 @@
 The clusterID was deprecated some time ago, and replaced by the ID of the namespace where the traffic-manager is installed.
 </div>
 
+## <div style="display:flex;"><img src="images/bugfix.png" alt="bugfix" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">Don't dispatch DNS discovery queries to the cluster.</div></div>
+<div style="margin-left: 15px">
+
+macOS based systems will often PTR queries using nameslike `b._dns-sd._udp`, lb._dns-sd._udp, or `db-dns-sd._udp`. Those queries are no longer dispatched to the cluster.
+</div>
+
 ## Version 2.21.1 <span style="font-size: 16px;">(December 17)</span>
 ## <div style="display:flex;"><img src="images/bugfix.png" alt="bugfix" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">[Allow ingest of serverless deployments without specifying an inject-container-ports annotation](https://github.com/telepresenceio/telepresence/issues/3741)</div></div>
 <div style="margin-left: 15px">
