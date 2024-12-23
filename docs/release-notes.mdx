@@ -12,6 +12,10 @@ import { Note, Title, Body } from '@site/src/components/ReleaseNotes'
 	<Title type="change">Drop deprecated current-cluster-id command.</Title>
 	<Body>The clusterID was deprecated some time ago, and replaced by the ID of the namespace where the traffic-manager is installed.</Body>
 </Note>
+<Note>
+	<Title type="bugfix">Don't dispatch DNS discovery queries to the cluster.</Title>
+	<Body>macOS based systems will often PTR queries using nameslike `b._dns-sd._udp`, lb._dns-sd._udp, or `db-dns-sd._udp`. Those queries are no longer dispatched to the cluster.</Body>
+</Note>
 ## Version 2.21.1 <span style={{fontSize:'16px'}}>(December 17)</span>
 <Note>
 	<Title type="bugfix" docs="https://github.com/telepresenceio/telepresence/issues/3741">Allow ingest of serverless deployments without specifying an inject-container-ports annotation</Title>
