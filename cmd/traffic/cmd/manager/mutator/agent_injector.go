@@ -106,6 +106,7 @@ func (a *agentInjector) Inject(ctx context.Context, req *admission.AdmissionRequ
 	if err != nil {
 		return nil, err
 	}
+
 	if isDelete {
 		a.agentConfigs.Blacklist(pod.Name, pod.Namespace)
 		return nil, nil
@@ -157,6 +158,8 @@ func (a *agentInjector) Inject(ctx context.Context, req *admission.AdmissionRequ
 				dlog.Debugf(ctx, "No workload owner found for pod %s.%s", pod.Name, pod.Namespace)
 			case errors.As(err, &uwkError):
 				dlog.Debugf(ctx, "Workload owner with %s found for pod %s.%s", uwkError.Error(), pod.Name, pod.Namespace)
+			default:
+				dlog.Debugf(ctx, "No workload owner found for pod %s.%s: %v", pod.Name, pod.Namespace, err)
 			}
 			// Not an error. It just means that the pod is not eligible for intercepts.
 			return nil, nil
@@ -164,19 +167,22 @@ func (a *agentInjector) Inject(ctx context.Context, req *admission.AdmissionRequ
 		scx, err = a.agentConfigs.Get(ctx, wl.GetName(), wl.GetNamespace())
 		switch {
 		case err != nil:
+			dlog.Errorf(ctx, "Failed to retrieve agent config for workload %s.%s: %v", wl.GetName(), wl.GetNamespace(), err)
 			return nil, err
-		case scx == nil && ia == "enabled":
-			// A race condition may occur when a workload with "enabled" is applied.
-			// The workload event handler will create the agent config, but the webhook injection call may arrive before
-			// that agent config has been stored.
-			// Returning an error here will make the webhook call again, and hopefully we're the agent config is ready
-			// by then.
-			dlog.Debugf(ctx, "No agent config has been generated for annotation enabled %s.%s", pod.Name, pod.Namespace)
-			return nil, errors.New("agent-config is not yet generated")
 		case scx == nil:
+			if ia == "enabled" {
+				// A race condition may occur when a workload with "enabled" is applied.
+				// The workload event handler will create the agent config, but the webhook injection call may arrive before
+				// that agent config has been created. When this happens, we must force a second event when the creation
+				// is complete.
+				a.agentConfigs.registerPrematureInjectEvent(wl)
+				dlog.Debugf(ctx, "No agent config has been generated for annotation enabled %s.%s", wl.GetName(), wl.GetNamespace())
+			} else {
+				dlog.Debugf(ctx, "Skipping %s.%s (no agent config)", wl.GetName(), wl.GetNamespace())
+			}
 			return nil, nil
 		case scx.AgentConfig().Manual:
-			dlog.Debugf(ctx, "Skipping webhook where agent is manually injected %s.%s", pod.Name, pod.Namespace)
+			dlog.Debugf(ctx, "Skipping webhook where agent is manually injected %s.%s", wl.GetName(), wl.GetNamespace())
 			return nil, nil
 		}
 	default:
@@ -203,6 +209,8 @@ func (a *agentInjector) Inject(ctx context.Context, req *admission.AdmissionRequ
 	// Create patch operations to add the traffic-agent sidecar
 	if len(patches) > 0 {
 		dlog.Infof(ctx, "Injecting %d patches into pod %s.%s", len(patches), pod.Name, pod.Namespace)
+	} else {
+		dlog.Infof(ctx, "Pod %s.%s was left untouched", pod.Name, pod.Namespace)
 	}
 	return patches, nil
 }

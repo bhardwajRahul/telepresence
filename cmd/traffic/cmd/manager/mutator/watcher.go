@@ -52,6 +52,8 @@ type Map interface {
 
 	Delete(ctx context.Context, name, namespace string) error
 	Update(ctx context.Context, namespace string, updater func(cm *core.ConfigMap) (bool, error)) error
+
+	registerPrematureInjectEvent(wl k8sapi.Workload)
 }
 
 var NewWatcherFunc = NewWatcher //nolint:gochecknoglobals // extension point
@@ -99,8 +101,14 @@ func (c *configWatcher) isRolloutNeeded(ctx context.Context, wl k8sapi.Workload,
 		return false
 	}
 	if ia, ok := podMeta.GetAnnotations()[agentconfig.InjectAnnotation]; ok {
-		// Annotation controls injection, so no explicit rollout is needed unless the deployment was added before the traffic-manager.
-		// If the annotation changes, there will be an implicit rollout anyway.
+		// Annotation controls injection, so no explicit rollout is needed unless the deployment was added before the
+		// traffic-manager or the traffic-manager already received an injection event but failed due to the lack
+		// of an agent config.
+		if c.receivedPrematureInjectEvent(wl) {
+			dlog.Debugf(ctx, "Rollout of %s.%s is necessary. Pod template has inject annotation %s and a premature injection event was received",
+				wl.GetName(), wl.GetNamespace(), ia)
+			return true
+		}
 		if wl.GetCreationTimestamp().After(c.startedAt) {
 			dlog.Debugf(ctx, "Rollout of %s.%s is not necessary. Pod template has inject annotation %s",
 				wl.GetName(), wl.GetNamespace(), ia)
@@ -154,7 +162,7 @@ func (c *configWatcher) isRolloutNeeded(ctx context.Context, wl k8sapi.Workload,
 		return false
 	}
 	if okPods == 0 {
-		// Found no pods out there that matches the desired state
+		// Found no pods out there that match the desired state
 		for _, ror := range rolloutReasons {
 			dlog.Debug(ctx, ror)
 		}
@@ -412,19 +420,33 @@ func (c *configWatcher) regenerateAgentMaps(ctx context.Context, ns string, gc a
 	return err
 }
 
+type podKey struct {
+	name      string
+	namespace string
+}
+
 type workloadKey struct {
 	name      string
 	namespace string
 	kind      string
 }
 
+func newWorkloadKey(wl k8sapi.Workload) workloadKey {
+	return workloadKey{
+		name:      wl.GetName(),
+		namespace: wl.GetNamespace(),
+		kind:      wl.GetKind(),
+	}
+}
+
 type configWatcher struct {
-	cancel          context.CancelFunc
-	rolloutLocks    *xsync.MapOf[workloadKey, *sync.Mutex]
-	nsLocks         *xsync.MapOf[string, *sync.RWMutex]
-	blacklistedPods *xsync.MapOf[string, time.Time]
-	startedAt       time.Time
-	rolloutDisabled bool
+	cancel                   context.CancelFunc
+	rolloutLocks             *xsync.MapOf[workloadKey, *sync.Mutex]
+	nsLocks                  *xsync.MapOf[string, *sync.RWMutex]
+	blacklistedPods          *xsync.MapOf[podKey, time.Time]
+	prematureInjectionEvents *xsync.MapOf[workloadKey, time.Time]
+	startedAt                time.Time
+	rolloutDisabled          bool
 
 	cms []cache.SharedIndexInformer
 	svs []cache.SharedIndexInformer
@@ -441,11 +463,20 @@ type configWatcher struct {
 // time when a pod is deleted and its agent announces its departure during which the pod must be
 // considered inactive.
 func (c *configWatcher) Blacklist(podName, namespace string) {
-	c.blacklistedPods.Store(podName+"."+namespace, time.Now())
+	c.blacklistedPods.Store(podKey{name: podName, namespace: namespace}, time.Now())
 }
 
 func (c *configWatcher) Whitelist(podName, namespace string) {
-	c.blacklistedPods.Delete(podName + "." + namespace)
+	c.blacklistedPods.Delete(podKey{name: podName, namespace: namespace})
+}
+
+func (c *configWatcher) registerPrematureInjectEvent(wl k8sapi.Workload) {
+	c.prematureInjectionEvents.Store(newWorkloadKey(wl), time.Now())
+}
+
+func (c *configWatcher) receivedPrematureInjectEvent(wl k8sapi.Workload) bool {
+	_, yes := c.prematureInjectionEvents.Load(newWorkloadKey(wl))
+	return yes
 }
 
 func (c *configWatcher) DisableRollouts() {
@@ -453,8 +484,8 @@ func (c *configWatcher) DisableRollouts() {
 }
 
 func (c *configWatcher) IsBlacklisted(podName, namespace string) bool {
-	_, ok := c.blacklistedPods.Load(podName + "." + namespace)
-	return ok
+	_, yes := c.blacklistedPods.Load(podKey{name: podName, namespace: namespace})
+	return yes
 }
 
 func (c *configWatcher) Delete(ctx context.Context, name, namespace string) error {
@@ -513,9 +544,10 @@ func (c *configWatcher) Update(ctx context.Context, namespace string, updater fu
 
 func NewWatcher(namespaces ...string) Map {
 	w := &configWatcher{
-		nsLocks:         xsync.NewMapOf[string, *sync.RWMutex](),
-		rolloutLocks:    xsync.NewMapOf[workloadKey, *sync.Mutex](),
-		blacklistedPods: xsync.NewMapOf[string, time.Time](),
+		nsLocks:                  xsync.NewMapOf[string, *sync.RWMutex](),
+		rolloutLocks:             xsync.NewMapOf[workloadKey, *sync.Mutex](),
+		blacklistedPods:          xsync.NewMapOf[podKey, time.Time](),
+		prematureInjectionEvents: xsync.NewMapOf[workloadKey, time.Time](),
 	}
 	if len(namespaces) > 0 {
 		for _, ns := range namespaces {
@@ -647,11 +679,7 @@ func (c *configWatcher) getNamespaceLock(ns string) *sync.RWMutex {
 }
 
 func (c *configWatcher) getRolloutLock(wl k8sapi.Workload) *sync.Mutex {
-	lock, _ := c.rolloutLocks.LoadOrCompute(workloadKey{
-		name:      wl.GetName(),
-		namespace: wl.GetNamespace(),
-		kind:      wl.GetKind(),
-	}, func() *sync.Mutex {
+	lock, _ := c.rolloutLocks.LoadOrCompute(newWorkloadKey(wl), func() *sync.Mutex {
 		return &sync.Mutex{}
 	})
 	return lock
@@ -787,9 +815,15 @@ func (c *configWatcher) startPods(ctx context.Context, ns string) cache.SharedIn
 func (c *configWatcher) gcBlacklisted(now time.Time) {
 	const maxAge = time.Minute
 	maxCreated := now.Add(-maxAge)
-	c.blacklistedPods.Range(func(key string, created time.Time) bool {
+	c.blacklistedPods.Range(func(key podKey, created time.Time) bool {
 		if created.Before(maxCreated) {
 			c.blacklistedPods.Delete(key)
+		}
+		return true
+	})
+	c.prematureInjectionEvents.Range(func(key workloadKey, created time.Time) bool {
+		if created.Before(maxCreated) {
+			c.prematureInjectionEvents.Delete(key)
 		}
 		return true
 	})

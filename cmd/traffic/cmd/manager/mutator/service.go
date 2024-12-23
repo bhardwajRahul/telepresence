@@ -343,7 +343,7 @@ func serveMutatingFunc(ctx context.Context, r *http.Request, mf mutatorFunc) ([]
 		response.Result = &meta.Status{
 			Message: err.Error(),
 		}
-	} else {
+	} else if patchOps != nil {
 		// Otherwise, encode the patch operations to JSON and return a positive response.
 		patchBytes, err := json.Marshal(patchOps, jsonv1.OmitEmptyWithLegacyDefinition(true), json.FormatNilSliceAsNull(true))
 		if err != nil {
@@ -355,9 +355,9 @@ func serveMutatingFunc(ctx context.Context, r *http.Request, mf mutatorFunc) ([]
 	}
 
 	// Return the AdmissionReview with a response as JSON.
-	bytes, err := json.Marshal(&admissionReviewResponse)
+	b, err := json.Marshal(&admissionReviewResponse)
 	if err != nil {
 		return nil, http.StatusInternalServerError, fmt.Errorf("marshaling response: %v", err)
 	}
-	return bytes, http.StatusOK, nil
+	return b, http.StatusOK, nil
 }
