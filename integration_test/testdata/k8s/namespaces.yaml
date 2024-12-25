@@ -1,0 +1,63 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    kubernetes.io/metadata.name: ambassador
+    phase: a1
+    scope: dev
+  name: alpha
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    kubernetes.io/metadata.name: ambassador
+    phase: a1
+    scope: dev
+  name: beta
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    kubernetes.io/metadata.name: ambassador
+    phase: none
+    scope: unscoped
+  name: alpha-test
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    kubernetes.io/metadata.name: ambassador
+    phase: a2
+    scope: dev
+  name: alpha-rc
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    kubernetes.io/metadata.name: ambassador
+    phase: a2
+    scope: dev
+  name: beta-rc
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    kubernetes.io/metadata.name: ambassador
+    phase: ga
+    scope: prod
+  name: alpha-live
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    kubernetes.io/metadata.name: ambassador
+    phase: ga
+    scope: prod
+  name: beta-live

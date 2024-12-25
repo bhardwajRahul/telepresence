@@ -841,7 +841,7 @@ func (s *Session) onClusterInfo(ctx context.Context, mgrInfo *manager.ClusterInf
 		return s.onClusterInfo(ctx, mgrInfo)
 	}
 
-	dlog.Debugf(ctx, "UpdatinRoutes %s, %s, %s", proxy, s.effectiveNeverProxy, neverProxyOverrides)
+	dlog.Debugf(ctx, "UpdatingRoutes %s, %s, %s", proxy, s.effectiveNeverProxy, neverProxyOverrides)
 	return rt.UpdateRoutes(ctx, proxy, s.effectiveNeverProxy, neverProxyOverrides)
 }
 

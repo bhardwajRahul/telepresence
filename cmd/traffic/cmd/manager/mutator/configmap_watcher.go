@@ -52,8 +52,8 @@ func (c *configWatcher) startConfigMap(ctx context.Context, ns string) cache.Sha
 	return ix
 }
 
-func (c *configWatcher) watchConfigMap(ctx context.Context, ix cache.SharedIndexInformer) error {
-	_, err := ix.AddEventHandler(
+func (c *configWatcher) watchConfigMap(ctx context.Context, ix cache.SharedIndexInformer) (cache.ResourceEventHandlerRegistration, error) {
+	return ix.AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj any) {
 				if cm, ok := obj.(*core.ConfigMap); ok {
@@ -82,7 +82,6 @@ func (c *configWatcher) watchConfigMap(ctx context.Context, ix cache.SharedIndex
 				}
 			},
 		})
-	return err
 }
 
 func (c *configWatcher) handleAdd(ctx context.Context, cm *core.ConfigMap) {

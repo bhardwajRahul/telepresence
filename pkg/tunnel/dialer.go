@@ -10,6 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/datawire/dlib/dlog"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/manager"
 	"github.com/telepresenceio/telepresence/v2/pkg/ipproto"
@@ -335,8 +338,8 @@ func DialWaitLoop(
 	for ctx.Err() == nil {
 		dr, err := dialStream.Recv()
 		if err != nil {
-			if ctx.Err() == nil && !(errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed)) {
-				return fmt.Errorf("dial request stream recv: %w", err) // May be io.EOF
+			if ctx.Err() == nil && !(errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || status.Code(err) == codes.NotFound) {
+				return fmt.Errorf("dial request stream recv: %w", err)
 			}
 			return nil
 		}

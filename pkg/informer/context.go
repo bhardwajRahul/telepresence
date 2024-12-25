@@ -3,13 +3,14 @@ package informer
 import (
 	"context"
 
+	"github.com/puzpuzpuz/xsync/v3"
 	"k8s.io/client-go/informers"
 
 	argorolloutsinformer "github.com/datawire/argo-rollouts-go-client/pkg/client/informers/externalversions"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 )
 
-type factoryKey string
+type factoryKey struct{}
 
 func getOpts(ns string) (k8sOpts []informers.SharedInformerOption, argoOpts []argorolloutsinformer.SharedInformerOption) {
 	if ns != "" {
@@ -20,26 +21,26 @@ func getOpts(ns string) (k8sOpts []informers.SharedInformerOption, argoOpts []ar
 	return k8sOpts, argoOpts
 }
 
-func WithFactory(ctx context.Context, ns string) context.Context {
-	k8sOpts, argoOpts := getOpts(ns)
-	i := k8sapi.GetJoinedClientSetInterface(ctx)
-	k8sFactory := informers.NewSharedInformerFactoryWithOptions(i, 0, k8sOpts...)
-	argoRolloutFactory := argorolloutsinformer.NewSharedInformerFactoryWithOptions(i, 0, argoOpts...)
-	return context.WithValue(ctx, factoryKey(ns), NewDefaultGlobalFactory(k8sFactory, argoRolloutFactory))
+func WithFactory(ctx context.Context, _ string) context.Context {
+	if _, ok := ctx.Value(factoryKey{}).(*xsync.MapOf[string, GlobalFactory]); !ok {
+		ctx = context.WithValue(ctx, factoryKey{}, xsync.NewMapOf[string, GlobalFactory]())
+	}
+	return ctx
 }
 
 func GetFactory(ctx context.Context, ns string) GlobalFactory {
-	if f, ok := ctx.Value(factoryKey(ns)).(GlobalFactory); ok {
-		return f
+	fm, ok := ctx.Value(factoryKey{}).(*xsync.MapOf[string, GlobalFactory])
+	if !ok {
+		return nil
 	}
-	// Check if cluster-global a factory is available, unless that was what was
-	// originally requested.
-	if ns != "" {
-		if f, ok := ctx.Value(factoryKey("")).(GlobalFactory); ok {
-			return f
-		}
-	}
-	return nil
+	gf, _ := fm.LoadOrCompute(ns, func() GlobalFactory {
+		k8sOpts, argoOpts := getOpts(ns)
+		i := k8sapi.GetJoinedClientSetInterface(ctx)
+		k8sFactory := informers.NewSharedInformerFactoryWithOptions(i, 0, k8sOpts...)
+		argoRolloutFactory := argorolloutsinformer.NewSharedInformerFactoryWithOptions(i, 0, argoOpts...)
+		return NewDefaultGlobalFactory(k8sFactory, argoRolloutFactory)
+	})
+	return gf
 }
 
 func GetK8sFactory(ctx context.Context, ns string) informers.SharedInformerFactory {

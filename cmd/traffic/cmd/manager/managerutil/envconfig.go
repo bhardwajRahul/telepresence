@@ -31,17 +31,17 @@ import (
 // The Env is responsible for all parsing of the environment strings. No parsing of such
 // strings should be made elsewhere in the code.
 type Env struct {
-	Registry            string        `env:"REGISTRY,                 parser=nonempty-string"`
-	LogLevel            string        `env:"LOG_LEVEL,                parser=logLevel"`
-	User                string        `env:"USER,                     parser=string,      default="`
-	ServerHost          string        `env:"SERVER_HOST,              parser=string,      default="`
-	ServerPort          uint16        `env:"SERVER_PORT,              parser=port-number"`
-	PrometheusPort      uint16        `env:"PROMETHEUS_PORT,          parser=port-number, default=0"`
-	MutatorWebhookPort  uint16        `env:"MUTATOR_WEBHOOK_PORT,     parser=port-number, default=0"`
-	ManagerNamespace    string        `env:"MANAGER_NAMESPACE,        parser=string,      default="`
-	ManagedNamespaces   []string      `env:"MANAGED_NAMESPACES,       parser=split-trim,  default="`
-	APIPort             uint16        `env:"AGENT_REST_API_PORT,      parser=port-number, default=0"`
-	AgentArrivalTimeout time.Duration `env:"AGENT_ARRIVAL_TIMEOUT,    parser=time.ParseDuration, default=0"`
+	Registry                     string        `env:"REGISTRY,                 parser=nonempty-string"`
+	LogLevel                     string        `env:"LOG_LEVEL,                parser=logLevel"`
+	User                         string        `env:"USER,                     parser=string,      default="`
+	ServerHost                   string        `env:"SERVER_HOST,              parser=string,      default="`
+	ServerPort                   uint16        `env:"SERVER_PORT,              parser=port-number"`
+	PrometheusPort               uint16        `env:"PROMETHEUS_PORT,          parser=port-number, default=0"`
+	MutatorWebhookPort           uint16        `env:"MUTATOR_WEBHOOK_PORT,     parser=port-number, default=0"`
+	ManagerNamespace             string        `env:"MANAGER_NAMESPACE,        parser=string,      default="`
+	APIPort                      uint16        `env:"AGENT_REST_API_PORT,      parser=port-number, default=0"`
+	AgentArrivalTimeout          time.Duration `env:"AGENT_ARRIVAL_TIMEOUT,    parser=time.ParseDuration, default=0"`
+	MaxNamespaceSpecificWatchers int           `env:"MAX_NAMESPACE_SPECIFIC_WATCHERS,parser=int,  default=10"`
 
 	MaxReceiveSize resource.Quantity `env:"GRPC_MAX_RECEIVE_SIZE, parser=quantity"`
 
@@ -111,6 +111,8 @@ func fieldTypeHandlers() map[reflect.Type]envconfig.FieldTypeHandler {
 	fp := fhs[reflect.TypeOf("")]
 	fp.Parsers["string"] = fp.Parsers["possibly-empty-string"]
 	fp.Parsers["logLevel"] = fp.Parsers["logrus.ParseLevel"]
+	fp = fhs[reflect.TypeOf(0)]
+	fp.Parsers["int"] = fp.Parsers["strconv.ParseInt"]
 	fp = fhs[reflect.TypeOf(true)]
 	fp.Parsers["bool"] = fp.Parsers["strconv.ParseBool"]
 	fhs[reflect.TypeOf(uint16(0))] = envconfig.FieldTypeHandler{

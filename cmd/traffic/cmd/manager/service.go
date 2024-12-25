@@ -47,7 +47,6 @@ type Service interface {
 	ClusterInfo() cluster.Info
 
 	// unexported methods.
-	runConfigWatcher(context.Context) error
 	runSessionGCLoop(context.Context) error
 	serveHTTP(context.Context) error
 	servePrometheus(context.Context) error
@@ -86,10 +85,11 @@ func checkCompat(ctx context.Context, name, requiredVersion string) error {
 	return nil
 }
 
-func NewService(ctx context.Context) (Service, *dgroup.Group, error) {
+func NewService(ctx context.Context, configWatcher config.Watcher) (Service, *dgroup.Group, error) {
 	ret := &service{
-		clock: wall{},
-		id:    uuid.New().String(),
+		clock:         wall{},
+		id:            uuid.New().String(),
+		configWatcher: configWatcher,
 	}
 
 	if managerutil.AgentInjectorEnabled(ctx) {
@@ -99,7 +99,6 @@ func NewService(ctx context.Context) (Service, *dgroup.Group, error) {
 			dlog.Errorf(ctx, "unable to initialize agent injector: %v", err)
 		}
 	}
-	ret.configWatcher = config.NewWatcher(managerutil.GetEnv(ctx).ManagerNamespace)
 	ret.ctx = ctx
 	// These are context dependent so build them once the pool is up
 	ret.clusterInfo = cluster.NewInfo(ctx)
@@ -130,10 +129,6 @@ func (s *service) State() state.State {
 
 func (s *service) InstallID() string {
 	return s.clusterInfo.ID()
-}
-
-func (s *service) runConfigWatcher(ctx context.Context) error {
-	return s.configWatcher.Run(ctx)
 }
 
 // Version returns the version information of the Manager.
@@ -241,7 +236,7 @@ func (s *service) GetClientConfig(ctx context.Context, _ *empty.Empty) (*rpc.CLI
 	dlog.Debug(ctx, "GetClientConfig called")
 
 	return &rpc.CLIConfig{
-		ConfigYaml: s.configWatcher.GetClientConfigYaml(),
+		ConfigYaml: s.configWatcher.GetClientConfigYaml(ctx),
 	}, nil
 }
 

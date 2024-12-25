@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,10 +23,10 @@ import (
 	"github.com/datawire/dlib/dlog"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/manager"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/namespaces"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/watchable"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/dnsproxy"
-	"github.com/telepresenceio/telepresence/v2/pkg/informer"
 	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/v2/pkg/log"
@@ -150,7 +151,7 @@ type state struct {
 }
 
 func (s *state) ManagesNamespace(ctx context.Context, ns string) bool {
-	return informer.GetK8sFactory(ctx, ns) != nil
+	return slices.Contains(namespaces.Get(ctx), ns)
 }
 
 var NewStateFunc = NewState //nolint:gochecknoglobals // extension point
@@ -167,7 +168,37 @@ func NewState(ctx context.Context) State {
 		llSubs:           newLoglevelSubscribers(),
 	}
 	s.self = s
+	go func() {
+		sid, nsChanges := namespaces.Subscribe(ctx)
+		defer namespaces.Unsubscribe(ctx, sid)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case _, ok := <-nsChanges:
+				if !ok {
+					return
+				}
+				s.pruneSessions(ctx)
+			}
+		}
+	}()
 	return s
+}
+
+// pruneSessions will remove all sessions that belong to namespaces that are no longer managed.
+func (s *state) pruneSessions(ctx context.Context) {
+	nss := namespaces.Get(ctx)
+	var sids []string
+	s.clients.LoadAllMatching(func(s string, c *rpc.ClientInfo) bool {
+		if !slices.Contains(nss, c.Namespace) {
+			sids = append(sids, s)
+		}
+		return false
+	})
+	for _, sid := range sids {
+		s.RemoveSession(ctx, sid)
+	}
 }
 
 func (s *state) SetSelf(self State) {
@@ -498,9 +529,12 @@ func (s *state) WatchWorkloads(ctx context.Context, sessionID string) (ch <-chan
 		return nil, status.Errorf(codes.NotFound, "session %q not found", sessionID)
 	}
 	ns := client.Namespace
-	ww, _ := s.workloadWatchers.LoadOrCompute(ns, func() (ww workload.Watcher) {
+	ww, _ := s.workloadWatchers.Compute(ns, func(ww workload.Watcher, loaded bool) (workload.Watcher, bool) {
+		if loaded {
+			return ww, false
+		}
 		ww, err = workload.NewWatcher(s.backgroundCtx, ns, managerutil.GetEnv(ctx).EnabledWorkloadKinds)
-		return ww
+		return ww, err != nil // delete if error.
 	})
 	if err != nil {
 		return nil, err

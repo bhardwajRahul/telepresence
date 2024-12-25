@@ -1,60 +1,81 @@
 package config
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"slices"
 	"sync"
 
-	"github.com/go-json-experiment/json"
 	core "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	"sigs.k8s.io/yaml"
 
 	"github.com/datawire/dlib/dlog"
-	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/namespaces"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
+	"github.com/telepresenceio/telepresence/v2/pkg/labels"
 )
 
 const (
-	clientConfigFileName   = "client.yaml"
-	agentEnvConfigFileName = "agent-env.yaml"
-	cfgConfigMapName       = "traffic-manager"
+	clientConfigFileName            = "client.yaml"
+	agentEnvConfigFileName          = "agent-env.yaml"
+	namespaceSelectorConfigFileName = "namespace-selector.yaml"
+	cfgConfigMapName                = "traffic-manager"
 )
-
-type WatcherCallback func(watch.EventType, runtime.Object) error
 
 type Watcher interface {
 	Run(ctx context.Context) error
-	GetClientConfigYaml() []byte
+	GetClientConfigYaml(ctx context.Context) []byte
 	GetAgentEnv() AgentEnv
+	SelectorChannel() <-chan *labels.Selector
+
+	// ForceEvent is for testing purposes only.
+	ForceEvent(ctx context.Context) error
 }
 
 type AgentEnv struct {
 	Excluded []string `json:"excluded,omitempty"`
 }
 
+func (ae AgentEnv) Equal(o AgentEnv) bool {
+	return slices.Equal(ae.Excluded, o.Excluded)
+}
+
+func rqEqual(r, o *labels.Requirement) bool {
+	if r == nil || o == nil {
+		return r == o
+	}
+	return r.Key == o.Key && r.Operator == o.Operator && slices.Equal(r.Values, o.Values)
+}
+
 type config struct {
 	sync.RWMutex
 	namespace string
 
-	clientYAML []byte
-	agentEnv   AgentEnv
+	clientYAML        []byte
+	agentEnv          AgentEnv
+	namespaceSelector []*labels.Requirement
+	selectorChannel   chan *labels.Selector
 }
 
 func NewWatcher(namespace string) Watcher {
 	return &config{
-		namespace: namespace,
+		namespace:         namespace,
+		selectorChannel:   make(chan *labels.Selector, 1),
+		namespaceSelector: []*labels.Requirement{nil}, // One nil entry forces the first event on the LabelMatcher channel
 	}
 }
 
 func (c *config) Run(ctx context.Context) error {
 	dlog.Infof(ctx, "Started watcher for ConfigMap %s", cfgConfigMapName)
 	defer dlog.Infof(ctx, "Ended watcher for ConfigMap %s", cfgConfigMapName)
+	defer close(c.selectorChannel)
 
-	// The WatchConfig will perform a http GET call to the kubernetes API server, and that connection will not remain open forever
+	// The WatchConfig will perform an http GET call to the kubernetes API server, and that connection will not remain open forever,
 	// so when it closes, the watch must start over. This goes on until the context is cancelled.
 	api := k8sapi.GetK8sInterface(ctx).CoreV1()
 	for ctx.Err() == nil {
@@ -67,6 +88,21 @@ func (c *config) Run(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (c *config) ForceEvent(ctx context.Context) error {
+	api := k8sapi.GetK8sInterface(ctx).CoreV1()
+	w, err := api.ConfigMaps(c.namespace).Get(ctx, cfgConfigMapName, meta.GetOptions{})
+	if err != nil {
+		return err
+	}
+	c.refreshFile(ctx, w.Data)
+	return nil
+}
+
+// SelectorChannel returns a channel that will emit a selector everytime the label selector configuration changes.
+func (c *config) SelectorChannel() <-chan *labels.Selector {
+	return c.selectorChannel
 }
 
 func (c *config) configMapEventHandler(ctx context.Context, evCh <-chan watch.Event) bool {
@@ -97,57 +133,86 @@ func (c *config) configMapEventHandler(ctx context.Context, evCh <-chan watch.Ev
 var AmendClientConfigFunc = AmendClientConfig //nolint:gochecknoglobals // extension point
 
 func AmendClientConfig(ctx context.Context, cfg client.Config) bool {
-	env := managerutil.GetEnv(ctx)
-	if len(env.ManagedNamespaces) > 0 {
-		dlog.Debugf(ctx, "Checking if Augment mapped namespaces with %d managed namespaces", len(env.ManagedNamespaces))
-		if len(cfg.Cluster().MappedNamespaces) == 0 {
-			dlog.Debugf(ctx, "Augment mapped namespaces with %d managed namespaces", len(env.ManagedNamespaces))
-			cfg.Cluster().MappedNamespaces = env.ManagedNamespaces
-		}
+	nss := namespaces.Get(ctx)
+	if !slices.Equal(nss, cfg.Cluster().MappedNamespaces) {
+		dlog.Debugf(ctx, "AmendClientConfig: cluster.mappedNamespaces: %v", nss)
+		cfg.Cluster().MappedNamespaces = nss
 		return true
 	}
 	return false
 }
 
-func (c *config) refreshFile(ctx context.Context, data map[string]string) {
+func (c *config) refreshFile(ctx context.Context, mapData map[string]string) {
 	c.Lock()
-	if yml, ok := data[clientConfigFileName]; ok {
-		c.clientYAML = []byte(yml)
-		cfg, err := client.ParseConfigYAML(ctx, clientConfigFileName, c.clientYAML)
-		if err != nil {
-			dlog.Errorf(ctx, "failed to unmarshal YAML from %s: %v", clientConfigFileName, err)
-		} else if AmendClientConfigFunc(ctx, cfg) {
-			c.clientYAML = []byte(cfg.String())
-			dlog.Debugf(ctx, "Refreshed client config: %s", yml)
+	defer c.Unlock()
+	if yml, ok := mapData[clientConfigFileName]; ok {
+		data := []byte(yml)
+		if !bytes.Equal(data, c.clientYAML) {
+			c.clientYAML = data
+			dlog.Debugf(ctx, "Refreshed client config:\n%s", yml)
 		}
-	} else {
+	} else if len(c.clientYAML) > 0 {
 		c.clientYAML = nil
-		dlog.Debugf(ctx, "Cleared client config")
+		dlog.Debug(ctx, "Cleared client config")
 	}
 
-	c.agentEnv = AgentEnv{}
-	if yml, ok := data[agentEnvConfigFileName]; ok {
+	ae := AgentEnv{}
+	if yml, ok := mapData[agentEnvConfigFileName]; ok {
 		data, err := yaml.YAMLToJSON([]byte(yml))
 		if err == nil {
-			err = json.Unmarshal(data, &c.agentEnv)
+			err = json.Unmarshal(data, &ae)
 		}
 		if err != nil {
 			dlog.Errorf(ctx, "failed to unmarshal YAML from %s: %v", agentEnvConfigFileName, err)
+		} else if !ae.Equal(c.agentEnv) {
+			c.agentEnv = ae
+			dlog.Debugf(ctx, "Refreshed agent-env:\n%s", yml)
 		}
-		dlog.Debugf(ctx, "Refreshed agent-env: %s", yml)
-	} else {
-		dlog.Debugf(ctx, "Cleared agent-env")
+	} else if !c.agentEnv.Equal(ae) {
+		c.agentEnv = ae
+		dlog.Debug(ctx, "Cleared agent-env")
 	}
-	c.Unlock()
+
+	if yml, ok := mapData[namespaceSelectorConfigFileName]; ok {
+		nsSelector, err := labels.UnmarshalSelector([]byte(yml))
+		if err != nil {
+			dlog.Errorf(ctx, "failed to unmarshal YAML from %s: %v", namespaceSelectorConfigFileName, err)
+		}
+		es := nsSelector.GetAllRequirements()
+		if !slices.EqualFunc(es, c.namespaceSelector, rqEqual) {
+			c.namespaceSelector = es
+			dlog.Debugf(ctx, "Refreshed namespaceSelector: %s", yml)
+			c.selectorChannel <- &labels.Selector{MatchExpressions: es}
+		}
+	} else if len(c.namespaceSelector) > 0 {
+		c.namespaceSelector = nil
+		c.selectorChannel <- nil
+		dlog.Debug(ctx, "Cleared namespaceSelector")
+	}
 }
 
 func (c *config) GetAgentEnv() AgentEnv {
 	return c.agentEnv
 }
 
-func (c *config) GetClientConfigYaml() (ret []byte) {
+func (c *config) GetClientConfigYaml(ctx context.Context) (ret []byte) {
 	c.RLock()
-	ret = c.clientYAML
-	c.RUnlock()
-	return
+	defer c.RUnlock()
+	var cfg client.Config
+	if c.clientYAML == nil {
+		cfg = client.GetDefaultConfig()
+	} else {
+		var err error
+		cfg, err = client.ParseConfigYAML(ctx, clientConfigFileName, c.clientYAML)
+		if err != nil {
+			dlog.Errorf(ctx, "failed to unmarshal YAML from %s: %v", clientConfigFileName, err)
+			return
+		}
+	}
+	if AmendClientConfigFunc(ctx, cfg) {
+		ret, _ = cfg.MarshalYAML()
+	} else {
+		ret = c.clientYAML
+	}
+	return ret
 }

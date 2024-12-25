@@ -33,7 +33,6 @@ import (
 	sigsYaml "sigs.k8s.io/yaml"
 
 	"github.com/datawire/dlib/dexec"
-	"github.com/datawire/dlib/dhttp"
 	"github.com/datawire/dlib/dlog"
 	"github.com/datawire/dlib/dtime"
 	"github.com/datawire/dtest"
@@ -44,6 +43,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/client/userd/k8s"
 	"github.com/telepresenceio/telepresence/v2/pkg/dos"
 	"github.com/telepresenceio/telepresence/v2/pkg/filelocation"
+	"github.com/telepresenceio/telepresence/v2/pkg/ioutil"
 	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 	"github.com/telepresenceio/telepresence/v2/pkg/log"
 	"github.com/telepresenceio/telepresence/v2/pkg/maps"
@@ -371,7 +371,7 @@ func (s *cluster) withBasicConfig(c context.Context, t *testing.T) context.Conte
 
 	config.Grpc().MaxReceiveSizeV, _ = resource.ParseQuantity("10Mi")
 	config.Intercept().UseFtp = true
-	config.Routing().RecursionBlockDuration = 1 * time.Millisecond
+	config.Routing().RecursionBlockDuration = 5 * time.Millisecond
 
 	configYaml, err := config.MarshalYAML()
 	require.NoError(t, err)
@@ -614,10 +614,7 @@ func (s *cluster) GetValuesForHelm(ctx context.Context, values map[string]string
 		settings = append(settings, "image.pullPolicy=Always")
 	}
 	if len(nss.ManagedNamespaces) > 0 {
-		settings = append(settings,
-			fmt.Sprintf("clientRbac.namespaces=%s", nss.HelmString()),
-			fmt.Sprintf("managerRbac.namespaces=%s", nss.HelmString()),
-		)
+		settings = append(settings, fmt.Sprintf("namespaces=%s", nss.HelmString()))
 	}
 	agentImage := GetAgentImage(ctx)
 	if agentImage != nil {
@@ -719,7 +716,6 @@ func (s *cluster) TelepresenceHelmInstall(ctx context.Context, upgrade bool, set
 	type xTimeouts struct {
 		AgentArrival string `json:"agentArrival,omitempty"`
 	}
-	nsl := nss.UniqueList()
 	vx := struct {
 		LogLevel    string    `json:"logLevel"`
 		Image       Image     `json:"image,omitempty"`
@@ -728,6 +724,7 @@ func (s *cluster) TelepresenceHelmInstall(ctx context.Context, upgrade bool, set
 		ManagerRbac xRbac     `json:"managerRbac"`
 		Client      xClient   `json:"client"`
 		Timeouts    xTimeouts `json:"timeouts,omitempty"`
+		Namespaces  []string  `json:"namespaces,omitempty"`
 	}{
 		LogLevel: "debug",
 		Agent:    agent,
@@ -735,17 +732,16 @@ func (s *cluster) TelepresenceHelmInstall(ctx context.Context, upgrade bool, set
 			Create:     true,
 			Namespaced: len(nss.ManagedNamespaces) > 0,
 			Subjects:   subjects,
-			Namespaces: nsl,
+			Namespaces: nss.ManagedNamespaces,
 		},
 		ManagerRbac: xRbac{
-			Create:     true,
-			Namespaced: len(nss.ManagedNamespaces) > 0,
-			Namespaces: nsl,
+			Create: true,
 		},
 		Client: xClient{
 			Routing: map[string][]string{},
 		},
-		Timeouts: xTimeouts{AgentArrival: "60s"},
+		Timeouts:   xTimeouts{AgentArrival: "60s"},
+		Namespaces: nss.ManagedNamespaces,
 	}
 	image := GetImage(ctx)
 	if image != nil {
@@ -1113,13 +1109,19 @@ func StartLocalHttpEchoServerWithHost(ctx context.Context, name string, host str
 	lc := net.ListenConfig{}
 	l, err := lc.Listen(ctx, "tcp", net.JoinHostPort(host, "0"))
 	require.NoError(getT(ctx), err, "failed to listen on localhost")
+	sc := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ioutil.Printf(w, "%s from intercept at %s", name, r.URL.Path)
+		}),
+	}
 	go func() {
-		sc := &dhttp.ServerConfig{
-			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				fmt.Fprintf(w, "%s from intercept at %s", name, r.URL.Path)
-			}),
-		}
-		err := sc.Serve(ctx, l)
+		_ = sc.Serve(l)
+	}()
+	go func() {
+		<-ctx.Done()
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+		defer cancel()
+		err = sc.Shutdown(ctx)
 		if err != nil {
 			dlog.Errorf(ctx, "http server on %s exited with error: %v", host, err)
 		} else {

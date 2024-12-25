@@ -17,8 +17,8 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/workload"
 )
 
-func (c *configWatcher) watchWorkloads(ctx context.Context, ix cache.SharedIndexInformer) error {
-	_, err := ix.AddEventHandler(
+func (c *configWatcher) watchWorkloads(ctx context.Context, ix cache.SharedIndexInformer) (cache.ResourceEventHandlerRegistration, error) {
+	return ix.AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj any) {
 				if wl, ok := workload.FromAny(obj); ok && len(wl.GetOwnerReferences()) == 0 {
@@ -44,7 +44,6 @@ func (c *configWatcher) watchWorkloads(ctx context.Context, ix cache.SharedIndex
 				}
 			},
 		})
-	return err
 }
 
 func (c *configWatcher) deleteWorkload(ctx context.Context, wl k8sapi.Workload) {

@@ -12,6 +12,7 @@ import (
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/cli/values"
 	"helm.sh/helm/v3/pkg/getter"
+	rbac "k8s.io/api/rbac/v1"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/tools/clientcmd/api"
 
@@ -120,20 +121,30 @@ func (is *installSuite) Test_HelmTemplateInstall() {
 
 	chart, err := is.PackageHelmChart(ctx)
 	require.NoError(err)
-	values := is.GetSetArgsForHelm(ctx, map[string]string{}, false)
+	values := is.GetSetArgsForHelm(ctx, map[string]string{
+		"clientRbac.create":  "true",
+		"managerRbac.create": "true",
+	}, false)
+	svcAccountJson, err := json.Marshal([]rbac.Subject{{
+		Kind:      "ServiceAccount",
+		Name:      itest.TestUser,
+		Namespace: is.ManagerNamespace(),
+	}})
+	require.NoError(err)
+	values = append(values, "--set-json", "clientRbac.subjects="+string(svcAccountJson))
 	values = append([]string{"template", "traffic-manager", chart, "-n", is.ManagerNamespace()}, values...)
 	manifest, err := itest.Output(ctx, "helm", values...)
 	require.NoError(err)
 	out := dlog.StdLogger(ctx, dlog.LogLevelInfo).Writer()
 	logCtx := dos.WithStdout(dos.WithStderr(ctx, out), out)
-	require.NoError(itest.Kubectl(dos.WithStdin(logCtx, strings.NewReader(manifest)), is.ManagerNamespace(), "apply", "-f", "-"))
+	require.NoError(itest.Kubectl(dos.WithStdin(logCtx, strings.NewReader(manifest)), "", "apply", "-f", "-"))
 	defer func() {
 		// Sometimes the traffic-agents configmap gets wiped, causing the delete command to fail, hence we don't require.NoError
-		_ = itest.Kubectl(dos.WithStdin(logCtx, strings.NewReader(manifest)), is.ManagerNamespace(), "delete", "-f", "-")
+		_ = itest.Kubectl(dos.WithStdin(logCtx, strings.NewReader(manifest)), "", "delete", "-f", "-")
 	}()
 	require.NoError(itest.RolloutStatusWait(ctx, is.ManagerNamespace(), "deploy/traffic-manager"))
 	is.CapturePodLogs(ctx, "traffic-manager", "", is.ManagerNamespace())
-	stdout := itest.TelepresenceOk(itest.WithUser(ctx, "default"), "connect")
+	stdout := is.TelepresenceConnect(ctx)
 	is.Contains(stdout, "Connected to context")
 	itest.TelepresenceQuitOk(ctx)
 }
@@ -167,15 +178,20 @@ func (is *installSuite) Test_EnsureManager_toleratesFailedInstall() {
 	failCtx := itest.WithConfig(ctx, func(cfg client.Config) {
 		cfg.Timeouts().PrivateHelm = 20 * time.Second // Give it time to discover the ImagePullbackOff error
 	})
-	require.Error(ensureTrafficManager(failCtx, kc))
+
+	err := ensureTrafficManager(failCtx, kc)
+	require.Error(err)
+	dlog.Infof(ctx, "Got expected install failure: %v", err)
 	restoreVersion()
 
 	ctx = itest.WithConfig(ctx, func(cfg client.Config) {
 		cfg.Timeouts().PrivateHelm = 20 * time.Second // Time to wait before pending state makes us assume it's stuck.
 	})
-	var err error
 	if !is.Eventually(func() bool {
 		err = ensureTrafficManager(ctx, kc)
+		if err != nil {
+			dlog.Errorf(ctx, "ensureTrafficManager failed: %v", err)
+		}
 		return err == nil
 	}, time.Minute, 5*time.Second) {
 		is.Fail(fmt.Sprintf("Unable to install proper manager after failed install: %v", err))

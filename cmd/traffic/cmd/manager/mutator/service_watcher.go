@@ -88,8 +88,8 @@ func (c *configWatcher) startServices(ctx context.Context, ns string) cache.Shar
 	return ix
 }
 
-func (c *configWatcher) watchServices(ctx context.Context, ix cache.SharedIndexInformer) error {
-	_, err := ix.AddEventHandler(
+func (c *configWatcher) watchServices(ctx context.Context, ix cache.SharedIndexInformer) (cache.ResourceEventHandlerRegistration, error) {
+	return ix.AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj any) {
 				if svc, ok := obj.(*core.Service); ok {
@@ -111,7 +111,6 @@ func (c *configWatcher) watchServices(ctx context.Context, ix cache.SharedIndexI
 				}
 			},
 		})
-	return err
 }
 
 func (c *configWatcher) updateSvc(ctx context.Context, svc *core.Service, trustUID bool) {

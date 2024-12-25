@@ -114,6 +114,11 @@ podCIDRs: []
 # Default: auto
 podCIDRStrategy: auto
 
+# maxNamespaceSpecificWatchers configures the threshold for when the traffic-manager switches from using one set of
+# watchers for each managed namespace to using cluster-wide watchers. This threshold only applies when using a
+# namespaceSelector, and only when the traffic-manager is permitted to list the cluster's namespaces.
+maxNamespaceSpecificWatchers: 10
+
 managerRbac:
   # Default: true
   create: true
@@ -183,13 +188,6 @@ agentInjector:
     reinvocationPolicy: IfNeeded
     sideEffects: None
     timeoutSeconds: 5
-    namespaceSelector:
-      matchExpressions:
-        - key: kubernetes.io/metadata.name
-          operator: NotIn
-          values:
-            - kube-system
-            - kube-node-lease
   agentImage: {}
 
 ################################################################################
@@ -256,18 +254,8 @@ clientRbac:
     #   name: jane
     #   apiGroup: rbac.authorization.k8s.io
 
-  # Create namespaced RoleBindings so that users only have access to create
-  # intercepts in certain namespaces.
-  #
-  # Default: false
-  namespaced: false
-
-  # The namespaces to create the RoleBindings in. No effect if namespaced: false
-  # Ambassador must always be one of the namespaces users have access to.
-  #
-  # Default: ambassador
+  # Explicitly set the namespaces to create the RoleBindings in. Defaults to the traffic-managers managed namespaces.
   namespaces:
-  - ambassador
 
   ruleExtras: false
 

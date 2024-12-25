@@ -43,26 +43,14 @@ type Namespaces struct {
 func (n *Namespaces) HelmString() string {
 	var sb strings.Builder
 	sb.WriteByte('{')
-	sb.WriteString(n.Namespace)
-	for _, m := range n.ManagedNamespaces {
-		if m != n.Namespace {
+	for i, m := range n.ManagedNamespaces {
+		if i > 0 {
 			sb.WriteByte(',')
-			sb.WriteString(m)
 		}
+		sb.WriteString(m)
 	}
 	sb.WriteByte('}')
 	return sb.String()
-}
-
-func (n *Namespaces) UniqueList() []string {
-	ul := make([]string, 0, len(n.ManagedNamespaces)+1)
-	ul = append(ul, n.Namespace)
-	for _, m := range n.ManagedNamespaces {
-		if m != n.Namespace {
-			ul = append(ul, m)
-		}
-	}
-	return ul
 }
 
 type namespacesContextKey struct{}

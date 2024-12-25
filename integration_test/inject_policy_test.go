@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 )
@@ -150,18 +151,21 @@ func (is *installSuite) Test_MultiOnDemandInjectOnInstall() {
 
 	// Then install the traffic-manager
 	is.TelepresenceHelmInstallOK(ctx, false)
+	defer func() {
+		// Uninstall the traffic-manager and check that all pods traffic-agent is removed
+		is.UninstallTrafficManager(ctx, is.ManagerNamespace())
+		is.Eventually(func() bool {
+			ras := itest.RunningPodsWithAgents(ctx, "quote-", is.AppNamespace())
+			dlog.Infof(ctx, "pod with agent count %d, expected 0", len(ras))
+			return len(ras) == 0
+		}, 120*time.Second, 5*time.Second)
+	}()
 
 	// And check that all pods receive a traffic-agent
 	is.Eventually(func() bool {
 		ras := itest.RunningPodsWithAgents(ctx, "quote-", is.AppNamespace())
+		dlog.Infof(ctx, "pod with agent count %d, expected %d", len(ras), svcCount)
 		return len(ras) == svcCount
-	}, 120*time.Second, 5*time.Second)
-
-	// Uninstall the traffic-manager and check that all pods traffic-agent is removed
-	is.UninstallTrafficManager(ctx, is.ManagerNamespace())
-	is.Eventually(func() bool {
-		ras := itest.RunningPodsWithAgents(ctx, "quote-", is.AppNamespace())
-		return len(ras) == 0
 	}, 120*time.Second, 5*time.Second)
 }
 
@@ -176,7 +180,14 @@ func (is *installSuite) Test_MultiOnDemandInjectOnApply() {
 
 	// First install the traffic-manager
 	is.TelepresenceHelmInstallOK(ctx, false)
-	defer is.UninstallTrafficManager(ctx, is.ManagerNamespace())
+	defer func() {
+		is.UninstallTrafficManager(ctx, is.ManagerNamespace())
+		is.Eventually(func() bool {
+			ras := itest.RunningPodsWithAgents(ctx, "quote-", is.AppNamespace())
+			dlog.Infof(ctx, "pod with agent count %d, expected 0", len(ras))
+			return len(ras) == 0
+		}, 120*time.Second, 5*time.Second)
+	}()
 
 	// Then create the pods with inject annotation
 	is.applyMultipleServices(svcCount)
@@ -185,6 +196,7 @@ func (is *installSuite) Test_MultiOnDemandInjectOnApply() {
 	// And check that all pods receive a traffic-agent
 	is.Require().Eventually(func() bool {
 		ras := itest.RunningPodsWithAgents(ctx, "quote-", is.AppNamespace())
+		dlog.Infof(ctx, "pod with agent count %d, expected %d", len(ras), svcCount)
 		return len(ras) == svcCount
 	}, 60*time.Second, 5*time.Second)
 }

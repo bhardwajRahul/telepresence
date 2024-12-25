@@ -147,7 +147,7 @@ func (s *session) watchInterceptsLoop(ctx context.Context) error {
 		if err != nil {
 			// Handle as if we had an empty snapshot. This will ensure that port forwards and volume mounts are cancelled correctly.
 			s.handleInterceptSnapshot(ctx, pat, nil)
-			if ctx.Err() != nil || errors.Is(err, io.EOF) {
+			if ctx.Err() != nil || errors.Is(err, io.EOF) || grpcStatus.Code(err) == grpcCodes.NotFound {
 				// Normal termination
 				return nil
 			}
