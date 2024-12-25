@@ -57,8 +57,12 @@ The Helm chart supports being installed into any namespace, not necessarily `amb
 telepresence helm install traffic-manager --namespace staging datawire/telepresence
 ```
 
-Note that users of Telepresence will need to configure their kubeconfig to find this installation of the Traffic Manager:
+> [!NOTE]
+> If you have several traffic-managers installed, or if users don't have permissions to list
+> namespaces, they will need to either use a `--manager-namespace <namespace>` flag when connecting or
+> configure their config.yml or kubeconfig to find the desired installation of the Traffic Manager
 
+As kubeconfig extension:
 ```yaml
 apiVersion: v1
 clusters:
@@ -72,7 +76,7 @@ clusters:
   name: example-cluster
 ```
 
-or add the config the `config.yml`:
+or in the `config.yml`:
 
 ```yaml
 cluster:
@@ -102,10 +106,7 @@ The telepresence cli can uninstall the traffic manager for you using the `telepr
    ```shell
    telepresence helm uninstall
    ```
-
-## RBAC
-
-### Installing a namespace-scoped traffic manager
+## Limiting the Namespace Scope
 
 You might not want the Traffic Manager to have permissions across the entire kubernetes cluster, or you might want to be able to install multiple traffic managers per cluster (for example, to separate them by environment).
 In these cases, the traffic manager supports being installed with a namespace scope, allowing cluster administrators to limit the reach of a traffic manager's permissions.
@@ -114,10 +115,7 @@ For example, suppose you want a Traffic Manager that only works on namespaces `d
 To do this, create a `values.yaml` like the following:
 
 ```yaml
-managerRbac:
-  create: true
-  namespaced: true
-  namespaces:
+namespaces:
   - dev
   - staging
 ```
@@ -128,39 +126,56 @@ This can then be installed via:
 telepresence helm install --namespace staging -f ./values.yaml
 ```
 
-**NOTE** Do not install namespace-scoped Traffic Managers and a global Traffic Manager in the same cluster, as it could have unexpected effects.
+### Namespace collision detection
 
-#### Namespace collision detection
-
-The Telepresence Helm chart will try to prevent namespace-scoped Traffic Managers from managing the same namespaces.
-It will do this by creating a ConfigMap, called `traffic-manager-claim`, in each namespace that a given install manages.
+The Telepresence Helm chart incorporates a mechanism to prevent conflicts between Traffic Managers operating within
+different namespaces. This is achieved by:
+1. Determining the Traffic Manager's set of namespaces by applying its namespace selector to all of the cluster's namespaces.
+2. Verifying that there is no overlap between the sets of namespaces for any pair of Traffic Managers.
 
 So, for example, suppose you install one Traffic Manager to manage namespaces `dev` and `staging`, as:
 
 ```bash
-telepresence helm install --namespace dev --set 'managerRbac.namespaced=true' --set 'managerRbac.namespaces={dev,staging}'
+telepresence helm install --namespace dev --set 'namespaces={dev,staging}'
 ```
 
 You might then attempt to install another Traffic Manager to manage namespaces `staging` and `prod`:
 
 ```bash
-telepresence helm install --namespace prod --set 'managerRbac.namespaced=true' --set 'managerRbac.namespaces={staging,prod}'
+telepresence helm install --namespace prod --set 'namespaces={staging,prod}'
 ```
 
 This would fail with an error:
 
 ```
-Error: rendered manifests contain a resource that already exists. Unable to continue with install: ConfigMap "traffic-manager-claim" in namespace "staging" exists and cannot be imported into the current release: invalid ownership metadata; annotation validation error: key "meta.helm.sh/release-namespace" must equal "prod": current value is "dev"
+telepresence helm install: error: execution error at (telepresence-oss/templates/agentInjectorWebhook.yaml:61:14): traffic-manager in namespace dev already manages namespace staging
 ```
 
 To fix this error, fix the overlap either by removing `staging` from the first install, or from the second.
 
-#### Namespace scoped user permissions
+### Static versus Dynamic Namespace Selection
+
+A namespace selector can be dynamic or static. This in turn controls if telepresence needs "cluster-wide" or
+"namespaced" role/rolebinding pairs. A Traffic Manager configured with a dynamic selector requires cluster-wide
+namespace access and `ClusterRole`/`ClusterRoleBinding` pairs. A Traffic Manager configured with a static selector needs
+a `Role`/`RoleBinding` pair in each of the selected namespaces.
+
+A selector is considered _static_ if it meets the following conditions:
+- The selector must have exactly one element in either the `matchLabels` or the `matchExpression` list (a `key=value`
+  element in the `matchLabels` list, it is normalized into a `key in [value]` expression element).
+- The element must meet the following criteria:
+  The `key` of the match expression must be "kubernetes.io/metadata.name".
+  The `operator` of the match expression must be "In" (case sensitive).
+  The `values` list of the match expression must contain at least one value.
+
+## Static Namespace Selection RBAC
 
 Optionally, you can also configure user rbac to be scoped to the same namespaces as the manager itself.
-You might want to do this if you don't give your users permissions throughout the cluster, and want to make sure they only have the minimum set required to perform telepresence commands on certain namespaces.
+You might want to do this if you don't give your users permissions throughout the cluster, and want to make sure they
+only have the minimum set required to perform telepresence commands on certain namespaces.
 
-Continuing with the `dev` and `staging` example from the previous section, simply add the following to `values.yaml` (make sure you set the `subjects`!):
+Continuing with the `dev` and `staging` example from the previous section, simply add the following to `values.yaml`
+(make sure you set the `subjects`!):
 
 ```yaml
 clientRbac:
@@ -173,8 +188,8 @@ clientRbac:
   #   name: jane
   #   apiGroup: rbac.authorization.k8s.io
 
-  namespaced: true
-
+  # The namespaces can be explicitly specified here, but can be omitted unless the
+  # Traffic Manager's namespaceSelector is dynamic.
   namespaces:
   - dev
   - staging

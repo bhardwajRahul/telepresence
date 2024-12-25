@@ -49,11 +49,14 @@ Telepresence administration requires permissions for creating the `traffic-manag
 done by a full cluster administrator.
 
 Once installed, the Telepresence Traffic Manager will run using the `traffic-manager` ServiceAccount. This account is
-set up differently depending on if the manager is installed cluster-wide or namespaced.
+set up differently depending on if the manager is installed using a dynamic or a static namespace selector.
 
-### Cluster Wide Installation
+### Installation without, or with dynamic, namespace selection
 
-This is the permissions required by the `traffic-manager` account in a cluster-wide configuration:
+The Traffic Manager will require cluster wide access to several resources when it lacks a namespace selector, or when it
+is configured with a dynamic namespace selector.
+
+These are the permissions required by the `traffic-manager` account in such a configuration:
 
 ```yaml
 ---
@@ -125,11 +128,12 @@ roleRef:
   kind: ClusterRole
 ```
 
-### Namespaced Installation
 
-The permissions required by the `traffic-manager` account in a namespaced configuration is very similar to the ones
-used in a cluster-wide installation, but a `Role`/`RoleBinding` will be installed in each managed namespace instead of
-the `ClusterRole`/`ClusterRoleBinding` pair.
+### Installation with static namespace selection
+
+The permissions required by the `traffic-manager` account in a statically namespaced configuration is very similar to
+the ones used in a dynamic configuration, but a `Role`/`RoleBinding` will be installed in each managed namespace instead
+of the `ClusterRole`/`ClusterRoleBinding` pair.
 
 ## Telepresence Client Access
 
@@ -180,7 +184,7 @@ Once connected, it is desirable, but not necessary that the client can create po
 in the namespace that it is connected to. The lack of this permission will cause all traffic to be routed via the
 Traffic Manager, which will have a slightly negative impact on throughput.
 
-It's recommended that the client also has the following permissions in a cluster-wide installation:
+It's recommended that the client also has the following permissions in a dynamic namespaces installation:
 
 ```yaml
 kind: ClusterRole
@@ -224,8 +228,8 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 ```
 
-The corresponding configuration for a namespaced installation, for each namespaece that the client should be able to
-access:
+The corresponding configuration for a static namespace installation, for each namespaece that the client should be able
+to access:
 
 
 ```yaml
