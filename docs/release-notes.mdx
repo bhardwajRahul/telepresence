@@ -9,8 +9,28 @@ import { Note, Title, Body } from '@site/src/components/ReleaseNotes'
 # Telepresence Release Notes
 ## Version 2.22.0
 <Note>
+	<Title type="feature" docs="install/manager#static-versus-dynamic-namespace-selection">Unify how Traffic Manager selects namespaces</Title>
+	<Body>The definition of what namespaces that a Traffic Manager would manage use was scattered into several Helm
+chart values, such as `manager.Rbac.namespaces`, `client.Rbac.namespaces`, and
+`agentInjector.webhook.namespaceSelector`. The definition is now unified to the mutual exclusive top-level
+Helm chart values `namespaces` and `namespaceSelector`.
+
+The `namespaces` value is just for convenience and a short form of expressing:
+```yaml
+namespaceSelector:
+  matchExpressions:
+   - key: kubernetes.io/metadata.name
+     operator: in
+     values: <namespaces>`.
+```</Body>
+</Note>
+<Note>
 	<Title type="change">Drop deprecated current-cluster-id command.</Title>
 	<Body>The clusterID was deprecated some time ago, and replaced by the ID of the namespace where the traffic-manager is installed.</Body>
+</Note>
+<Note>
+	<Title type="bugfix" docs="install/manager#namespace-collision-detection">Conflict detection between namespaced and cluster-wide install.</Title>
+	<Body>The namespace conflict detection mechanism would only discover conflicts between two _namespaced_ Traffic Managers trying to manage the same namespace. This is now fixed so that all types conflicts are discovered.</Body>
 </Note>
 <Note>
 	<Title type="bugfix">Don't dispatch DNS discovery queries to the cluster.</Title>
@@ -36,8 +56,16 @@ import { Note, Title, Body } from '@site/src/components/ReleaseNotes'
 </Note>
 <Note>
 	<Title type="feature" docs="reference/intercepts/container">Intercepts targeting a specific container</Title>
-	<Body>In certain scenarios, the container owning the intercepted port differs from the container the intercept targets. This port owner's sole purpose is to route traffic from the service to the intended container, often using a direct localhost connection.
-This update introduces a `--container <name>` option to the intercept command. While this option doesn't influence the port selection, it guarantees that the environment variables and mounts propagated to the client originate from the specified container. Additionally, if the `--replace` option is used, it ensures that this container is replaced.</Body>
+	<Body>In certain scenarios, the container owning the intercepted port differs
+from the container the intercept targets. This port owner's sole purpose
+is to route traffic from the service to the intended container, often
+using a direct localhost connection.
+
+This update introduces a `--container <name>` option to the intercept
+command. While this option doesn't influence the port selection, it
+guarantees that the environment variables and mounts propagated to the
+client originate from the specified container. Additionally, if the
+`--replace` option is used, it ensures that this container is replaced.</Body>
 </Note>
 <Note>
 	<Title type="feature" docs="howtos/intercepts#ingest-your-service">New telepresence ingest command</Title>
@@ -72,7 +100,7 @@ See [Streaming Transitions from SPDY to WebSockets](https://kubernetes.io/blog/2
 	<Body>The OSS code-base will no longer report usage data to the proprietary collector at Ambassador Labs. The actual calls to the collector remain, but will be no-ops unless a proper collector client is installed using an extension point.</Body>
 </Note>
 <Note>
-	<Title type="feature" docs="reference/intecepts/sidecar#disable-workloads">Add deployments, statefulSets, replicaSets to workloads Helm chart value</Title>
+	<Title type="feature" docs="reference/intercepts/sidecar#disable-workloads">Add deployments, statefulSets, replicaSets to workloads Helm chart value</Title>
 	<Body>The Helm chart value `workloads` now supports the kinds `deployments.enabled`, `statefulSets.enabled`, `replicaSets.enabled`. and `rollouts.enabled`. All except `rollouts` are enabled by default. The traffic-manager will ignore workloads, and Telepresence will not be able to intercept them, if the `enabled` of the corresponding kind is set to `false`.</Body>
 </Note>
 <Note>

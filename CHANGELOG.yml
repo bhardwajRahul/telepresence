@@ -1,6 +1,5 @@
 # The YAML in this file should contain:
 #
-# changelog: An (optional) URL to the CHANGELOG for the product.
 # items: An array of releases with the following attributes:
 #     - version: The (optional) version number of the release, if applicable.
 #     - date: >-
@@ -22,25 +21,40 @@
 #             `FOO/releaseNotes.yml`, then the image paths are
 #             relative to `FOO/release-notes/`.
 #         - docs: The path to the documentation page where additional information can be found.
-#         - href: A path from the root to a resource on the getambassador website, takes precedence over a docs link.
 #
 # For older changes, see CHANGELOG.OLD.md
-docTitle: Telepresence Release Notes
-docDescription: >-
-  Release notes for Telepresence by Ambassador Labs, a CNCF project
-  that enables developers to iterate rapidly on Kubernetes
-  microservices by arming them with infinite-scale development
-  environments, access to instantaneous feedback loops, and highly
-  customizable development environments.
 items:
   - version: 2.22.0
     date: (TBD)
     notes:
+      - type: feature
+        title: Unify how Traffic Manager selects namespaces
+        body: |-
+          The definition of what namespaces that a Traffic Manager would manage use was scattered into several Helm
+          chart values, such as `manager.Rbac.namespaces`, `client.Rbac.namespaces`, and
+          `agentInjector.webhook.namespaceSelector`. The definition is now unified to the mutual exclusive top-level
+          Helm chart values `namespaces` and `namespaceSelector`.
+          
+          The `namespaces` value is just for convenience and a short form of expressing:
+          ```yaml
+          namespaceSelector:
+            matchExpressions:
+             - key: kubernetes.io/metadata.name
+               operator: in
+               values: <namespaces>`.
+          ```
+        docs: install/manager#static-versus-dynamic-namespace-selection
       - type: change
         title: Drop deprecated current-cluster-id command.
         body: >-
           The clusterID was deprecated some time ago, and replaced by the ID of the namespace where the traffic-manager
           is installed.
+      - type: bugfix
+        title: Conflict detection between namespaced and cluster-wide install.
+        body: >-
+          The namespace conflict detection mechanism would only discover conflicts between two _namespaced_ Traffic
+          Managers trying to manage the same namespace. This is now fixed so that all types conflicts are discovered.
+        docs: install/manager#namespace-collision-detection
       - type: bugfix
         title: Don't dispatch DNS discovery queries to the cluster.
         body: >-
@@ -80,7 +94,7 @@ items:
         docs: reference/vpn
       - type: feature
         title: Intercepts targeting a specific container
-        body: >-
+        body: |-
           In certain scenarios, the container owning the intercepted port differs
           from the container the intercept targets. This port owner's sole purpose
           is to route traffic from the service to the intended container, often
@@ -156,7 +170,7 @@ items:
           The Helm chart value `workloads` now supports the kinds `deployments.enabled`, `statefulSets.enabled`, `replicaSets.enabled`.
           and `rollouts.enabled`. All except `rollouts` are enabled by default. The traffic-manager will ignore workloads, and
           Telepresence will not be able to intercept them, if the `enabled` of the corresponding kind is set to `false`.
-        docs: reference/intecepts/sidecar#disable-workloads
+        docs: reference/intercepts/sidecar#disable-workloads
       - type: feature
         title: Improved command auto-completion
         body: >-
