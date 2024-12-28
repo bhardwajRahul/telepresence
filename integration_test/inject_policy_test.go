@@ -12,6 +12,7 @@ import (
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
+	"github.com/telepresenceio/telepresence/v2/pkg/labels"
 )
 
 func (is *installSuite) applyPolicyApp(ctx context.Context, name, namespace string, wg *sync.WaitGroup) {
@@ -45,8 +46,8 @@ func (is *installSuite) injectPolicyTest(ctx context.Context, policy agentconfig
 	defer itest.DeleteNamespaces(ctx, namespace)
 
 	ctx = itest.WithNamespaces(ctx, &itest.Namespaces{
-		Namespace:         namespace,
-		ManagedNamespaces: []string{namespace},
+		Namespace: namespace,
+		Selector:  labels.SelectorFromNames(namespace),
 	})
 	is.TelepresenceHelmInstallOK(ctx, false, "--set", "agentInjector.injectPolicy="+policy.String())
 	defer is.UninstallTrafficManager(ctx, namespace)

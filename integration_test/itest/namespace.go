@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/pkg/dos"
+	"github.com/telepresenceio/telepresence/v2/pkg/labels"
 )
 
 type NamespacePair interface {
@@ -36,21 +36,8 @@ type NamespacePair interface {
 }
 
 type Namespaces struct {
-	Namespace         string   `json:"namespace,omitempty"`
-	ManagedNamespaces []string `json:"managedNamespaces,omitempty"`
-}
-
-func (n *Namespaces) HelmString() string {
-	var sb strings.Builder
-	sb.WriteByte('{')
-	for i, m := range n.ManagedNamespaces {
-		if i > 0 {
-			sb.WriteByte(',')
-		}
-		sb.WriteString(m)
-	}
-	sb.WriteByte('}')
-	return sb.String()
+	Namespace string           `json:"namespace,omitempty"`
+	Selector  *labels.Selector `json:"managedNamespaces,omitempty"`
 }
 
 type namespacesContextKey struct{}
@@ -95,7 +82,7 @@ func WithNamespacePair(ctx context.Context, suffix string, f func(NamespacePair)
 	s := &nsPair{}
 	var namespace string
 	namespace, s.Namespace = AppAndMgrNSName(suffix)
-	s.ManagedNamespaces = []string{namespace}
+	s.Selector = labels.SelectorFromNames(namespace)
 	getT(ctx).Run(fmt.Sprintf("Test_Namespaces_%s", suffix), func(t *testing.T) {
 		ctx = WithT(ctx, t)
 		ctx = WithUser(ctx, s.Namespace+":"+TestUser)
@@ -152,7 +139,13 @@ func (s *nsPair) RollbackTM(ctx context.Context) {
 }
 
 func (s *nsPair) AppNamespace() string {
-	return s.ManagedNamespaces[0]
+	if len(s.Selector.MatchExpressions) == 1 {
+		m := s.Selector.MatchExpressions[0]
+		if m.Key == labels.NameLabelKey && m.Operator == labels.OperatorIn {
+			return m.Values[0]
+		}
+	}
+	return ""
 }
 
 func (s *nsPair) ManagerNamespace() string {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
+	"github.com/telepresenceio/telepresence/v2/pkg/labels"
 )
 
 func (s *multipleInterceptsSuite) TestGatherLogs_AllLogs() {
@@ -114,8 +115,8 @@ func (s *connectedSuite) TestGatherLogs_OnlyMappedLogs() {
 	defer itest.DeleteNamespaces(ctx, otherTwo)
 
 	s.TelepresenceHelmInstallOK(itest.WithNamespaces(ctx, &itest.Namespaces{
-		Namespace:         s.ManagerNamespace(),
-		ManagedNamespaces: []string{otherOne, otherTwo},
+		Namespace: s.ManagerNamespace(),
+		Selector:  labels.SelectorFromNames(otherOne, otherTwo),
 	}), true)
 	defer s.RollbackTM(ctx)
 

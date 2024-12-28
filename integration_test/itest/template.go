@@ -46,6 +46,20 @@ func ReadTemplate(ctx context.Context, name string, data any) ([]byte, error) {
 	return wr.Bytes(), nil
 }
 
+func EvalTemplate(content string, data any) ([]byte, error) {
+	fnMap := sprig.FuncMap()
+	fnMap["toYaml"] = toYAML
+	tpl, err := template.New("embedded").Funcs(fnMap).Parse(content)
+	if err != nil {
+		return nil, err
+	}
+	wr := bytes.Buffer{}
+	if err = tpl.ExecuteTemplate(&wr, "embedded", data); err != nil {
+		return nil, err
+	}
+	return wr.Bytes(), nil
+}
+
 // toYAML is direct copy of toYaml in the helm.sh/helm/v3/pkg/engine package.
 func toYAML(v interface{}) string {
 	data, err := yaml.Marshal(v)

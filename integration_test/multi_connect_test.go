@@ -18,6 +18,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/daemon"
 	"github.com/telepresenceio/telepresence/v2/pkg/filelocation"
 	"github.com/telepresenceio/telepresence/v2/pkg/ioutil"
+	"github.com/telepresenceio/telepresence/v2/pkg/labels"
 )
 
 type multiConnectSuite struct {
@@ -75,7 +76,7 @@ func (s *multiConnectSuite) SetupSuite() {
 		itest.ApplyAppTemplate(ctx, s.appSpace2, &appData)
 	}()
 
-	ctx2 := itest.WithNamespaces(ctx, &itest.Namespaces{Namespace: s.mgrSpace2, ManagedNamespaces: []string{s.appSpace2}})
+	ctx2 := itest.WithNamespaces(ctx, &itest.Namespaces{Namespace: s.mgrSpace2, Selector: labels.SelectorFromNames(s.appSpace2)})
 	err := itest.Kubectl(ctx2, s.mgrSpace2, "apply", "-f", filepath.Join(itest.GetOSSRoot(ctx2), "testdata", "k8s", "client_sa.yaml"))
 	require.NoError(err, "failed to create connect ServiceAccount")
 
@@ -94,7 +95,7 @@ func (s *multiConnectSuite) SetupSuite() {
 }
 
 func (s *multiConnectSuite) TearDownSuite() {
-	ctx2 := itest.WithNamespaces(s.Context(), &itest.Namespaces{Namespace: s.mgrSpace2, ManagedNamespaces: []string{s.appSpace2}})
+	ctx2 := itest.WithNamespaces(s.Context(), &itest.Namespaces{Namespace: s.mgrSpace2, Selector: labels.SelectorFromNames(s.appSpace2)})
 	s.UninstallTrafficManager(ctx2, s.mgrSpace2)
 	itest.DeleteNamespaces(ctx2, s.appSpace2, s.mgrSpace2)
 }

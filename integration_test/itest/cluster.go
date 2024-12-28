@@ -45,6 +45,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/filelocation"
 	"github.com/telepresenceio/telepresence/v2/pkg/ioutil"
 	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
+	"github.com/telepresenceio/telepresence/v2/pkg/labels"
 	"github.com/telepresenceio/telepresence/v2/pkg/log"
 	"github.com/telepresenceio/telepresence/v2/pkg/maps"
 	"github.com/telepresenceio/telepresence/v2/pkg/proc"
@@ -594,7 +595,7 @@ func (s *cluster) GetSetArgsForHelm(ctx context.Context, values map[string]strin
 	args := make([]string, len(settings)*2)
 	n := 0
 	for _, s := range settings {
-		args[n] = "--set"
+		args[n] = "--set-json"
 		n++
 		args[n] = s
 		n++
@@ -605,35 +606,45 @@ func (s *cluster) GetSetArgsForHelm(ctx context.Context, values map[string]strin
 func (s *cluster) GetValuesForHelm(ctx context.Context, values map[string]string, release bool) []string {
 	nss := GetNamespaces(ctx)
 	settings := []string{
-		"logLevel=debug",
+		`logLevel="debug"`,
 	}
 	reg := s.self.Registry()
 	if reg == "local" {
-		settings = append(settings, "image.pullPolicy=Never")
+		settings = append(settings, `image.pullPolicy="Never"`)
 	} else if !s.isCI {
-		settings = append(settings, "image.pullPolicy=Always")
+		settings = append(settings, `image.pullPolicy="Always"`)
 	}
-	if len(nss.ManagedNamespaces) > 0 {
-		settings = append(settings, fmt.Sprintf("namespaces=%s", nss.HelmString()))
+	if nss != nil && nss.Selector != nil {
+		j, err := json.Marshal(nss.Selector)
+		if err != nil {
+			dlog.Errorf(ctx, "unable to marshal selector '%v': %v", nss.Selector, err)
+		} else {
+			settings = append(settings, `namespaceSelector.matchExpressions=`+string(j))
+		}
 	}
 	agentImage := GetAgentImage(ctx)
 	if agentImage != nil {
 		settings = append(settings,
-			fmt.Sprintf("agent.image.name=%s", agentImage.Name), // Prevent attempts to retrieve image from SystemA
-			fmt.Sprintf("agent.image.tag=%s", agentImage.Tag),
-			fmt.Sprintf("agent.image.registry=%s", agentImage.Registry))
+			fmt.Sprintf(`agent.image.name=%q`, agentImage.Name), // Prevent attempts to retrieve image from SystemA
+			fmt.Sprintf(`agent.image.tag=%q`, agentImage.Tag),
+			fmt.Sprintf(`agent.image.registry=%q`, agentImage.Registry))
 	}
 	if !release {
-		settings = append(settings, fmt.Sprintf("image.registry=%s", s.self.Registry()))
+		settings = append(settings, fmt.Sprintf(`image.registry=%q`, s.self.Registry()))
 	}
 	if reg == "local" {
-		settings = append(settings, "agent.image.pullPolicy=Never")
+		settings = append(settings, `agent.image.pullPolicy="Never"`)
 	} else if !s.isCI {
-		settings = append(settings, "agent.image.pullPolicy=Always")
+		settings = append(settings, `agent.image.pullPolicy="Always"`)
 	}
 
 	for k, v := range values {
-		settings = append(settings, k+"="+v)
+		j, err := json.Marshal(v)
+		if err != nil {
+			dlog.Errorf(ctx, "unable to marshal value '%s': %v", v, err)
+		} else {
+			settings = append(settings, k+"="+string(j))
+		}
 	}
 	return settings
 }
@@ -717,22 +728,21 @@ func (s *cluster) TelepresenceHelmInstall(ctx context.Context, upgrade bool, set
 		AgentArrival string `json:"agentArrival,omitempty"`
 	}
 	vx := struct {
-		LogLevel    string    `json:"logLevel"`
-		Image       Image     `json:"image,omitempty"`
-		Agent       *xAgent   `json:"agent,omitempty"`
-		ClientRbac  xRbac     `json:"clientRbac"`
-		ManagerRbac xRbac     `json:"managerRbac"`
-		Client      xClient   `json:"client"`
-		Timeouts    xTimeouts `json:"timeouts,omitempty"`
-		Namespaces  []string  `json:"namespaces,omitempty"`
+		LogLevel          string           `json:"logLevel"`
+		Image             Image            `json:"image,omitempty"`
+		Agent             *xAgent          `json:"agent,omitempty"`
+		ClientRbac        xRbac            `json:"clientRbac"`
+		ManagerRbac       xRbac            `json:"managerRbac"`
+		Client            xClient          `json:"client"`
+		Timeouts          xTimeouts        `json:"timeouts,omitempty"`
+		Namespaces        []string         `json:"namespaces,omitempty"`
+		NamespaceSelector *labels.Selector `json:"namespaceSelector,omitempty"`
 	}{
 		LogLevel: "debug",
 		Agent:    agent,
 		ClientRbac: xRbac{
-			Create:     true,
-			Namespaced: len(nss.ManagedNamespaces) > 0,
-			Subjects:   subjects,
-			Namespaces: nss.ManagedNamespaces,
+			Create:   true,
+			Subjects: subjects,
 		},
 		ManagerRbac: xRbac{
 			Create: true,
@@ -740,9 +750,14 @@ func (s *cluster) TelepresenceHelmInstall(ctx context.Context, upgrade bool, set
 		Client: xClient{
 			Routing: map[string][]string{},
 		},
-		Timeouts:   xTimeouts{AgentArrival: "60s"},
-		Namespaces: nss.ManagedNamespaces,
+		Timeouts: xTimeouts{AgentArrival: "60s"},
 	}
+	if managedNamespaces := nss.Selector.StaticNames(); len(managedNamespaces) > 0 {
+		vx.Namespaces = managedNamespaces
+	} else {
+		vx.NamespaceSelector = nss.Selector
+	}
+
 	image := GetImage(ctx)
 	if image != nil {
 		vx.Image = *image
@@ -1232,14 +1247,14 @@ func WithKubeConfigExtension(ctx context.Context, extProducer func(*api.Cluster)
 	em["telepresence.io"] = &k8sruntime.Unknown{Raw: raw}
 	cluster.Extensions = em
 
-	context := *cc
-	context.Cluster = "extra"
+	kctx := *cc
+	kctx.Cluster = "extra"
 	cfg = &api.Config{
 		Kind:           "Config",
 		APIVersion:     "v1",
 		Preferences:    api.Preferences{},
 		Clusters:       map[string]*api.Cluster{"extra": cluster},
-		Contexts:       map[string]*api.Context{"extra": &context},
+		Contexts:       map[string]*api.Context{"extra": &kctx},
 		CurrentContext: "extra",
 	}
 	kubeconfigFileName := filepath.Join(t.TempDir(), "kubeconfig")

@@ -9,6 +9,7 @@ import (
 
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
+	"github.com/telepresenceio/telepresence/v2/pkg/labels"
 )
 
 type notConnectedSuite struct {
@@ -67,8 +68,8 @@ func (s *notConnectedSuite) Test_ConnectingToOtherNamespace() {
 
 	s.Run("Installs Successfully", func() {
 		ctx := itest.WithNamespaces(s.Context(), &itest.Namespaces{
-			Namespace:         mgrSpace2,
-			ManagedNamespaces: []string{appSpace2},
+			Namespace: mgrSpace2,
+			Selector:  labels.SelectorFromNames(appSpace2),
 		})
 		s.TelepresenceHelmInstallOK(ctx, false)
 	})
