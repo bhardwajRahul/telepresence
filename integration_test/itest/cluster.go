@@ -66,8 +66,8 @@ type Cluster interface {
 	GlobalEnv(context.Context) dos.MapEnv
 	AgentVersion(context.Context) string
 	Initialize(context.Context) context.Context
-	InstallTrafficManager(ctx context.Context, values map[string]string) error
-	InstallTrafficManagerVersion(ctx context.Context, version string, values map[string]string) error
+	InstallTrafficManager(ctx context.Context, values map[string]any) error
+	InstallTrafficManagerVersion(ctx context.Context, version string, values map[string]any) error
 	IsCI() bool
 	IsIPv6() bool
 	LargeFileTestDisabled() bool
@@ -77,8 +77,8 @@ type Cluster interface {
 	TelepresenceVersion() string
 	UninstallTrafficManager(ctx context.Context, managerNamespace string, args ...string)
 	PackageHelmChart(ctx context.Context) (string, error)
-	GetValuesForHelm(ctx context.Context, values map[string]string, release bool) []string
-	GetSetArgsForHelm(ctx context.Context, values map[string]string, release bool) []string
+	GetValuesForHelm(ctx context.Context, values map[string]any, release bool) []string
+	GetSetArgsForHelm(ctx context.Context, values map[string]any, release bool) []string
 	GetK8SCluster(ctx context.Context, context, managerNamespace string) (context.Context, *k8s.Cluster, error)
 	TelepresenceHelmInstallOK(ctx context.Context, upgrade bool, args ...string) string
 	TelepresenceHelmInstall(ctx context.Context, upgrade bool, args ...string) (string, error)
@@ -590,7 +590,7 @@ func (s *cluster) PackageHelmChart(ctx context.Context) (string, error) {
 	return filename, nil
 }
 
-func (s *cluster) GetSetArgsForHelm(ctx context.Context, values map[string]string, release bool) []string {
+func (s *cluster) GetSetArgsForHelm(ctx context.Context, values map[string]any, release bool) []string {
 	settings := s.GetValuesForHelm(ctx, values, release)
 	args := make([]string, len(settings)*2)
 	n := 0
@@ -603,7 +603,7 @@ func (s *cluster) GetSetArgsForHelm(ctx context.Context, values map[string]strin
 	return args
 }
 
-func (s *cluster) GetValuesForHelm(ctx context.Context, values map[string]string, release bool) []string {
+func (s *cluster) GetValuesForHelm(ctx context.Context, values map[string]any, release bool) []string {
 	nss := GetNamespaces(ctx)
 	settings := []string{
 		`logLevel="debug"`,
@@ -619,7 +619,7 @@ func (s *cluster) GetValuesForHelm(ctx context.Context, values map[string]string
 		if err != nil {
 			dlog.Errorf(ctx, "unable to marshal selector '%v': %v", nss.Selector, err)
 		} else {
-			settings = append(settings, `namespaceSelector.matchExpressions=`+string(j))
+			settings = append(settings, `namespaceSelector=`+string(j))
 		}
 	}
 	agentImage := GetAgentImage(ctx)
@@ -641,7 +641,7 @@ func (s *cluster) GetValuesForHelm(ctx context.Context, values map[string]string
 	for k, v := range values {
 		j, err := json.Marshal(v)
 		if err != nil {
-			dlog.Errorf(ctx, "unable to marshal value '%s': %v", v, err)
+			dlog.Errorf(ctx, "unable to marshal value %v: %v", v, err)
 		} else {
 			settings = append(settings, k+"="+string(j))
 		}
@@ -649,7 +649,7 @@ func (s *cluster) GetValuesForHelm(ctx context.Context, values map[string]string
 	return settings
 }
 
-func (s *cluster) InstallTrafficManager(ctx context.Context, values map[string]string) error {
+func (s *cluster) InstallTrafficManager(ctx context.Context, values map[string]any) error {
 	chartFilename, err := s.self.PackageHelmChart(ctx)
 	if err != nil {
 		return err
@@ -663,7 +663,7 @@ func (s *cluster) InstallTrafficManager(ctx context.Context, values map[string]s
 // configured using DEV_AGENT_IMAGE.
 //
 // The intent is to simulate connection to an older cluster from the current client.
-func (s *cluster) InstallTrafficManagerVersion(ctx context.Context, version string, values map[string]string) error {
+func (s *cluster) InstallTrafficManagerVersion(ctx context.Context, version string, values map[string]any) error {
 	chartFilename, err := s.pullHelmChart(ctx, version)
 	if err != nil {
 		return err
@@ -671,7 +671,7 @@ func (s *cluster) InstallTrafficManagerVersion(ctx context.Context, version stri
 	return s.installChart(ctx, true, chartFilename, values)
 }
 
-func (s *cluster) installChart(ctx context.Context, release bool, chartFilename string, values map[string]string) error {
+func (s *cluster) installChart(ctx context.Context, release bool, chartFilename string, values map[string]any) error {
 	settings := s.self.GetSetArgsForHelm(ctx, values, release)
 
 	ctx = WithWorkingDir(ctx, GetOSSRoot(ctx))

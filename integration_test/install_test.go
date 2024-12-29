@@ -121,17 +121,16 @@ func (is *installSuite) Test_HelmTemplateInstall() {
 
 	chart, err := is.PackageHelmChart(ctx)
 	require.NoError(err)
-	values := is.GetSetArgsForHelm(ctx, map[string]string{
-		"clientRbac.create":  "true",
-		"managerRbac.create": "true",
+	values := is.GetSetArgsForHelm(ctx, map[string]any{
+		"clientRbac.create": true,
+		"clientRbac.subjects": []rbac.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      itest.TestUser,
+			Namespace: is.ManagerNamespace(),
+		}},
+		"managerRbac.create": true,
 	}, false)
-	svcAccountJson, err := json.Marshal([]rbac.Subject{{
-		Kind:      "ServiceAccount",
-		Name:      itest.TestUser,
-		Namespace: is.ManagerNamespace(),
-	}})
 	require.NoError(err)
-	values = append(values, "--set-json", "clientRbac.subjects="+string(svcAccountJson))
 	values = append([]string{"template", "traffic-manager", chart, "-n", is.ManagerNamespace()}, values...)
 	manifest, err := itest.Output(ctx, "helm", values...)
 	require.NoError(err)
