@@ -82,6 +82,11 @@ func (f *udp) forward(ctx context.Context, conn *net.UDPConn, intercept *manager
 		f.interceptConn(ctx, conn, intercept)
 		return nil
 	}
+
+	if f.targetPort == 0 {
+		dlog.Debug(ctx, "Forwarding to /dev/null")
+		return nil
+	}
 	return f.forwardConn(ctx, conn)
 }
 

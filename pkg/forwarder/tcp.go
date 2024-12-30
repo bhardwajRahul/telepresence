@@ -97,6 +97,15 @@ func (f *tcp) forwardConn(clientConn *net.TCPConn) error {
 		return f.interceptConn(ctx, clientConn, intercept)
 	}
 
+	defer dlog.Debug(ctx, "Done forwarding")
+	defer clientConn.Close()
+
+	if targetPort == 0 {
+		dlog.Debug(ctx, "Forwarding to /dev/null")
+		_, _ = io.Copy(io.Discard, clientConn)
+		return nil
+	}
+
 	targetAddr, err := net.ResolveTCPAddr("tcp", iputil.JoinHostPort(targetHost, targetPort))
 	if err != nil {
 		return fmt.Errorf("error on resolve(%s): %w", iputil.JoinHostPort(targetHost, targetPort), err)
@@ -105,9 +114,6 @@ func (f *tcp) forwardConn(clientConn *net.TCPConn) error {
 	ctx = dlog.WithField(ctx, "target", targetAddr.String())
 
 	dlog.Debug(ctx, "Forwarding...")
-	defer dlog.Debug(ctx, "Done forwarding")
-
-	defer clientConn.Close()
 
 	targetConn, err := net.DialTCP("tcp", nil, targetAddr)
 	if err != nil {

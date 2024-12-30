@@ -59,10 +59,10 @@ func (s *interceptFlagSuite) TearDownSuite() {
 // Test_ContainerReplace tests that:
 //
 //   - Two containers in a pod can be intercepted in sequence. One with replace, and one without.
-//   - Containers can be intercepted  interchangeably with or without --replace
+//   - Containers can be intercepted interchangeably with or without --replace
 //   - Volumes are mounted
 //   - Intercept responses are produced from the intercept handlers
-//   - Responses after the intercepts end are from the cluster
+//   - Responses after the intercept ends are from the cluster
 func (s *interceptFlagSuite) Test_ContainerReplace() {
 	ctx := s.Context()
 

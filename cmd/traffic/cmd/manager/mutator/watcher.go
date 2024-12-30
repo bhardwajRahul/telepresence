@@ -30,6 +30,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/informer"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
+	"github.com/telepresenceio/telepresence/v2/pkg/maps"
 	"github.com/telepresenceio/telepresence/v2/pkg/workload"
 )
 
@@ -198,8 +199,8 @@ func isRolloutNeededForPod(ctx context.Context, ac *agentconfig.Sidecar, name, n
 		return fmt.Sprintf("Rollout of %s.%s is necessary. An agent is desired but the pod %s doesn't have one",
 			name, namespace, pod.GetName())
 	}
-	desiredAc := agentconfig.AgentContainer(ctx, pod, ac)
-	if !containerEqual(podAc, desiredAc) {
+	desiredAc, anns := agentconfig.AgentContainer(ctx, pod, ac)
+	if !(containerEqual(ctx, podAc, desiredAc) && maps.Equal(anns, pod.ObjectMeta.Annotations)) {
 		return fmt.Sprintf("Rollout of %s.%s is necessary. The desired agent is not equal to the existing agent in pod %s",
 			name, namespace, pod.GetName())
 	}
@@ -224,22 +225,14 @@ func isRolloutNeededForPod(ctx context.Context, ac *agentconfig.Sidecar, name, n
 				break
 			}
 		}
-		if found == nil {
-			return fmt.Sprintf("Rollout of %s.%s is necessary. The desired pod should contain container %s",
-				name, namespace, cn.Name)
-		}
 		if cn.Replace {
-			// Ensure that the replaced container is disabled
-			if !(found.Image == sleeperImage && slices.Equal(found.Args, sleeperArgs)) {
-				return fmt.Sprintf("Rollout of %s.%s is necessary. The desired pod's container %s should be disabled",
+			if found != nil {
+				return fmt.Sprintf("Rollout of %s.%s is necessary. The %s container must be replaced",
 					name, namespace, cn.Name)
 			}
-		} else {
-			// Ensure that the replaced container is not disabled
-			if found.Image == sleeperImage && slices.Equal(found.Args, sleeperArgs) {
-				return fmt.Sprintf("Rollout of %s.%s is necessary. The desired pod's container %s should not be disabled",
-					name, namespace, cn.Name)
-			}
+		} else if found == nil {
+			return fmt.Sprintf("Rollout of %s.%s is necessary. The %s container should not be replaced",
+				name, namespace, cn.Name)
 		}
 	}
 	return ""

@@ -19,21 +19,28 @@ func AgentContainer(
 	ctx context.Context,
 	pod *core.Pod,
 	config *Sidecar,
-) *core.Container {
+) (*core.Container, map[string]string) {
 	ports := make([]core.ContainerPort, 0, 5)
-	for _, cc := range config.Containers {
-		for _, ic := range PortUniqueIntercepts(cc) {
-			ports = append(ports, core.ContainerPort{
-				Name:          ic.ContainerPortName,
-				ContainerPort: int32(ic.AgentPort),
-				Protocol:      ic.Protocol,
-			})
+	confCns := ConfiguredContainers(ctx, pod, config)
+
+	eachConfiguredContainer(confCns, config, func(app *core.Container, cc *Container) {
+		if cc.Replace {
+			// Simply inherit the ports of the replaced container
+			ports = append(ports, app.Ports...)
+		} else {
+			for _, ic := range PortUniqueIntercepts(cc) {
+				ports = append(ports, core.ContainerPort{
+					Name:          ic.ContainerPortName,
+					ContainerPort: int32(ic.AgentPort),
+					Protocol:      ic.Protocol,
+				})
+			}
 		}
-	}
+	})
 
 	evs := make([]core.EnvVar, 0, len(config.Containers)*5)
 	efs := make([]core.EnvFromSource, 0, len(config.Containers)*3)
-	EachContainer(pod, config, func(app *core.Container, cc *Container) {
+	eachConfiguredContainer(confCns, config, func(app *core.Container, cc *Container) {
 		evs = appendAppContainerEnv(app, cc, evs)
 		efs = appendAppContainerEnvFrom(app, cc, efs)
 	})
@@ -71,7 +78,7 @@ func AgentContainer(
 			dlog.Errorf(ctx, "unable to parse agent version from image name %s", config.AgentImage)
 		}
 	}
-	EachContainer(pod, config, func(app *core.Container, cc *Container) {
+	eachConfiguredContainer(confCns, config, func(app *core.Container, cc *Container) {
 		var volPaths []string
 		volPaths, mounts = appendAppContainerVolumeMounts(app, cc, mounts, pod.ObjectMeta.Annotations, agentVersion)
 		if len(volPaths) > 0 {
@@ -130,6 +137,18 @@ func AgentContainer(
 		efs = nil
 	}
 
+	replaceAnnotations := make(map[string]string)
+	eachConfiguredContainer(confCns, config, func(app *core.Container, cc *Container) {
+		if cc.Replace {
+			cnJson, err := json.Marshal(app)
+			if err != nil {
+				dlog.Errorf(ctx, "unable to marshal container %s.%s/%s to json: %v", config.WorkloadName, config.Namespace, app.Name, err)
+			} else {
+				replaceAnnotations[ReplacedContainerAnnotationPrefix+cc.Name] = string(cnJson)
+			}
+		}
+	})
+
 	ac := &core.Container{
 		Name:         ContainerName,
 		Image:        config.AgentImage,
@@ -158,15 +177,15 @@ func AgentContainer(
 		appSc, err = firstAppSecurityContext(pod, config)
 		if err != nil {
 			dlog.Error(ctx, err)
-			return nil
+			return nil, nil
 		}
 	}
 	ac.SecurityContext = appSc
 
-	return ac
+	return ac, replaceAnnotations
 }
 
-// Find security context of the first container (with both intercepts and a set security context) and ensure
+// Find the security context of the first container (with both intercepts and a set security context) and ensure
 // that any env interpolations in it are prefixed with the env-prefix of the corresponding config container.
 func firstAppSecurityContext(pod *core.Pod, config *Sidecar) (*core.SecurityContext, error) {
 	cns := pod.Spec.Containers
@@ -311,6 +330,41 @@ func appendSecretVolume(env dos.Env, annotation, volumeName string, pod *core.Po
 		})
 	}
 	return volumes
+}
+
+// ConfiguredContainers will find each container in the given config and match it against a container
+// in the pod using its name. The returned slice is guaranteed to use the same index as the Sidecar.Containers slice.
+func ConfiguredContainers(ctx context.Context, pod *core.Pod, config *Sidecar) []*core.Container {
+	cns := pod.Spec.Containers
+	result := make([]*core.Container, len(config.Containers))
+	for ci, cc := range config.Containers {
+		for i := range cns {
+			app := &cns[i]
+			if app.Name == ContainerName {
+				// The pod might hold JSON of replaced containers from an earlier patch
+				annName := ReplacedContainerAnnotationPrefix + cc.Name
+				if appJson, ok := pod.ObjectMeta.Annotations[annName]; ok {
+					var cn core.Container
+					err := json.Unmarshal([]byte(appJson), &cn)
+					if err != nil {
+						dlog.Errorf(ctx, "failed to unmarshal container annotation %s: %v", annName, err)
+					}
+					result[ci] = &cn
+					break
+				}
+			} else if app.Name == cc.Name {
+				result[ci] = app
+				break
+			}
+		}
+	}
+	return result
+}
+
+func eachConfiguredContainer(configureContainers []*core.Container, config *Sidecar, f func(*core.Container, *Container)) {
+	for i, cn := range configureContainers {
+		f(cn, config.Containers[i])
+	}
 }
 
 // EachContainer will find each container in the given config and match it against a container
