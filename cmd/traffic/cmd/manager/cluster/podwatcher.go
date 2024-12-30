@@ -35,12 +35,13 @@ type podWatcher struct {
 	lock      sync.Mutex // Protects all access to ipsMap
 }
 
-func newPodWatcher(ctx context.Context) *podWatcher {
+func newPodWatcher(ctx context.Context, managerIP netip.Addr) *podWatcher {
 	w := &podWatcher{
 		ipsMap:    make(map[netip.Addr]struct{}),
 		notifyCh:  make(chan subnet.Set),
 		informers: xsync.NewMapOf[string, cache.ResourceEventHandlerRegistration](),
 	}
+	w.ipsMap[managerIP] = struct{}{}
 
 	var oldSubnets subnet.Set
 	sendIfChanged := func() {
@@ -94,7 +95,10 @@ func (w *podWatcher) refreshWatchers(ctx context.Context) {
 
 	// Register event handlers for namespaces that are no longer managed
 	for _, ns := range nss {
-		w.informers.LoadOrCompute(ns, func() cache.ResourceEventHandlerRegistration {
+		w.informers.Compute(ns, func(reg cache.ResourceEventHandlerRegistration, loaded bool) (cache.ResourceEventHandlerRegistration, bool) {
+			if loaded {
+				return reg, false
+			}
 			inf := informer.GetK8sFactory(ctx, ns).Core().V1().Pods().Informer()
 			reg, err := inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
 				AddFunc: func(obj any) {
@@ -120,9 +124,11 @@ func (w *podWatcher) refreshWatchers(ctx context.Context) {
 				},
 			})
 			if err != nil {
-				dlog.Errorf(ctx, "failed to add pod watcher event handler : %v", err)
+				dlog.Errorf(ctx, "failed to add pod watcher %q : %v", ns, err)
+				return nil, true
 			}
-			return reg
+			dlog.Debugf(ctx, "add pod watcher %q", ns)
+			return reg, false
 		})
 	}
 
@@ -131,7 +137,9 @@ func (w *podWatcher) refreshWatchers(ctx context.Context) {
 		if !slices.Contains(nss, ns) {
 			err := informer.GetK8sFactory(ctx, ns).Core().V1().Pods().Informer().RemoveEventHandler(reg)
 			if err != nil {
-				dlog.Errorf(ctx, "failed to remove pod watcher event handler : %v", err)
+				dlog.Errorf(ctx, "failed to remove pod watcher %q : %v", ns, err)
+			} else {
+				dlog.Debugf(ctx, "removed pod watcher %q", ns)
 			}
 		}
 		return true

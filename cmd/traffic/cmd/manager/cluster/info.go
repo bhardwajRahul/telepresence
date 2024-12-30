@@ -355,7 +355,8 @@ func getInjectorSvcIP(ctx context.Context, env *managerutil.Env, client v1.CoreV
 }
 
 func (oi *info) watchPodSubnets(ctx context.Context) {
-	retriever := newPodWatcher(ctx)
+	podIP, _ := netip.AddrFromSlice(oi.ManagerPodIp)
+	retriever := newPodWatcher(ctx, podIP)
 	if !retriever.viable(ctx) {
 		dlog.Errorf(ctx, "Unable to derive subnets from IPs of pods")
 		return
