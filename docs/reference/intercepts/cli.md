@@ -359,15 +359,12 @@ Using Deployment echo-easy
 
 ## Replacing a running workload
 
-By default, your application keeps running as Telepresence intercepts it, even if it doesn't receive
-any traffic (or receives only a subset, as with personal intercepts). This can pose a problem for applications that are active
-even when they're not receiving requests. For instance, if your application consumes from a message queue as soon as it
-starts up, intercepting it won't stop the pod from consuming from the queue.
+By default, your application container continues to run while Telepresence intercepts its traffic. This can cause issues
+for applications with ongoing background activities, such as consuming from a message queue.
 
-To work around this issue, `telepresence intercept` allows you to pass in a `--replace` flag that will stop every
-application container from running on your pod. When you pass in `--replace`, Telepresence will restart your application
-with a dummy application container that sleeps infinitely, and instead just place a traffic agent to redirect traffic to
-your local machine. The application container will be restored as soon as you leave the intercept.
+To address this, the `telepresence intercept` command provides the `--replace` flag. When used, the Traffic Agent
+replaces the application container within the pod. This ensures that the application itself is not running and avoids
+unintended side effects. The original application container is automatically restored once the intercept session ends.
 
 ```console
 $ telepresence intercept my-service --port 8080 --replace
@@ -381,4 +378,4 @@ $ telepresence intercept my-service --port 8080 --replace
 ```
 
 > [!NOTE]
-> Sidecars will not be stopped. Only the container serving the intercepted port will be removed from the pod.
+> Sidecars will not be stopped. Only the targeted container will be removed from the pod.
