@@ -81,7 +81,5 @@ func (s *agentInjectorDisabledSuite) Test_VersionWithAgentInjectorDisabled() {
 }
 
 func (s *agentInjectorDisabledSuite) Test_ManualAgent() {
-	s.TelepresenceConnect(s.Context())
-	defer itest.TelepresenceQuitOk(s.Context())
 	testManualAgent(&s.Suite, s.NamespacePair)
 }
