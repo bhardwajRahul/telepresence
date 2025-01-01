@@ -108,8 +108,12 @@ func (pa *podAccess) ensureAccess(ctx context.Context, rd daemon.DaemonClient) e
 		// An agent port-forward to the pod with a designated to the podIP is necessary to
 		// mount or port-forward to localhost.
 		dlog.Debugf(ctx, "Waiting for root-daemon to receive agent IP %s", pa.podIP)
+		ip, err := netip.ParseAddr(pa.podIP)
+		if err != nil {
+			return err
+		}
 		rsp, err := rd.WaitForAgentIP(ctx, &daemon.WaitForAgentIPRequest{
-			Ip:      iputil.Parse(pa.podIP),
+			Ip:      ip.AsSlice(),
 			Timeout: durationpb.New(10 * time.Second),
 		})
 		switch status.Code(err) {
@@ -134,12 +138,7 @@ func (pa *podAccess) workerPortForward(ctx context.Context, port string, wg *syn
 		dlog.Errorf(ctx, "malformed extra port %q: %v", port, err)
 		return
 	}
-	addr, err := pp.Addr()
-	if err != nil {
-		dlog.Errorf(ctx, "unable to resolve extra port %q: %v", port, err)
-		return
-	}
-	f := forwarder.NewInterceptor(addr, pa.podIP, pp.Port)
+	f := forwarder.NewInterceptor(pp, pa.podIP, pp.Port)
 	err = f.Serve(ctx, nil)
 	if err != nil && ctx.Err() == nil {
 		dlog.Errorf(ctx, "port-forwarder failed with %v", err)

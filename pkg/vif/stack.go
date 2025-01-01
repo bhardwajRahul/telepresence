@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"time"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -215,8 +216,15 @@ func setUDPHandler(ctx context.Context, s *stack.Stack, streamCreator tunnel.Str
 	s.SetTransportProtocolHandler(udp.ProtocolNumber, f.HandlePacket)
 }
 
+func tcpAddrToAddr(addr tcpip.Address) netip.Addr {
+	if addr.BitLen() == 32 {
+		return netip.AddrFrom4(addr.As4())
+	}
+	return netip.AddrFrom16(addr.As16())
+}
+
 func newConnID(proto tcpip.TransportProtocolNumber, id stack.TransportEndpointID) tunnel.ConnID {
-	return tunnel.NewConnID(int(proto), id.RemoteAddress.AsSlice(), id.LocalAddress.AsSlice(), id.RemotePort, id.LocalPort)
+	return tunnel.NewConnID(int(proto), netip.AddrPortFrom(tcpAddrToAddr(id.RemoteAddress), id.RemotePort), netip.AddrPortFrom(tcpAddrToAddr(id.LocalAddress), id.LocalPort))
 }
 
 func dispatchToStream(ctx context.Context, id tunnel.ConnID, conn net.Conn, streamCreator tunnel.StreamCreator) {

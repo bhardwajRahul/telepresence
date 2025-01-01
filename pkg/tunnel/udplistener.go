@@ -107,7 +107,7 @@ func (p *udpStream) getStream() Stream {
 }
 
 func (p *udpStream) reply(data []byte) (int, error) {
-	return p.conn.WriteTo(data, p.ID.SourceAddr())
+	return p.conn.WriteTo(data, net.UDPAddrFromAddrPort(p.ID.Source()))
 }
 
 func (p *udpStream) startDisconnect(ctx context.Context, s string) {

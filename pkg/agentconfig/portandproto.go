@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"net"
 	"strconv"
 	"strings"
 
@@ -59,17 +58,7 @@ func NewPortAndProto(s string) (PortAndProto, error) {
 	return pp, err
 }
 
-func (pp *PortAndProto) Addr() (addr net.Addr, err error) {
-	as := fmt.Sprintf(":%d", pp.Port)
-	if pp.Proto == core.ProtocolTCP {
-		addr, err = net.ResolveTCPAddr("tcp", as)
-	} else {
-		addr, err = net.ResolveUDPAddr("udp", as)
-	}
-	return
-}
-
-func (pp *PortAndProto) String() string {
+func (pp PortAndProto) String() string {
 	if pp.Proto == core.ProtocolTCP {
 		return strconv.Itoa(int(pp.Port))
 	}

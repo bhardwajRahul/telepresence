@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -211,8 +212,9 @@ func (s *cluster) Initialize(ctx context.Context) context.Context {
 	} else {
 		output, err := Output(ctx, "kubectl", "--namespace", "kube-system", "get", "svc", "kube-dns", "-o", "jsonpath={.spec.clusterIP}")
 		if err == nil {
-			ip := iputil.Parse(strings.TrimSpace(output))
-			if len(ip) == 16 {
+			ip, err := netip.ParseAddr(strings.TrimSpace(output))
+			assert.NoError(t, err)
+			if ip.Is6() {
 				dlog.Info(ctx, "Using IPv6 because the kube-dns.kube-system has an IPv6 IP")
 				s.ipv6 = true
 			}

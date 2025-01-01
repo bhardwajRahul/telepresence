@@ -3,7 +3,6 @@ package rootd
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/netip"
 	"time"
 
@@ -24,9 +23,8 @@ func (s *Session) isForDNS(ip netip.Addr, port uint16) bool {
 // checkRecursion checks that the given IP is not contained in any of the subnets
 // that the VIF is configured with. When that's the case, the VIF is somehow receiving
 // requests that originate from the cluster and dispatching it leads to infinite recursion.
-func checkRecursion(p int, ip net.IP, sn netip.Prefix) (err error) {
-	a, _ := netip.AddrFromSlice(ip)
-	if sn.Contains(a) && a != sn.Masked().Addr() {
+func checkRecursion(p int, ip netip.Addr, sn netip.Prefix) (err error) {
+	if sn.Contains(ip) && ip != sn.Masked().Addr() {
 		err = fmt.Errorf("refusing recursive %s %s dispatch from pod subnet %s", ipproto.String(p), ip, sn)
 	}
 	return err
@@ -49,18 +47,18 @@ func (s *Session) streamCreator(ctx context.Context) tunnel.StreamCreator {
 
 	return func(c context.Context, id tunnel.ConnID) (tunnel.Stream, error) {
 		p := id.Protocol()
-		srcIp := id.Source()
+		srcIp := id.SourceAddr()
 		for _, podSn := range s.podSubnets {
 			if err := checkRecursion(p, srcIp, podSn); err != nil {
 				return nil, err
 			}
 		}
 
-		destAddr, _ := netip.AddrFromSlice(id.Destination())
+		destAddr := id.DestinationAddr()
 		if p == ipproto.UDP {
 			if s.isForDNS(destAddr, id.DestinationPort()) {
-				pipeId := tunnel.NewConnID(p, id.Source(), s.dnsLocalAddr.IP, id.SourcePort(), uint16(s.dnsLocalAddr.Port))
-				dlog.Tracef(c, "Intercept DNS %s to %s", id, pipeId.DestinationAddr())
+				pipeId := tunnel.NewConnID(p, id.Source(), s.dnsLocalAddr.AddrPort())
+				dlog.Tracef(c, "Intercept DNS %s to %s", id, pipeId.Destination())
 				from, to := tunnel.NewPipe(pipeId, s.session.SessionId)
 				tunnel.NewDialerTTL(to, func() {}, dnsConnTTL, nil, nil).Start(c)
 				return from, nil
@@ -106,12 +104,12 @@ func (s *Session) streamCreator(ctx context.Context) tunnel.StreamCreator {
 				}
 				// Replace the virtual IP with the original destination IP. This will ensure that the agent
 				// dials the original destination when the tunnel is established.
-				id = tunnel.NewConnID(id.Protocol(), id.Source(), a.destinationIP.AsSlice(), id.SourcePort(), id.DestinationPort())
+				id = tunnel.NewConnID(id.Protocol(), id.Source(), netip.AddrPortFrom(a.destinationIP, id.DestinationPort()))
 				dlog.Debugf(c, "Opening proxy-via %s tunnel for id %s", a.workload, id)
 			} else {
 				dlog.Debugf(c, "Translating proxy-via %s to %s", destAddr, a.destinationIP)
 				destAddr = a.destinationIP
-				id = tunnel.NewConnID(id.Protocol(), id.Source(), destAddr.AsSlice(), id.SourcePort(), id.DestinationPort())
+				id = tunnel.NewConnID(id.Protocol(), id.Source(), netip.AddrPortFrom(destAddr, id.DestinationPort()))
 			}
 		}
 

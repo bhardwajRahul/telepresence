@@ -95,11 +95,11 @@ func sftpServer(ctx context.Context, sftpPortCh chan<- uint16) error {
 		_ = l.Close()
 	}()
 
-	_, sftpPort, err := iputil.SplitToIPPort(l.Addr())
+	ap, err := iputil.SplitToIPPort(l.Addr())
 	if err != nil {
 		return err
 	}
-	sftpPortCh <- sftpPort
+	sftpPortCh <- ap.Port()
 
 	dlog.Infof(ctx, "Listening at: %s", l.Addr())
 	for {
@@ -174,11 +174,6 @@ func sidecar(ctx context.Context, s State, info *rpc.AgentInfo) error {
 
 		for pp, ics := range icStates {
 			ic := ics[0] // They all have the same protocol container port, so the first one will do.
-			lisAddr, err := pp.Addr()
-			if err != nil {
-				return err
-			}
-
 			var fwd forwarder.Interceptor
 			var cp uint16
 			if !cn.Replace {
@@ -194,9 +189,9 @@ func sidecar(ctx context.Context, s State, info *rpc.AgentInfo) error {
 				// Redirect non-intercepted traffic to the pod, so that injected sidecars that hijack the ports for
 				// incoming connections will continue to work.
 				targetHost := s.PodIP()
-				fwd = forwarder.NewInterceptor(lisAddr, targetHost, cp)
+				fwd = forwarder.NewInterceptor(pp, targetHost, cp)
 			} else {
-				fwd = forwarder.NewInterceptor(lisAddr, "", 0)
+				fwd = forwarder.NewInterceptor(pp, "", 0)
 				cp = ic.ContainerPort
 			}
 

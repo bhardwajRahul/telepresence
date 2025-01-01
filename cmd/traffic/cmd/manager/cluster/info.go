@@ -348,7 +348,11 @@ func getInjectorSvcIP(ctx context.Context, env *managerutil.Env, client v1.CoreV
 			break
 		}
 	}
-	return iputil.Parse(sc.Spec.ClusterIP), p, nil
+	ip, err := netip.ParseAddr(sc.Spec.ClusterIP)
+	if err != nil {
+		return nil, 0, err
+	}
+	return ip.AsSlice(), p, nil
 }
 
 func (oi *info) watchPodSubnets(ctx context.Context) {

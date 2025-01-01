@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,7 +20,6 @@ import (
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/dos"
-	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 	"github.com/telepresenceio/telepresence/v2/pkg/version"
 )
 
@@ -45,7 +45,7 @@ func loadConfig(ctx context.Context) (*config, error) {
 	return &c, nil
 }
 
-func (c *config) configureIptables(ctx context.Context, iptables *iptables.IPTables, loopback, localHostCIDR, podIP string) error {
+func (c *config) configureIptables(ctx context.Context, iptables *iptables.IPTables, loopback string, localHostCIDR netip.Prefix, podIP netip.Addr) error {
 	// These iptables rules implement routing such that a packet directed to the appPort will hit the agentPort instead.
 	// If there's no mesh this is simply request -> agent -> app (or intercept)
 	// However, if there's a service mesh we want to make sure we don't bypass the mesh, so the traffic
@@ -114,8 +114,8 @@ func (c *config) configureIptables(ctx context.Context, iptables *iptables.IPTab
 						// loop it back into the agent.
 						dlog.Debugf(ctx, "output DNAT %s:%d -> %s:%d", podIP, ac.ProxyPort(ic), podIP, ic.ContainerPort)
 						err = iptables.AppendUnique(nat, outputChain,
-							"-p", lcProto, "-d", podIP, "--dport", strconv.Itoa(int(ac.ProxyPort(ic))),
-							"-j", "DNAT", "--to-destination", net.JoinHostPort(podIP, strconv.Itoa(int(ic.ContainerPort))))
+							"-p", lcProto, "-d", podIP.String(), "--dport", strconv.Itoa(int(ac.ProxyPort(ic))),
+							"-j", "DNAT", "--to-destination", netip.AddrPortFrom(podIP, ic.ContainerPort).String())
 						if err != nil {
 							return fmt.Errorf("failed to append rule to %s: %w", outputChain, err)
 						}
@@ -155,7 +155,7 @@ func (c *config) configureIptables(ctx context.Context, iptables *iptables.IPTab
 		err = iptables.Insert(nat, "OUTPUT", 1,
 			"-o", loopback,
 			"-p", lcProto,
-			"!", "-d", localHostCIDR,
+			"!", "-d", localHostCIDR.String(),
 			"-m", "owner", "--uid-owner", agentUID,
 			"-j", outputChain)
 		if err != nil {
@@ -213,11 +213,15 @@ func Main(ctx context.Context, args ...string) error {
 		return err
 	}
 	proto := iptables.ProtocolIPv4
-	localhostCIDR := "127.0.0.1/32"
-	podIP := os.Getenv("POD_IP")
-	if len(iputil.Parse(podIP)) == 16 {
+	localhostCIDR := netip.PrefixFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), 32)
+	podIP, err := netip.ParseAddr(os.Getenv("POD_IP"))
+	if err != nil {
+		dlog.Error(ctx, err)
+		return err
+	}
+	if podIP.Is6() {
 		proto = iptables.ProtocolIPv6
-		localhostCIDR = "::1/128"
+		localhostCIDR = netip.PrefixFrom(netip.IPv6Loopback(), 128)
 	}
 	it, err := iptables.NewWithProtocol(proto)
 	if err != nil {

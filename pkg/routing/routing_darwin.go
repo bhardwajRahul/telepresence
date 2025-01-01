@@ -14,7 +14,6 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/datawire/dlib/dexec"
-	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 )
 
 const (
@@ -157,9 +156,11 @@ func getOsRoute(ctx context.Context, routedNet netip.Prefix) (*Route, error) {
 	}
 	ones := routedNet.Bits()
 	if match := maskRe.FindStringSubmatch(string(out)); match != nil {
-		ip := iputil.Parse(match[1])
-		mask := net.IPv4Mask(ip[0], ip[1], ip[2], ip[3])
-		ones, _ = mask.Size()
+		if addr, err := netip.ParseAddr(match[1]); err == nil {
+			ip := addr.As4()
+			mask := net.IPv4Mask(ip[0], ip[1], ip[2], ip[3])
+			ones, _ = mask.Size()
+		}
 	}
 	routed := netip.PrefixFrom(ip, ones)
 	isDefault := false

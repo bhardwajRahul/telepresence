@@ -2,13 +2,13 @@ package agent_test
 
 import (
 	"context"
-	"net"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	core "k8s.io/api/core/v1"
 
 	"github.com/datawire/dlib/dlog"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/manager"
@@ -23,10 +23,7 @@ const (
 )
 
 func makeFS(t *testing.T, ctx context.Context) (forwarder.Interceptor, agent.State) {
-	lAddr, err := net.ResolveTCPAddr("tcp", ":1111")
-	assert.NoError(t, err)
-
-	f := forwarder.NewInterceptor(lAddr, appHost, appPort)
+	f := forwarder.NewInterceptor(agentconfig.PortAndProto{Proto: core.ProtocolTCP, Port: 1111}, appHost, appPort)
 	go func() {
 		if err := f.Serve(context.Background(), nil); err != nil {
 			dlog.Error(ctx, err)

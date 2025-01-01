@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 
 	"github.com/datawire/dlib/dgroup"
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/rpc/v2/manager"
 	client2 "github.com/telepresenceio/telepresence/v2/pkg/client"
 	"github.com/telepresenceio/telepresence/v2/pkg/ipproto"
-	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
 )
 
@@ -28,15 +28,15 @@ func NewBridgeMounter(sessionID string, managerClient manager.ManagerClient, loc
 	}
 }
 
-func (m *bridgeMounter) Start(ctx context.Context, _, _, _, _ string, podIP net.IP, port uint16, _ bool) error {
-	ctx = dgroup.WithGoroutineName(ctx, iputil.JoinIpPort(podIP, port))
+func (m *bridgeMounter) Start(ctx context.Context, _, _, _, _ string, podAddrPort netip.AddrPort, _ bool) error {
+	ctx = dgroup.WithGoroutineName(ctx, podAddrPort.String())
 	lc := &net.ListenConfig{}
 	la := fmt.Sprintf(":%d", m.localPort)
 	l, err := lc.Listen(ctx, "tcp", la)
 	if err != nil {
 		return err
 	}
-	dlog.Debugf(ctx, "Remote mount bridge listening at %s, will forward to %s", la, iputil.JoinIpPort(podIP, port))
+	dlog.Debugf(ctx, "Remote mount bridge listening at %s, will forward to %s", la, podAddrPort)
 	go func() {
 		for {
 			conn, err := l.Accept()
@@ -48,7 +48,7 @@ func (m *bridgeMounter) Start(ctx context.Context, _, _, _, _ string, podIP net.
 				return
 			}
 			go func() {
-				if err := m.dispatchToTunnel(ctx, conn, podIP, port); err != nil {
+				if err := m.dispatchToTunnel(ctx, conn, podAddrPort); err != nil {
 					dlog.Error(ctx, err)
 				}
 			}()
@@ -57,13 +57,13 @@ func (m *bridgeMounter) Start(ctx context.Context, _, _, _, _ string, podIP net.
 	return nil
 }
 
-func (m *bridgeMounter) dispatchToTunnel(ctx context.Context, conn net.Conn, podIP net.IP, port uint16) error {
+func (m *bridgeMounter) dispatchToTunnel(ctx context.Context, conn net.Conn, podAddrPort netip.AddrPort) error {
 	tcpAddr, ok := conn.LocalAddr().(*net.TCPAddr)
 	if !ok {
 		return fmt.Errorf("address %s is not a TCP address", conn.LocalAddr())
 	}
-	dlog.Debugf(ctx, "Opening bridge between %s and %s", tcpAddr, iputil.JoinIpPort(podIP, port))
-	id := tunnel.NewConnID(ipproto.TCP, tcpAddr.IP, podIP, uint16(tcpAddr.Port), port)
+	dlog.Debugf(ctx, "Opening bridge between %s and %s", tcpAddr, podAddrPort)
+	id := tunnel.NewConnID(ipproto.TCP, tcpAddr.AddrPort(), podAddrPort)
 	ms, err := m.managerClient.Tunnel(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to establish tunnel: %v", err)

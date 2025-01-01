@@ -3,6 +3,7 @@ package manager
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"slices"
 	"sort"
 	"time"
@@ -26,7 +27,6 @@ import (
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/mutator"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/state"
 	"github.com/telepresenceio/telepresence/v2/pkg/dnsproxy"
-	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
 	"github.com/telepresenceio/telepresence/v2/pkg/version"
 	"github.com/telepresenceio/telepresence/v2/pkg/workload"
@@ -314,11 +314,15 @@ func (s *service) WatchAgentPods(session *rpc.SessionInfo, stream rpc.Manager_Wa
 			agentNames = make([]string, len(agm))
 			i := 0
 			for _, a := range agm {
+				aip, err := netip.ParseAddr(a.PodIp)
+				if err != nil {
+					dlog.Errorf(ctx, "error parsing agent pod ip %q: %v", a.PodIp, err)
+				}
 				agents[i] = &rpc.AgentPodInfo{
 					WorkloadName: a.Name,
 					PodName:      a.PodName,
 					Namespace:    a.Namespace,
-					PodIp:        iputil.Parse(a.PodIp),
+					PodIp:        aip.AsSlice(),
 					ApiPort:      a.ApiPort,
 					Intercepted:  isIntercepted(a.Name, a.Namespace),
 				}
