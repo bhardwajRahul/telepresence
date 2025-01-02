@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"sort"
 	"sync"
 
 	core "k8s.io/api/core/v1"
@@ -164,9 +165,12 @@ func (c *config) refreshFile(ctx context.Context, mapData map[string]string) {
 		}
 		if err != nil {
 			dlog.Errorf(ctx, "failed to unmarshal YAML from %s: %v", agentEnvConfigFileName, err)
-		} else if !ae.Equal(c.agentEnv) {
-			c.agentEnv = ae
-			dlog.Debugf(ctx, "Refreshed agent-env:\n%s", yml)
+		} else {
+			sort.Strings(ae.Excluded)
+			if !ae.Equal(c.agentEnv) {
+				c.agentEnv = ae
+				dlog.Debugf(ctx, "Refreshed agent-env:\n%s", yml)
+			}
 		}
 	} else if !c.agentEnv.Equal(ae) {
 		c.agentEnv = ae

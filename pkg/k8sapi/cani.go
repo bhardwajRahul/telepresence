@@ -10,26 +10,29 @@ import (
 	"github.com/datawire/dlib/dlog"
 )
 
-func CanI(ctx context.Context, ra *auth.ResourceAttributes) (bool, error) {
+func CanI(ctx context.Context, ras ...*auth.ResourceAttributes) (bool, error) {
 	authHandler := GetK8sInterface(ctx).AuthorizationV1().SelfSubjectAccessReviews()
-	review := auth.SelfSubjectAccessReview{Spec: auth.SelfSubjectAccessReviewSpec{ResourceAttributes: ra}}
-	ar, err := authHandler.Create(ctx, &review, meta.CreateOptions{})
-	if err == nil && ar.Status.Allowed {
-		return true, nil
-	}
-	where := ""
-	if ra.Namespace != "" {
-		where = " in namespace " + ra.Namespace
-	}
-	if err != nil {
-		err = fmt.Errorf(`unable to do "can-i %s %s%s": %v`, ra.Verb, ra.Resource, where, err)
-		if ctx.Err() == nil {
-			dlog.Error(ctx, err)
+	for _, ra := range ras {
+		review := auth.SelfSubjectAccessReview{Spec: auth.SelfSubjectAccessReviewSpec{ResourceAttributes: ra}}
+		ar, err := authHandler.Create(ctx, &review, meta.CreateOptions{})
+		if err == nil && ar.Status.Allowed {
+			continue
 		}
-	} else {
-		dlog.Infof(ctx, `"can-i %s %s%s" is not allowed`, ra.Verb, ra.Resource, where)
+		where := ""
+		if ra.Namespace != "" {
+			where = " in namespace " + ra.Namespace
+		}
+		if err != nil {
+			err = fmt.Errorf(`unable to do "can-i %s %s%s": %v`, ra.Verb, ra.Resource, where, err)
+			if ctx.Err() == nil {
+				dlog.Error(ctx, err)
+			}
+		} else {
+			dlog.Infof(ctx, `"can-i %s %s%s" is not allowed`, ra.Verb, ra.Resource, where)
+		}
+		return false, err
 	}
-	return false, err
+	return true, nil
 }
 
 func CanWatch(ctx context.Context, group, resource, name, ns string) bool {

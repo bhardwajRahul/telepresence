@@ -296,17 +296,14 @@ func clusterDomainFromResolvConf(confFile, namespace string) (string, error) {
 }
 
 func (oi *info) watchNodeSubnets(ctx context.Context, mustSucceed bool) bool {
-	ok, err := k8sapi.CanI(ctx, &auth.ResourceAttributes{
-		Verb:     "list",
-		Resource: "nodes",
-	})
-	if err != nil || !ok {
-		return false
-	}
-	ok, err = k8sapi.CanI(ctx, &auth.ResourceAttributes{
-		Verb:     "watch",
-		Resource: "nodes",
-	})
+	ok, err := k8sapi.CanI(ctx,
+		&auth.ResourceAttributes{
+			Verb:     "list",
+			Resource: "nodes",
+		}, &auth.ResourceAttributes{
+			Verb:     "watch",
+			Resource: "nodes",
+		})
 	if err != nil || !ok {
 		return false
 	}
