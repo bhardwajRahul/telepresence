@@ -196,7 +196,7 @@ func (h *namesspacesHandle) computeNames(ctx context.Context) (bool, error) {
 			}
 			dlog.Error(ctx, staticErr)
 		}
-	  return false, fmt.Errorf("error listing namespaces: %v", err)
+		return false, fmt.Errorf("error listing namespaces: %v", err)
 	}
 
 	nis := nl.Items
