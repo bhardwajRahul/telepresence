@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
@@ -104,15 +105,17 @@ func (c *configWatcher) isRolloutNeeded(ctx context.Context, wl k8sapi.Workload,
 		// Annotation controls injection, so no explicit rollout is needed unless the deployment was added before the
 		// traffic-manager or the traffic-manager already received an injection event but failed due to the lack
 		// of an agent config.
-		if c.receivedPrematureInjectEvent(wl) {
-			dlog.Debugf(ctx, "Rollout of %s.%s is necessary. Pod template has inject annotation %s and a premature injection event was received",
-				wl.GetName(), wl.GetNamespace(), ia)
-			return true
-		}
-		if wl.GetCreationTimestamp().After(c.startedAt) {
-			dlog.Debugf(ctx, "Rollout of %s.%s is not necessary. Pod template has inject annotation %s",
-				wl.GetName(), wl.GetNamespace(), ia)
-			return false
+		if !c.terminating.Load() {
+			if c.receivedPrematureInjectEvent(wl) {
+				dlog.Debugf(ctx, "Rollout of %s.%s is necessary. Pod template has inject annotation %s and a premature injection event was received",
+					wl.GetName(), wl.GetNamespace(), ia)
+				return true
+			}
+			if wl.GetCreationTimestamp().After(c.startedAt) {
+				dlog.Debugf(ctx, "Rollout of %s.%s is not necessary. Pod template has inject annotation %s",
+					wl.GetName(), wl.GetNamespace(), ia)
+				return false
+			}
 		}
 	}
 	podLabels := podMeta.GetLabels()
@@ -457,6 +460,7 @@ type configWatcher struct {
 	informers                *xsync.MapOf[string, *informersWithCancel]
 	startedAt                time.Time
 	rolloutDisabled          bool
+	terminating              atomic.Bool
 
 	self Map // For extension
 }
@@ -630,7 +634,11 @@ func (c *configWatcher) startWatchers(ctx context.Context, iwc *informersWithCan
 
 func (c *configWatcher) StartWatchers(ctx context.Context) error {
 	c.startedAt = time.Now()
-	ctx, c.cancel = context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(ctx)
+	c.cancel = func() {
+		c.terminating.Store(true)
+		cancel()
+	}
 	var errs []error
 	c.informers.Range(func(ns string, iwc *informersWithCancel) bool {
 		if err := c.startWatchers(ctx, iwc); err != nil {
