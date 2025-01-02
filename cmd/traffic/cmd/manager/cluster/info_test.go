@@ -17,8 +17,7 @@ import (
 
 func TestNewInfo_GetInstallID(t *testing.T) {
 	env := managerutil.Env{
-		ManagedNamespaces: []string{"ambassador test"},
-		ManagerNamespace:  "test",
+		ManagerNamespace: "test",
 	}
 
 	testUID := "test-uid"

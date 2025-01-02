@@ -4,14 +4,17 @@ import (
 	"context"
 	"math"
 	"net/netip"
+	"slices"
 	"sync"
 	"time"
 
+	"github.com/puzpuzpuz/xsync/v3"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/tools/cache"
 
 	"github.com/datawire/dlib/dlog"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/namespaces"
 	"github.com/telepresenceio/telepresence/v2/pkg/informer"
 	"github.com/telepresenceio/telepresence/v2/pkg/subnet"
 )
@@ -25,23 +28,20 @@ type PodLister interface {
 }
 
 type podWatcher struct {
-	ipsMap     map[netip.Addr]struct{}
-	timer      *time.Timer
-	namespaces []string
-	notifyCh   chan subnet.Set
-	lock       sync.Mutex // Protects all access to ipsMap
+	ipsMap    map[netip.Addr]struct{}
+	timer     *time.Timer
+	notifyCh  chan subnet.Set
+	informers *xsync.MapOf[string, cache.ResourceEventHandlerRegistration]
+	lock      sync.Mutex // Protects all access to ipsMap
 }
 
-func newPodWatcher(ctx context.Context, nss []string) *podWatcher {
-	if len(nss) == 0 {
-		// Create one event handler for the global informer
-		nss = []string{""}
-	}
+func newPodWatcher(ctx context.Context, managerIP netip.Addr) *podWatcher {
 	w := &podWatcher{
-		ipsMap:     make(map[netip.Addr]struct{}),
-		notifyCh:   make(chan subnet.Set),
-		namespaces: nss,
+		ipsMap:    make(map[netip.Addr]struct{}),
+		notifyCh:  make(chan subnet.Set),
+		informers: xsync.NewMapOf[string, cache.ResourceEventHandlerRegistration](),
 	}
+	w.ipsMap[managerIP] = struct{}{}
 
 	var oldSubnets subnet.Set
 	sendIfChanged := func() {
@@ -67,36 +67,83 @@ func newPodWatcher(ctx context.Context, nss []string) *podWatcher {
 	}
 
 	w.timer = time.AfterFunc(time.Duration(math.MaxInt64), sendIfChanged)
-	for _, ns := range nss {
-		inf := informer.GetK8sFactory(ctx, ns).Core().V1().Pods().Informer()
-		_, err := inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
-			AddFunc: func(obj any) {
-				if pod, ok := obj.(*corev1.Pod); ok {
-					w.onPodAdded(ctx, pod)
+	go func() {
+		id, nsChanges := namespaces.Subscribe(ctx)
+		defer namespaces.Unsubscribe(ctx, id)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case _, ok := <-nsChanges:
+				if !ok {
+					return
 				}
-			},
-			DeleteFunc: func(obj any) {
-				if pod, ok := obj.(*corev1.Pod); ok {
-					w.onPodDeleted(ctx, pod)
-				} else if dfsu, ok := obj.(*cache.DeletedFinalStateUnknown); ok {
-					if pod, ok := dfsu.Obj.(*corev1.Pod); ok {
-						w.onPodDeleted(ctx, pod)
-					}
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					w.refreshWatchers(ctx)
 				}
-			},
-			UpdateFunc: func(oldObj, newObj any) {
-				if oldPod, ok := oldObj.(*corev1.Pod); ok {
-					if newPod, ok := newObj.(*corev1.Pod); ok {
-						w.onPodUpdated(ctx, oldPod, newPod)
-					}
-				}
-			},
-		})
-		if err != nil {
-			dlog.Errorf(ctx, "failed to create pod watcher : %v", err)
+			}
 		}
-	}
+	}()
 	return w
+}
+
+func (w *podWatcher) refreshWatchers(ctx context.Context) {
+	nss := namespaces.GetOrGlobal(ctx)
+
+	// Register event handlers for namespaces that are no longer managed
+	for _, ns := range nss {
+		w.informers.Compute(ns, func(reg cache.ResourceEventHandlerRegistration, loaded bool) (cache.ResourceEventHandlerRegistration, bool) {
+			if loaded {
+				return reg, false
+			}
+			inf := informer.GetK8sFactory(ctx, ns).Core().V1().Pods().Informer()
+			reg, err := inf.AddEventHandler(cache.ResourceEventHandlerFuncs{
+				AddFunc: func(obj any) {
+					if pod, ok := obj.(*corev1.Pod); ok {
+						w.onPodAdded(ctx, pod)
+					}
+				},
+				DeleteFunc: func(obj any) {
+					if pod, ok := obj.(*corev1.Pod); ok {
+						w.onPodDeleted(ctx, pod)
+					} else if dfsu, ok := obj.(*cache.DeletedFinalStateUnknown); ok {
+						if pod, ok := dfsu.Obj.(*corev1.Pod); ok {
+							w.onPodDeleted(ctx, pod)
+						}
+					}
+				},
+				UpdateFunc: func(oldObj, newObj any) {
+					if oldPod, ok := oldObj.(*corev1.Pod); ok {
+						if newPod, ok := newObj.(*corev1.Pod); ok {
+							w.onPodUpdated(ctx, oldPod, newPod)
+						}
+					}
+				},
+			})
+			if err != nil {
+				dlog.Errorf(ctx, "failed to add pod watcher %q : %v", ns, err)
+				return nil, true
+			}
+			dlog.Debugf(ctx, "add pod watcher %q", ns)
+			return reg, false
+		})
+	}
+
+	// Unregister event handlers for namespaces that are no longer managed
+	w.informers.Range(func(ns string, reg cache.ResourceEventHandlerRegistration) bool {
+		if !slices.Contains(nss, ns) {
+			err := informer.GetK8sFactory(ctx, ns).Core().V1().Pods().Informer().RemoveEventHandler(reg)
+			if err != nil {
+				dlog.Errorf(ctx, "failed to remove pod watcher %q : %v", ns, err)
+			} else {
+				dlog.Debugf(ctx, "removed pod watcher %q", ns)
+			}
+		}
+		return true
+	})
 }
 
 func (w *podWatcher) changeNotifier(ctx context.Context, updateSubnets func(set subnet.Set)) {
@@ -117,10 +164,12 @@ func (w *podWatcher) viable(ctx context.Context) bool {
 		return true
 	}
 
+	nss := namespaces.GetOrGlobal(ctx)
+
 	// Create the initial snapshot
 	var pods []*corev1.Pod
 	var err error
-	for _, ns := range w.namespaces {
+	for _, ns := range nss {
 		lister := informer.GetK8sFactory(ctx, ns).Core().V1().Pods().Lister()
 		if ns != "" {
 			pods, err = lister.Pods(ns).List(labels.Everything())

@@ -75,6 +75,7 @@ spec:
       targetPort: http
     - name: http2
       port: 81
+      appProtocol: http
       targetPort: http2
 ---
 apiVersion: apps/v1

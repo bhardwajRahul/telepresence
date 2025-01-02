@@ -5,16 +5,14 @@ This will likely expand over time as we move more things from the clients
 domain into the traffic-manager.  But the good news there is that it will
 require less permissions in clientRbac.yaml
 */}}
-{{- if .Values.managerRbac.namespaced }}
+{{- $managerNamespace := include "traffic-manager.namespace" $}}
+{{- $namespaces := fromJsonArray (include "traffic-manager.namespaces" $)}}
+{{- if $namespaces }}
+{{- $interceptEnabled := .Values.agentInjector.enabled}}
+{{- $argoRolloutsEnabled := .Values.workloads.argoRollouts.enabled}}
+{{- $allNamespaces := uniq (append $namespaces $managerNamespace)}}
 
-{{- if not (has (include "traffic-manager.namespace" .) .Values.managerRbac.namespaces) }}
-{{- fail (printf "Namespace %s must be included in managerRbac.namespaces (managerRbac.namespaces contains: %s)" (include "traffic-manager.namespace" .) (join "," .Values.managerRbac.namespaces)) }}
-{{- end }}
-
-{{- $interceptEnabled := .Values.agentInjector.enabled }}
-{{- $argoRolloutsEnabled := .Values.workloads.argoRollouts.enabled }}
-
-{{- range .Values.managerRbac.namespaces }}
+{{- range $allNamespaces }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -66,7 +64,12 @@ rules:
   - delete
 {{- end }}
   resourceNames:
+{{- if eq . $managerNamespace }}
+  - {{ include "traffic-manager.name" $ }}
+{{- end }}
+{{- if has . $namespaces }}
   - telepresence-agents
+{{- end }}
 - apiGroups:
   - "apps"
   resources:
@@ -100,8 +103,8 @@ rules:
   verbs:
     - get
     - watch
-{{- if eq . (include "traffic-manager.namespace" $) }}
-{{- /* Must be able to get the manager namespace in order to get the cluster-id */}}
+{{- if eq . $managerNamespace }}
+{{- /* Must be able to get the manager namespace in order to get the install-id */}}
 - apiGroups:
   - ""
   resources:
@@ -136,7 +139,7 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: traffic-manager
-  namespace: {{ include "traffic-manager.namespace" $ }}
+  namespace: {{ $managerNamespace }}
 {{- end }}
 
 {{- else }}
@@ -145,10 +148,10 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  namespace: {{ include "traffic-manager.namespace" . }}
+  namespace: {{ $managerNamespace }}
   name: traffic-manager
   labels:
-    {{- include "telepresence.labels" . | nindent 4 }}
+    {{- include "telepresence.labels" $ | nindent 4 }}
 rules:
 - apiGroups:
   - ""
@@ -156,15 +159,25 @@ rules:
   - services
   verbs:
   - create
+- apiGroups:
+    - ""
+  resources:
+    - configmaps
+  verbs:
+    - get
+    - list
+    - watch
+  resourceNames:
+    - {{ include "traffic-manager.name" $ }}
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: traffic-manager
-  namespace: {{ include "traffic-manager.namespace" . }}
+  namespace: {{ $managerNamespace }}
   labels:
-    {{- include "telepresence.labels" . | nindent 4 }}
+    {{- include "telepresence.labels" $ | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -172,6 +185,7 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: traffic-manager
-  namespace: {{ include "traffic-manager.namespace" . }}
+  namespace: {{ $managerNamespace }}
 {{- end }}
+
 {{- end }}

@@ -7,6 +7,9 @@ import (
 	"io"
 	"slices"
 
+	grpcCodes "google.golang.org/grpc/codes"
+	grpcStatus "google.golang.org/grpc/status"
+
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/rpc/v2/manager"
 )
@@ -21,7 +24,7 @@ func (s *session) watchAgentsLoop(ctx context.Context) error {
 		if err != nil {
 			// Handle as if we had an empty snapshot. This will ensure that port forwards and volume mounts are canceled correctly.
 			s.handleAgentSnapshot(ctx, nil)
-			if ctx.Err() != nil || errors.Is(err, io.EOF) {
+			if ctx.Err() != nil || errors.Is(err, io.EOF) || grpcStatus.Code(err) == grpcCodes.NotFound {
 				// Normal termination
 				return nil
 			}

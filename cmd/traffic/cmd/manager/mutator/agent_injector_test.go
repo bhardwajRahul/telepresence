@@ -6,7 +6,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/go-json-experiment/json"
 	jsonv1 "github.com/go-json-experiment/json/v1"
@@ -26,11 +25,14 @@ import (
 
 	argorolloutsfake "github.com/datawire/argo-rollouts-go-client/pkg/client/clientset/versioned/fake"
 	"github.com/datawire/dlib/dlog"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/config"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/namespaces"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/informer"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
+	"github.com/telepresenceio/telepresence/v2/pkg/labels"
 	"github.com/telepresenceio/telepresence/v2/pkg/workload"
 )
 
@@ -48,7 +50,22 @@ func stringP(s string) *string {
 	return &s
 }
 
+const mgrNs = "default"
+
 func TestTrafficAgentConfigGenerator(t *testing.T) {
+	managerConfig := core.ConfigMap{
+		ObjectMeta: meta.ObjectMeta{
+			Name:      "traffic-manager",
+			Namespace: mgrNs,
+		},
+		Data: map[string]string{"namespace-selector.yaml": ` 
+matchExpressions:
+- key: kubernetes.io/metadata.name
+  operator: In
+  values:
+    - some-ns`},
+	}
+
 	podSuffix := "-6699c6cb54-"
 	podName := func(name string) string {
 		return name + podSuffix
@@ -365,6 +382,18 @@ func TestTrafficAgentConfigGenerator(t *testing.T) {
 	multiPortUID := makeUID()
 
 	clientset := fake.NewClientset(
+		&core.Namespace{
+			TypeMeta: meta.TypeMeta{
+				Kind:       "Namespace",
+				APIVersion: "v1",
+			},
+			ObjectMeta: meta.ObjectMeta{
+				Name: "some-ns",
+				Labels: map[string]string{
+					labels.NameLabelKey: "some-ns",
+				},
+			},
+		},
 		&core.Service{
 			TypeMeta: meta.TypeMeta{
 				Kind:       "Service",
@@ -485,6 +514,7 @@ func TestTrafficAgentConfigGenerator(t *testing.T) {
 				},
 			},
 		},
+		&managerConfig,
 		&podNoPort,
 		&podNamedPort,
 		&podNumericPort,
@@ -801,6 +831,7 @@ func TestTrafficAgentConfigGenerator(t *testing.T) {
 	}
 
 	runFunc := func(t *testing.T, test *testInput, appProtoStrategy k8sapi.AppProtocolStrategy) {
+		ctx := dlog.NewTestContext(t, false)
 		env := &managerutil.Env{
 			ServerHost: "tel-example",
 			ServerPort: 8081,
@@ -814,19 +845,8 @@ func TestTrafficAgentConfigGenerator(t *testing.T) {
 
 			EnabledWorkloadKinds: []workload.Kind{workload.DeploymentKind, workload.StatefulSetKind, workload.ReplicaSetKind},
 		}
-
-		ctx := dlog.NewTestContext(t, false)
 		ctx = managerutil.WithEnv(ctx, env)
-		agentmap.GeneratorConfigFunc = env.GeneratorConfig
-
-		ctx = k8sapi.WithJoinedClientSetInterface(ctx, clientset, argorolloutsfake.NewSimpleClientset())
-		ctx = informer.WithFactory(ctx, "")
-		ctx, err := managerutil.WithAgentImageRetriever(ctx, func(context.Context, string) error { return nil })
-		require.NoError(t, err)
-		cw := NewWatcher("")
-		cw.DisableRollouts()
-		cw.Start(ctx)
-		require.NoError(t, cw.StartWatchers(ctx))
+		ctx = setupAgentInjector(t, ctx, clientset)
 
 		gc, err := agentmap.GeneratorConfigFunc("ghcr.io/telepresenceio/tel2:2.13.3")
 		require.NoError(t, err)
@@ -889,6 +909,19 @@ func TestTrafficAgentConfigGenerator(t *testing.T) {
 
 func TestTrafficAgentInjector(t *testing.T) {
 	one := int32(1)
+	managerConfig := core.ConfigMap{
+		ObjectMeta: meta.ObjectMeta{
+			Name:      "traffic-manager",
+			Namespace: mgrNs,
+		},
+		Data: map[string]string{"namespace-selector.yaml": ` 
+matchExpressions:
+- key: kubernetes.io/metadata.name
+  operator: In
+  values:
+    - default
+    - some-ns`},
+	}
 
 	podSuffix := "-6699c6cb54-"
 	podName := func(name string) string {
@@ -995,6 +1028,18 @@ func TestTrafficAgentInjector(t *testing.T) {
 		}
 
 		return fake.NewClientset(
+			&core.Namespace{
+				TypeMeta: meta.TypeMeta{
+					Kind:       "Namespace",
+					APIVersion: "v1",
+				},
+				ObjectMeta: meta.ObjectMeta{
+					Name: "some-ns",
+					Labels: map[string]string{
+						labels.NameLabelKey: "some-ns",
+					},
+				},
+			},
 			&core.Service{
 				TypeMeta: meta.TypeMeta{
 					Kind:       "Service",
@@ -1040,6 +1085,7 @@ func TestTrafficAgentInjector(t *testing.T) {
 					},
 				},
 			},
+			&managerConfig,
 			&podNamedPort,
 			&podNumericPort,
 			deployment(&podNamedPort),
@@ -1875,11 +1921,6 @@ func TestTrafficAgentInjector(t *testing.T) {
 				EnabledWorkloadKinds: []workload.Kind{workload.DeploymentKind, workload.StatefulSetKind, workload.ReplicaSetKind},
 			}
 			ctx = managerutil.WithEnv(ctx, env)
-			agentmap.GeneratorConfigFunc = env.GeneratorConfig
-			ctx = k8sapi.WithJoinedClientSetInterface(ctx, createClientSet(), argorolloutsfake.NewSimpleClientset())
-			ctx = informer.WithFactory(ctx, "")
-			ctx, err := managerutil.WithAgentImageRetriever(ctx, func(context.Context, string) error { return nil })
-			require.NoError(t, err)
 			if test.envAdditions != nil {
 				env := managerutil.GetEnv(ctx)
 				newEnv := *env
@@ -1894,12 +1935,8 @@ func TestTrafficAgentInjector(t *testing.T) {
 				ctx = managerutil.WithEnv(ctx, &newEnv)
 				agentmap.GeneratorConfigFunc = newEnv.GeneratorConfig
 			}
-			cw := NewWatcher("")
-			cw.DisableRollouts()
-			cw.Start(ctx)
-			require.NoError(t, cw.StartWatchers(ctx))
-			time.Sleep(time.Second)
-
+			ctx = setupAgentInjector(t, ctx, createClientSet())
+			cw := GetMap(ctx)
 			var actualPatch PatchOps
 			var actualErr error
 			if test.generateConfig {
@@ -1985,4 +2022,32 @@ func generateForPod(t *testing.T, ctx context.Context, pod *core.Pod, gc agentma
 		t.Fatalf("bad workload type %T", wi)
 	}
 	return gc.Generate(ctx, wl, nil)
+}
+
+func setupAgentInjector(t *testing.T, ctx context.Context, ci kubernetes.Interface) context.Context {
+	env := managerutil.GetEnv(ctx)
+	agentmap.GeneratorConfigFunc = env.GeneratorConfig
+
+	ctx = k8sapi.WithJoinedClientSetInterface(ctx, ci, argorolloutsfake.NewSimpleClientset())
+	ctx = informer.WithFactory(ctx, "")
+	ctx, err := managerutil.WithAgentImageRetriever(ctx, func(context.Context, string) error { return nil })
+	require.NoError(t, err)
+
+	configWatcher := config.NewWatcher(mgrNs)
+	go func() {
+		err := configWatcher.Run(ctx)
+		if err != nil {
+			t.Error(err)
+		}
+	}()
+	require.NoError(t, configWatcher.ForceEvent(ctx))
+	ctx, err = namespaces.InitContext(ctx, configWatcher.SelectorChannel())
+	require.NoError(t, err)
+
+	cw := NewWatcher()
+	ctx = WithMap(ctx, cw)
+	cw.DisableRollouts()
+	cw.Start(ctx)
+	require.NoError(t, cw.StartWatchers(ctx))
+	return ctx
 }

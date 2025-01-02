@@ -39,10 +39,12 @@ podCIDRs:
 ...
 ```
 
-## Use a Namespaced Scoped Traffic Manager
+## Traffic Manager Namespaces
 
-Depending on use-case, it's sometimes beneficial to have several traffic-managers installed, each being responsible from a limited number of namespaces and prohibited from accessing other namespaces. A cluster can either have one single global traffic-manager, or one to many traffic-managers that are namespaced, but global and namespaced can never be combined.
+Depending on use-case, it's sometimes beneficial to have several Traffic Managers installed, each being responsible from
+a limited number of namespaces and prohibited from accessing other namespaces. A cluster can have any number of Traffic
+Managers, as long as each one manages its own unique set of namespaces.
 
-A client that connects to a namespaced manager will automatically be limited to those namespaces.
+A client that connects to a Traffic Manager will automatically be limited to its managed namespaces.
 
 See [Installing a namespaced-scoped traffic-manager](../install/manager.md#installing-a-namespace-scoped-traffic-manager) for details.

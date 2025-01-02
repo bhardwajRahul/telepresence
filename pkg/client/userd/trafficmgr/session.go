@@ -559,6 +559,8 @@ func runWithRetry(ctx context.Context, f func(context.Context) error) error {
 			if backoff > 3*time.Second {
 				backoff = 3 * time.Second
 			}
+		} else {
+			break
 		}
 	}
 	return nil
@@ -779,7 +781,8 @@ func (s *session) remainLoop(c context.Context) error {
 				dlog.Errorf(c, "failed to delete session from user cache: %v", err)
 			}
 		}
-		s.managerConn.Close()
+		// Call Close() in separate go-routine because it might block.
+		go s.managerConn.Close()
 	}()
 
 	for {
@@ -835,7 +838,7 @@ func (s *session) UpdateStatus(c context.Context, cri userd.ConnectRequest) *rpc
 	}
 
 	if s.SetMappedNamespaces(c, namespaces) {
-		if len(namespaces) == 0 && k8sclient.CanWatchNamespaces(c) {
+		if len(namespaces) == 0 && k8sapi.CanWatchNamespaces(c) {
 			s.StartNamespaceWatcher(c)
 		}
 		s.currentInterceptsLock.Lock()

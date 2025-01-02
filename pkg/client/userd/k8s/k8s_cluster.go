@@ -18,7 +18,6 @@ import (
 	"github.com/datawire/dlib/dtime"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/connector"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
-	"github.com/telepresenceio/telepresence/v2/pkg/client/k8sclient"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/userd"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
@@ -160,7 +159,7 @@ func NewCluster(c context.Context, kubeFlags *client.Kubeconfig, namespaces []st
 		namespaces = cfg.Cluster().MappedNamespaces
 	}
 	if len(namespaces) == 0 {
-		if k8sclient.CanWatchNamespaces(c) {
+		if k8sapi.CanWatchNamespaces(c) {
 			ret.StartNamespaceWatcher(c)
 		}
 	} else {

@@ -1,5 +1,5 @@
-{{- if .Values.managerRbac.create }}
-{{- if (not .Values.managerRbac.namespaced) }}
+{{- with .Values }}
+{{- if and .managerRbac.create (not (include "traffic-manager.namespaced" $)) }}
 {{- /*
 This file contains all cluster-scoped permissions that the traffic manager needs.
 This will be larger if namespaced: false, or smaller if it is true
@@ -7,12 +7,13 @@ This will also likely expand over time as we move more things from the clients
 domain into the traffic-manager.  But the good news there is that it will
 require less permissions in clientRbac.yaml
 */}}
+{{- $roleName := (printf "traffic-manager-%s" (include "traffic-manager.namespace" $)) }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: traffic-manager-{{ include "traffic-manager.namespace" . }}
+  name: {{ $roleName }}
   labels:
-    {{- include "telepresence.labels" . | nindent 4 }}
+    {{- include "telepresence.labels" $ | nindent 4 }}
 rules:
 - apiGroups:
   - ""
@@ -26,6 +27,7 @@ rules:
   - nodes
   - pods
   - services
+  - namespaces
   verbs:
   - list
   - get
@@ -36,15 +38,7 @@ rules:
   - pods/log
   verbs:
   - get
-{{- /* Needed to be able to find the cluster DNS resolver */}}
-- apiGroups:
-  - ""
-  resources:
-  - namespaces
-  verbs:
-  - get
-  - list
-{{- if .Values.agentInjector.enabled }}
+{{- if .agentInjector.enabled }}
 - apiGroups:
   - ""
   resources:
@@ -60,7 +54,7 @@ rules:
   - list
   - get
   - watch
-{{- if .Values.agentInjector.enabled }}
+{{- if .agentInjector.enabled }}
   - update
   - delete
 {{- end }}
@@ -76,10 +70,10 @@ rules:
   - get
   - list
   - watch
-{{- if .Values.agentInjector.enabled }}
+{{- if .agentInjector.enabled }}
   - patch
 {{- end }}
-{{- if .Values.workloads.argoRollouts.enabled }}
+{{- if .workloads.argoRollouts.enabled }}
 - apiGroups:
   - "argoproj.io"
   resources:
@@ -88,7 +82,7 @@ rules:
   - get
   - list
   - watch
-{{- if .Values.agentInjector.enabled }}
+{{- if .agentInjector.enabled }}
   - patch
 {{- end }}
 {{- end }}
@@ -103,16 +97,16 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: traffic-manager-{{ include "traffic-manager.namespace" . }}
+  name: {{ $roleName }}
   labels:
-    {{- include "telepresence.labels" . | nindent 4 }}
+    {{- include "telepresence.labels" $ | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: traffic-manager-{{ include "traffic-manager.namespace" . }}
+  name: {{ $roleName }}
 subjects:
 - kind: ServiceAccount
   name: traffic-manager
-  namespace: {{ include "traffic-manager.namespace" . }}
+  namespace: {{ include "traffic-manager.namespace" $ }}
 {{- end }}
 {{- end }}

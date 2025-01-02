@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
 )
 
@@ -88,7 +89,15 @@ func (s *connectedSuite) successfulIngest(tp, wl string) {
 	require.Eventually(
 		func() bool {
 			stdout, _, err := itest.Telepresence(ctx, "list", "--agents")
-			return err == nil && !strings.Contains(stdout, wl)
+			if err != nil {
+				dlog.Error(ctx, err)
+				return false
+			}
+			if strings.Contains(stdout, wl) {
+				dlog.Errorf(ctx, "Expected %q to not contain %q", wl, stdout)
+				return false
+			}
+			return true
 		},
 		180*time.Second, // waitFor
 		6*time.Second,   // polling interval

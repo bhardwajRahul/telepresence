@@ -23,10 +23,13 @@ import (
 	"github.com/datawire/dlib/dhttp"
 	"github.com/datawire/dlib/dlog"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/manager"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/config"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/mutator"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/namespaces"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/informer"
+	"github.com/telepresenceio/telepresence/v2/pkg/ioutil"
 	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/v2/pkg/version"
@@ -79,21 +82,38 @@ func MainWithEnv(ctx context.Context) (err error) {
 	if err != nil {
 		return fmt.Errorf("unable to create the Argo Rollouts Interface from InClusterConfig: %w", err)
 	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	ctx = k8sapi.WithJoinedClientSetInterface(ctx, ki, ari)
 
-	// Ensure that the manager has access to shard informer factories for all relevant namespaces.
+	configWatcher := config.NewWatcher(env.ManagerNamespace)
+	go func() {
+		if err := configWatcher.Run(ctx); err != nil {
+			dlog.Error(ctx, err)
+		}
+		cancel()
+	}()
+
+	ctx, err = namespaces.InitContext(ctx, configWatcher.SelectorChannel())
+	if err != nil {
+		return err
+	}
+
+	// Ensure that the manager has access to shared informer factories for all relevant namespaces.
 	//
 	// This will make the informers more verbose. Good for debugging
 	// l := klog.Level(6)
 	// _ = l.Set("6")
 	mgrFactory := false
-	if len(env.ManagedNamespaces) == 0 {
+	mns := namespaces.Get(ctx)
+	if len(mns) == 0 {
 		ctx = informer.WithFactory(ctx, "")
 	} else {
-		for _, ns := range env.ManagedNamespaces {
+		for _, ns := range mns {
 			ctx = informer.WithFactory(ctx, ns)
 		}
-		if !slices.Contains(env.ManagedNamespaces, env.ManagerNamespace) {
+		if !slices.Contains(mns, env.ManagerNamespace) {
 			mgrFactory = true
 			ctx = informer.WithFactory(ctx, env.ManagerNamespace)
 		}
@@ -117,16 +137,14 @@ func MainWithEnv(ctx context.Context) (err error) {
 		f.WaitForCacheSync(ctx.Done())
 	}
 
-	mgr, g, err := NewServiceFunc(ctx)
+	mgr, g, err := NewServiceFunc(ctx, configWatcher)
 	if err != nil {
 		return fmt.Errorf("unable to initialize traffic manager: %w", err)
 	}
 
-	g.Go("cli-config", mgr.runConfigWatcher)
-
 	// Serve HTTP (including gRPC)
 	g.Go("httpd", mgr.serveHTTP)
-
+	g.Go("config", namespaces.Listen)
 	g.Go("prometheus", mgr.servePrometheus)
 
 	if managerutil.AgentInjectorEnabled(ctx) {
@@ -259,7 +277,7 @@ func (s *service) serveHTTP(ctx context.Context) error {
 
 	grpcHandler := grpc.NewServer(opts...)
 	httpHandler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Hello World from: %s\n", r.URL.Path)
+		ioutil.Printf(w, "Hello World from: %s\n", r.URL.Path)
 	}))
 
 	lg := dlog.StdLogger(ctx, dlog.MaxLogLevel(ctx))

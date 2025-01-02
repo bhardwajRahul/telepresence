@@ -33,7 +33,6 @@ import (
 	sigsYaml "sigs.k8s.io/yaml"
 
 	"github.com/datawire/dlib/dexec"
-	"github.com/datawire/dlib/dhttp"
 	"github.com/datawire/dlib/dlog"
 	"github.com/datawire/dlib/dtime"
 	"github.com/datawire/dtest"
@@ -44,7 +43,9 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/client/userd/k8s"
 	"github.com/telepresenceio/telepresence/v2/pkg/dos"
 	"github.com/telepresenceio/telepresence/v2/pkg/filelocation"
+	"github.com/telepresenceio/telepresence/v2/pkg/ioutil"
 	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
+	"github.com/telepresenceio/telepresence/v2/pkg/labels"
 	"github.com/telepresenceio/telepresence/v2/pkg/log"
 	"github.com/telepresenceio/telepresence/v2/pkg/maps"
 	"github.com/telepresenceio/telepresence/v2/pkg/proc"
@@ -65,8 +66,8 @@ type Cluster interface {
 	GlobalEnv(context.Context) dos.MapEnv
 	AgentVersion(context.Context) string
 	Initialize(context.Context) context.Context
-	InstallTrafficManager(ctx context.Context, values map[string]string) error
-	InstallTrafficManagerVersion(ctx context.Context, version string, values map[string]string) error
+	InstallTrafficManager(ctx context.Context, values map[string]any) error
+	InstallTrafficManagerVersion(ctx context.Context, version string, values map[string]any) error
 	IsCI() bool
 	IsIPv6() bool
 	LargeFileTestDisabled() bool
@@ -76,8 +77,8 @@ type Cluster interface {
 	TelepresenceVersion() string
 	UninstallTrafficManager(ctx context.Context, managerNamespace string, args ...string)
 	PackageHelmChart(ctx context.Context) (string, error)
-	GetValuesForHelm(ctx context.Context, values map[string]string, release bool) []string
-	GetSetArgsForHelm(ctx context.Context, values map[string]string, release bool) []string
+	GetValuesForHelm(ctx context.Context, values map[string]any, release bool) []string
+	GetSetArgsForHelm(ctx context.Context, values map[string]any, release bool) []string
 	GetK8SCluster(ctx context.Context, context, managerNamespace string) (context.Context, *k8s.Cluster, error)
 	TelepresenceHelmInstallOK(ctx context.Context, upgrade bool, args ...string) string
 	TelepresenceHelmInstall(ctx context.Context, upgrade bool, args ...string) (string, error)
@@ -371,7 +372,7 @@ func (s *cluster) withBasicConfig(c context.Context, t *testing.T) context.Conte
 
 	config.Grpc().MaxReceiveSizeV, _ = resource.ParseQuantity("10Mi")
 	config.Intercept().UseFtp = true
-	config.Routing().RecursionBlockDuration = 1 * time.Millisecond
+	config.Routing().RecursionBlockDuration = 5 * time.Millisecond
 
 	configYaml, err := config.MarshalYAML()
 	require.NoError(t, err)
@@ -589,12 +590,12 @@ func (s *cluster) PackageHelmChart(ctx context.Context) (string, error) {
 	return filename, nil
 }
 
-func (s *cluster) GetSetArgsForHelm(ctx context.Context, values map[string]string, release bool) []string {
+func (s *cluster) GetSetArgsForHelm(ctx context.Context, values map[string]any, release bool) []string {
 	settings := s.GetValuesForHelm(ctx, values, release)
 	args := make([]string, len(settings)*2)
 	n := 0
 	for _, s := range settings {
-		args[n] = "--set"
+		args[n] = "--set-json"
 		n++
 		args[n] = s
 		n++
@@ -602,46 +603,53 @@ func (s *cluster) GetSetArgsForHelm(ctx context.Context, values map[string]strin
 	return args
 }
 
-func (s *cluster) GetValuesForHelm(ctx context.Context, values map[string]string, release bool) []string {
+func (s *cluster) GetValuesForHelm(ctx context.Context, values map[string]any, release bool) []string {
 	nss := GetNamespaces(ctx)
 	settings := []string{
-		"logLevel=debug",
+		`logLevel="debug"`,
 	}
 	reg := s.self.Registry()
 	if reg == "local" {
-		settings = append(settings, "image.pullPolicy=Never")
+		settings = append(settings, `image.pullPolicy="Never"`)
 	} else if !s.isCI {
-		settings = append(settings, "image.pullPolicy=Always")
+		settings = append(settings, `image.pullPolicy="Always"`)
 	}
-	if len(nss.ManagedNamespaces) > 0 {
-		settings = append(settings,
-			fmt.Sprintf("clientRbac.namespaces=%s", nss.HelmString()),
-			fmt.Sprintf("managerRbac.namespaces=%s", nss.HelmString()),
-		)
+	if nss != nil && nss.Selector != nil {
+		j, err := json.Marshal(nss.Selector)
+		if err != nil {
+			dlog.Errorf(ctx, "unable to marshal selector '%v': %v", nss.Selector, err)
+		} else {
+			settings = append(settings, `namespaceSelector=`+string(j))
+		}
 	}
 	agentImage := GetAgentImage(ctx)
 	if agentImage != nil {
 		settings = append(settings,
-			fmt.Sprintf("agent.image.name=%s", agentImage.Name), // Prevent attempts to retrieve image from SystemA
-			fmt.Sprintf("agent.image.tag=%s", agentImage.Tag),
-			fmt.Sprintf("agent.image.registry=%s", agentImage.Registry))
+			fmt.Sprintf(`agent.image.name=%q`, agentImage.Name), // Prevent attempts to retrieve image from SystemA
+			fmt.Sprintf(`agent.image.tag=%q`, agentImage.Tag),
+			fmt.Sprintf(`agent.image.registry=%q`, agentImage.Registry))
 	}
 	if !release {
-		settings = append(settings, fmt.Sprintf("image.registry=%s", s.self.Registry()))
+		settings = append(settings, fmt.Sprintf(`image.registry=%q`, s.self.Registry()))
 	}
 	if reg == "local" {
-		settings = append(settings, "agent.image.pullPolicy=Never")
+		settings = append(settings, `agent.image.pullPolicy="Never"`)
 	} else if !s.isCI {
-		settings = append(settings, "agent.image.pullPolicy=Always")
+		settings = append(settings, `agent.image.pullPolicy="Always"`)
 	}
 
 	for k, v := range values {
-		settings = append(settings, k+"="+v)
+		j, err := json.Marshal(v)
+		if err != nil {
+			dlog.Errorf(ctx, "unable to marshal value %v: %v", v, err)
+		} else {
+			settings = append(settings, k+"="+string(j))
+		}
 	}
 	return settings
 }
 
-func (s *cluster) InstallTrafficManager(ctx context.Context, values map[string]string) error {
+func (s *cluster) InstallTrafficManager(ctx context.Context, values map[string]any) error {
 	chartFilename, err := s.self.PackageHelmChart(ctx)
 	if err != nil {
 		return err
@@ -655,7 +663,7 @@ func (s *cluster) InstallTrafficManager(ctx context.Context, values map[string]s
 // configured using DEV_AGENT_IMAGE.
 //
 // The intent is to simulate connection to an older cluster from the current client.
-func (s *cluster) InstallTrafficManagerVersion(ctx context.Context, version string, values map[string]string) error {
+func (s *cluster) InstallTrafficManagerVersion(ctx context.Context, version string, values map[string]any) error {
 	chartFilename, err := s.pullHelmChart(ctx, version)
 	if err != nil {
 		return err
@@ -663,7 +671,7 @@ func (s *cluster) InstallTrafficManagerVersion(ctx context.Context, version stri
 	return s.installChart(ctx, true, chartFilename, values)
 }
 
-func (s *cluster) installChart(ctx context.Context, release bool, chartFilename string, values map[string]string) error {
+func (s *cluster) installChart(ctx context.Context, release bool, chartFilename string, values map[string]any) error {
 	settings := s.self.GetSetArgsForHelm(ctx, values, release)
 
 	ctx = WithWorkingDir(ctx, GetOSSRoot(ctx))
@@ -719,34 +727,37 @@ func (s *cluster) TelepresenceHelmInstall(ctx context.Context, upgrade bool, set
 	type xTimeouts struct {
 		AgentArrival string `json:"agentArrival,omitempty"`
 	}
-	nsl := nss.UniqueList()
 	vx := struct {
-		LogLevel    string    `json:"logLevel"`
-		Image       Image     `json:"image,omitempty"`
-		Agent       *xAgent   `json:"agent,omitempty"`
-		ClientRbac  xRbac     `json:"clientRbac"`
-		ManagerRbac xRbac     `json:"managerRbac"`
-		Client      xClient   `json:"client"`
-		Timeouts    xTimeouts `json:"timeouts,omitempty"`
+		LogLevel          string           `json:"logLevel"`
+		Image             Image            `json:"image,omitempty"`
+		Agent             *xAgent          `json:"agent,omitempty"`
+		ClientRbac        xRbac            `json:"clientRbac"`
+		ManagerRbac       xRbac            `json:"managerRbac"`
+		Client            xClient          `json:"client"`
+		Timeouts          xTimeouts        `json:"timeouts,omitempty"`
+		Namespaces        []string         `json:"namespaces,omitempty"`
+		NamespaceSelector *labels.Selector `json:"namespaceSelector,omitempty"`
 	}{
 		LogLevel: "debug",
 		Agent:    agent,
 		ClientRbac: xRbac{
-			Create:     true,
-			Namespaced: len(nss.ManagedNamespaces) > 0,
-			Subjects:   subjects,
-			Namespaces: nsl,
+			Create:   true,
+			Subjects: subjects,
 		},
 		ManagerRbac: xRbac{
-			Create:     true,
-			Namespaced: len(nss.ManagedNamespaces) > 0,
-			Namespaces: nsl,
+			Create: true,
 		},
 		Client: xClient{
 			Routing: map[string][]string{},
 		},
 		Timeouts: xTimeouts{AgentArrival: "60s"},
 	}
+	if managedNamespaces := nss.Selector.StaticNames(); len(managedNamespaces) > 0 {
+		vx.Namespaces = managedNamespaces
+	} else {
+		vx.NamespaceSelector = nss.Selector
+	}
+
 	image := GetImage(ctx)
 	if image != nil {
 		vx.Image = *image
@@ -1113,13 +1124,19 @@ func StartLocalHttpEchoServerWithHost(ctx context.Context, name string, host str
 	lc := net.ListenConfig{}
 	l, err := lc.Listen(ctx, "tcp", net.JoinHostPort(host, "0"))
 	require.NoError(getT(ctx), err, "failed to listen on localhost")
+	sc := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ioutil.Printf(w, "%s from intercept at %s", name, r.URL.Path)
+		}),
+	}
 	go func() {
-		sc := &dhttp.ServerConfig{
-			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				fmt.Fprintf(w, "%s from intercept at %s", name, r.URL.Path)
-			}),
-		}
-		err := sc.Serve(ctx, l)
+		_ = sc.Serve(l)
+	}()
+	go func() {
+		<-ctx.Done()
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+		defer cancel()
+		err = sc.Shutdown(ctx)
 		if err != nil {
 			dlog.Errorf(ctx, "http server on %s exited with error: %v", host, err)
 		} else {
@@ -1230,14 +1247,14 @@ func WithKubeConfigExtension(ctx context.Context, extProducer func(*api.Cluster)
 	em["telepresence.io"] = &k8sruntime.Unknown{Raw: raw}
 	cluster.Extensions = em
 
-	context := *cc
-	context.Cluster = "extra"
+	kctx := *cc
+	kctx.Cluster = "extra"
 	cfg = &api.Config{
 		Kind:           "Config",
 		APIVersion:     "v1",
 		Preferences:    api.Preferences{},
 		Clusters:       map[string]*api.Cluster{"extra": cluster},
-		Contexts:       map[string]*api.Context{"extra": &context},
+		Contexts:       map[string]*api.Context{"extra": &kctx},
 		CurrentContext: "extra",
 	}
 	kubeconfigFileName := filepath.Join(t.TempDir(), "kubeconfig")

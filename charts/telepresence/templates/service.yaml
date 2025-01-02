@@ -1,54 +1,56 @@
-{{- if not .Values.rbac.only }}
+{{- with .Values }}
+{{- if not .rbac.only }}
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "traffic-manager.name" . }}
-  namespace: {{ include "traffic-manager.namespace" . }}
+  name: {{ include "traffic-manager.name" $ }}
+  namespace: {{ include "traffic-manager.namespace" $ }}
   labels:
-    {{- include "telepresence.labels" . | nindent 4 }}
+    {{- include "telepresence.labels" $ | nindent 4 }}
 spec:
-  type: {{ .Values.service.type }}
+  type: {{ .service.type }}
   clusterIP: None
   ports:
   - name: api
-    port: {{ .Values.apiPort }}
+    port: {{ .apiPort }}
     targetPort: api
   selector:
-    {{- include "telepresence.selectorLabels" . | nindent 4 }}
-{{- if .Values.agentInjector.enabled }}
+    {{- include "telepresence.selectorLabels" $ | nindent 4 }}
+{{- if .agentInjector.enabled }}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ .Values.agentInjector.name }}
-  namespace: {{ include "traffic-manager.namespace" . }}
+  name: {{ .agentInjector.name }}
+  namespace: {{ include "traffic-manager.namespace" $ }}
   labels:
-    {{- include "telepresence.labels" . | nindent 4 }}
+    {{- include "telepresence.labels" $ | nindent 4 }}
 spec:
-  type: {{ .Values.service.type }}
+  type: {{ .service.type }}
   ports:
   - name: https
-    port: {{ .Values.agentInjector.webhook.port }}
+    port: {{ .agentInjector.webhook.port }}
     targetPort: https
   selector:
-    {{- include "telepresence.selectorLabels" . | nindent 4 }}
+    {{- include "telepresence.selectorLabels" $ | nindent 4 }}
 {{- end }}
-{{- if .Values.prometheus.port }} # 0 is false
+{{- if .prometheus.port }} # 0 is false
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: telepresence-prometheus
-  namespace: {{ include "traffic-manager.namespace" . }}
+  namespace: {{ include "traffic-manager.namespace" $ }}
   labels:
     name: telepresence-prometheus
 spec:
-  type: {{ .Values.service.type }}
+  type: {{ .service.type }}
   ports:
   - name: telepresence-prometheus
     port: 80
     targetPort: prometheus
   selector:
-    {{- include "telepresence.selectorLabels" . | nindent 4 }}
+    {{- include "telepresence.selectorLabels" $ | nindent 4 }}
+{{- end }}
 {{- end }}
 {{- end }}

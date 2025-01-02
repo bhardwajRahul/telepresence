@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
+	"github.com/telepresenceio/telepresence/v2/pkg/labels"
 )
 
 type helmSuite struct {
@@ -101,8 +102,8 @@ func (s *helmSuite) Test_HelmMultipleInstalls() {
 
 	s.Run("Installs Successfully", func() {
 		ctx := itest.WithNamespaces(s.Context(), &itest.Namespaces{
-			Namespace:         s.mgrSpace2,
-			ManagedNamespaces: []string{s.appSpace2},
+			Namespace: s.mgrSpace2,
+			Selector:  labels.SelectorFromNames(s.appSpace2),
 		})
 		s.NoError(itest.Kubectl(ctx, s.mgrSpace2, "apply", "-f", filepath.Join("testdata", "k8s", "client_sa.yaml")))
 		itest.TelepresenceDisconnectOk(ctx)
@@ -139,8 +140,8 @@ func (s *helmSuite) Test_CollidingInstalls() {
 		s.TelepresenceConnect(ctx)
 	}()
 	ctx := itest.WithNamespaces(s.Context(), &itest.Namespaces{
-		Namespace:         s.AppNamespace(),
-		ManagedNamespaces: []string{s.appSpace2},
+		Namespace: s.AppNamespace(),
+		Selector:  labels.SelectorFromNames(s.appSpace2),
 	})
 	_, err := s.TelepresenceHelmInstall(ctx, false)
 	s.Error(err)

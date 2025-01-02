@@ -11,7 +11,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/puzpuzpuz/xsync/v3"
 	"google.golang.org/protobuf/types/known/durationpb"
-	appsv1 "k8s.io/api/apps/v1"
 	core "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,6 +24,7 @@ import (
 	"github.com/datawire/dlib/dlog"
 	"github.com/datawire/dlib/dtime"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/namespaces"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/informer"
@@ -35,11 +35,11 @@ import (
 type Map interface {
 	Get(context.Context, string, string) (agentconfig.SidecarExt, error)
 	Start(context.Context)
-	StartWatchers(ctx context.Context) error
+	StartWatchers(context.Context) error
 	Wait(context.Context) error
 	OnAdd(context.Context, k8sapi.Workload, agentconfig.SidecarExt) error
 	OnDelete(context.Context, string, string) error
-	DeleteMapsAndRolloutAll(ctx context.Context)
+	DeleteMapsAndRolloutAll(context.Context)
 	Blacklist(podName, namespace string)
 	Whitelist(podName, namespace string)
 	IsBlacklisted(podName, namespace string) bool
@@ -71,8 +71,8 @@ func GetMap(ctx context.Context) Map {
 	return nil
 }
 
-func Load(ctx context.Context) (m Map) {
-	cw := NewWatcherFunc(managerutil.GetEnv(ctx).ManagedNamespaces...)
+func Load(ctx context.Context) Map {
+	cw := NewWatcherFunc()
 	cw.Start(ctx)
 	return cw
 }
@@ -254,22 +254,22 @@ func (c *configWatcher) triggerRollout(ctx context.Context, wl k8sapi.Workload, 
 		return
 	}
 
-	if rs, ok := k8sapi.ReplicaSetImpl(wl); ok {
-		triggerRolloutReplicaSet(ctx, wl, rs)
-		return
+	switch wl.GetKind() {
+	case "StatefulSet", "ReplicaSet":
+		triggerScalingRollout(ctx, wl)
+	default:
+		restartAnnotation := generateRestartAnnotationPatch(wl.GetPodTemplate())
+		if err := wl.Patch(ctx, types.JSONPatchType, []byte(restartAnnotation)); err != nil {
+			err = fmt.Errorf("unable to patch %s %s.%s: %v", wl.GetKind(), wl.GetName(), wl.GetNamespace(), err)
+			dlog.Error(ctx, err)
+			return
+		}
+		dlog.Infof(ctx, "Successfully rolled out %s.%s", wl.GetName(), wl.GetNamespace())
 	}
-
-	restartAnnotation := generateRestartAnnotationPatch(wl.GetPodTemplate())
-	if err := wl.Patch(ctx, types.JSONPatchType, []byte(restartAnnotation)); err != nil {
-		err = fmt.Errorf("unable to patch %s %s.%s: %v", wl.GetKind(), wl.GetName(), wl.GetNamespace(), err)
-		dlog.Error(ctx, err)
-		return
-	}
-	dlog.Infof(ctx, "Successfully rolled out %s.%s", wl.GetName(), wl.GetNamespace())
 }
 
 // generateRestartAnnotationPatch generates a JSON patch that adds or updates the annotation
-// We need to use this particular patch type because argo-rollouts does not support strategic merge patches.
+// We need to use this particular patch type because argo-rollouts do not support strategic merge patches.
 func generateRestartAnnotationPatch(podTemplate *core.PodTemplateSpec) string {
 	basePointer := "/spec/template/metadata/annotations"
 	pointer := fmt.Sprintf(
@@ -294,36 +294,32 @@ func generateRestartAnnotationPatch(podTemplate *core.PodTemplateSpec) string {
 	)
 }
 
-func triggerRolloutReplicaSet(ctx context.Context, wl k8sapi.Workload, rs *appsv1.ReplicaSet) {
-	// Rollout of a replicatset will not recreate the pods. In order for that to happen, the
-	// set must be scaled down and then up again.
-	dlog.Debugf(ctx, "Performing ReplicaSet rollout of %s.%s using scaling", wl.GetName(), wl.GetNamespace())
-	replicas := int32(1)
-	if rp := rs.Spec.Replicas; rp != nil {
-		replicas = *rp
-	}
+func triggerScalingRollout(ctx context.Context, wl k8sapi.Workload) {
+	// Rollout of a replicatset/statefulset will not recreate the pods. In order for that to happen, the
+	// set must be scaled down to zero replicas and then up again.
+	dlog.Debugf(ctx, "Performing %s rollout of %s.%s using scaling", wl.GetKind(), wl.GetName(), wl.GetNamespace())
+	replicas := wl.Replicas()
 	if replicas == 0 {
-		dlog.Debugf(ctx, "ReplicaSet %s.%s has zero replicas so rollout was a no-op", wl.GetName(), wl.GetNamespace())
+		dlog.Debugf(ctx, "%s %s.%s has zero replicas so rollout was a no-op", wl.GetKind(), wl.GetName(), wl.GetNamespace())
 		return
 	}
 
-	waitForReplicaCount := func(count int32) error {
-		for retry := 0; retry < 200; retry++ {
-			if nwl, err := k8sapi.GetReplicaSet(ctx, wl.GetName(), wl.GetNamespace()); err == nil {
-				rs, _ = k8sapi.ReplicaSetImpl(nwl)
-				if rp := rs.Spec.Replicas; rp != nil && *rp == count {
+	waitForReplicaCount := func(count int) error {
+		for retryCount := 0; retryCount < 200; retryCount++ {
+			if nwl, err := k8sapi.GetWorkload(ctx, wl.GetName(), wl.GetNamespace(), wl.GetKind()); err == nil {
+				if rp := nwl.Replicas(); rp == count {
 					wl = nwl
 					return nil
 				}
 			}
 			dtime.SleepWithContext(ctx, 300*time.Millisecond)
 		}
-		return fmt.Errorf("ReplicaSet %s.%s never scaled down to zero", wl.GetName(), wl.GetNamespace())
+		return fmt.Errorf("%s %s.%s never scaled down to zero", wl.GetKind(), wl.GetName(), wl.GetNamespace())
 	}
 
 	patch := `{"spec": {"replicas": 0}}`
 	if err := wl.Patch(ctx, types.StrategicMergePatchType, []byte(patch)); err != nil {
-		err = fmt.Errorf("unable to scale ReplicaSet %s.%s to zero: %w", wl.GetName(), wl.GetNamespace(), err)
+		err = fmt.Errorf("unable to scale %s %s.%s to zero: %w", wl.GetKind(), wl.GetName(), wl.GetNamespace(), err)
 		dlog.Error(ctx, err)
 		return
 	}
@@ -331,10 +327,10 @@ func triggerRolloutReplicaSet(ctx context.Context, wl k8sapi.Workload, rs *appsv
 		dlog.Error(ctx, err)
 		return
 	}
-	dlog.Debugf(ctx, "ReplicaSet %s.%s was scaled down to zero. Scaling back to %d", wl.GetName(), wl.GetNamespace(), replicas)
+	dlog.Debugf(ctx, "%s %s.%s was scaled down to zero. Scaling back to %d", wl.GetKind(), wl.GetName(), wl.GetNamespace(), replicas)
 	patch = fmt.Sprintf(`{"spec": {"replicas": %d}}`, replicas)
 	if err := wl.Patch(ctx, types.StrategicMergePatchType, []byte(patch)); err != nil {
-		err = fmt.Errorf("unable to scale ReplicaSet %s.%s to %d: %v", wl.GetName(), wl.GetNamespace(), replicas, err)
+		err = fmt.Errorf("unable to scale %s %s.%s to %d: %v", wl.GetKind(), wl.GetName(), wl.GetNamespace(), replicas, err)
 		dlog.Error(ctx, err)
 	}
 	if err := waitForReplicaCount(replicas); err != nil {
@@ -350,10 +346,7 @@ func (c *configWatcher) RegenerateAgentMaps(ctx context.Context, agentImage stri
 	if err != nil {
 		return err
 	}
-	nss := managerutil.GetEnv(ctx).ManagedNamespaces
-	if len(nss) == 0 {
-		return c.regenerateAgentMaps(ctx, "", gc)
-	}
+	nss := namespaces.GetOrGlobal(ctx)
 	for _, ns := range nss {
 		if err = c.regenerateAgentMaps(ctx, ns, gc); err != nil {
 			return err
@@ -431,6 +424,22 @@ type workloadKey struct {
 	kind      string
 }
 
+const (
+	configMapWatcher = iota
+	serviceWatcher
+	deploymentWatcher
+	replicaSetWatcher
+	statefulSetWatcher
+	rolloutWatcher
+	watcherMax
+)
+
+type informersWithCancel struct {
+	cancel    context.CancelFunc
+	informers [watcherMax]cache.SharedIndexInformer
+	eventRegs [watcherMax]cache.ResourceEventHandlerRegistration
+}
+
 func newWorkloadKey(wl k8sapi.Workload) workloadKey {
 	return workloadKey{
 		name:      wl.GetName(),
@@ -445,15 +454,9 @@ type configWatcher struct {
 	nsLocks                  *xsync.MapOf[string, *sync.RWMutex]
 	blacklistedPods          *xsync.MapOf[podKey, time.Time]
 	prematureInjectionEvents *xsync.MapOf[workloadKey, time.Time]
+	informers                *xsync.MapOf[string, *informersWithCancel]
 	startedAt                time.Time
 	rolloutDisabled          bool
-
-	cms []cache.SharedIndexInformer
-	svs []cache.SharedIndexInformer
-	dps []cache.SharedIndexInformer
-	rss []cache.SharedIndexInformer
-	sss []cache.SharedIndexInformer
-	rls []cache.SharedIndexInformer
 
 	self Map // For extension
 }
@@ -542,17 +545,13 @@ func (c *configWatcher) Update(ctx context.Context, namespace string, updater fu
 	})
 }
 
-func NewWatcher(namespaces ...string) Map {
+func NewWatcher() Map {
 	w := &configWatcher{
 		nsLocks:                  xsync.NewMapOf[string, *sync.RWMutex](),
 		rolloutLocks:             xsync.NewMapOf[workloadKey, *sync.Mutex](),
+		informers:                xsync.NewMapOf[string, *informersWithCancel](),
 		blacklistedPods:          xsync.NewMapOf[podKey, time.Time](),
 		prematureInjectionEvents: xsync.NewMapOf[workloadKey, time.Time](),
-	}
-	if len(namespaces) > 0 {
-		for _, ns := range namespaces {
-			w.getNamespaceLock(ns)
-		}
 	}
 	w.self = w
 	return w
@@ -569,38 +568,79 @@ func (c *configWatcher) SetSelf(self Map) {
 	c.self = self
 }
 
+func (c *configWatcher) startInformers(ctx context.Context, ns string) (iwc *informersWithCancel, err error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer func() {
+		if err != nil {
+			cancel()
+		}
+	}()
+
+	ifns := [watcherMax]cache.SharedIndexInformer{}
+	ifns[configMapWatcher] = c.startConfigMap(ctx, ns)
+	ifns[serviceWatcher] = c.startServices(ctx, ns)
+	for _, wlKind := range managerutil.GetEnv(ctx).EnabledWorkloadKinds {
+		switch wlKind {
+		case workload.DeploymentKind:
+			ifns[deploymentWatcher] = workload.StartDeployments(ctx, ns)
+		case workload.ReplicaSetKind:
+			ifns[replicaSetWatcher] = workload.StartReplicaSets(ctx, ns)
+		case workload.StatefulSetKind:
+			ifns[statefulSetWatcher] = workload.StartStatefulSets(ctx, ns)
+		case workload.RolloutKind:
+			ifns[rolloutWatcher] = workload.StartRollouts(ctx, ns)
+		}
+	}
+	c.startPods(ctx, ns)
+	kf := informer.GetK8sFactory(ctx, ns)
+	kf.Start(ctx.Done())
+	kf.WaitForCacheSync(ctx.Done())
+	if ifns[rolloutWatcher] != nil {
+		rf := informer.GetArgoRolloutsFactory(ctx, ns)
+		rf.Start(ctx.Done())
+		rf.WaitForCacheSync(ctx.Done())
+	}
+
+	return &informersWithCancel{
+		cancel:    cancel,
+		informers: ifns,
+	}, nil
+}
+
+func (c *configWatcher) startWatchers(ctx context.Context, iwc *informersWithCancel) (err error) {
+	ifns := iwc.informers
+	iwc.eventRegs[configMapWatcher], err = c.watchConfigMap(ctx, ifns[configMapWatcher])
+	if err != nil {
+		return err
+	}
+	iwc.eventRegs[serviceWatcher], err = c.watchServices(ctx, ifns[serviceWatcher])
+	if err != nil {
+		return err
+	}
+	for i := deploymentWatcher; i < watcherMax; i++ {
+		if ifn := ifns[i]; ifn != nil {
+			iwc.eventRegs[i], err = c.watchWorkloads(ctx, ifn)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (c *configWatcher) StartWatchers(ctx context.Context) error {
 	c.startedAt = time.Now()
 	ctx, c.cancel = context.WithCancel(ctx)
-	for _, si := range c.svs {
-		if err := c.watchServices(ctx, si); err != nil {
-			return err
+	var errs []error
+	c.informers.Range(func(ns string, iwc *informersWithCancel) bool {
+		if err := c.startWatchers(ctx, iwc); err != nil {
+			errs = append(errs, err)
+			return false
 		}
-	}
-	for _, si := range c.dps {
-		if err := c.watchWorkloads(ctx, si); err != nil {
-			return err
-		}
-	}
-	for _, si := range c.rss {
-		if err := c.watchWorkloads(ctx, si); err != nil {
-			return err
-		}
-	}
-	for _, si := range c.sss {
-		if err := c.watchWorkloads(ctx, si); err != nil {
-			return err
-		}
-	}
-	for _, si := range c.rls {
-		if err := c.watchWorkloads(ctx, si); err != nil {
-			return err
-		}
-	}
-	for _, ci := range c.cms {
-		if err := c.watchConfigMap(ctx, ci); err != nil {
-			return err
-		}
+		return true
+	})
+	if len(errs) > 0 {
+		return derror.MultiError(errs)
 	}
 	return nil
 }
@@ -609,8 +649,7 @@ func (c *configWatcher) Wait(ctx context.Context) error {
 	if err := c.StartWatchers(ctx); err != nil {
 		return err
 	}
-	<-ctx.Done()
-	return nil
+	return c.namespacesChangeWatcher(ctx)
 }
 
 func (c *configWatcher) OnAdd(ctx context.Context, wl k8sapi.Workload, acx agentconfig.SidecarExt) error {
@@ -830,12 +869,6 @@ func (c *configWatcher) gcBlacklisted(now time.Time) {
 }
 
 func (c *configWatcher) Start(ctx context.Context) {
-	env := managerutil.GetEnv(ctx)
-	nss := env.ManagedNamespaces
-	if len(nss) == 0 {
-		nss = []string{""}
-	}
-
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		for {
@@ -849,78 +882,117 @@ func (c *configWatcher) Start(ctx context.Context) {
 		}
 	}()
 
-	c.svs = make([]cache.SharedIndexInformer, len(nss))
-	c.cms = make([]cache.SharedIndexInformer, len(nss))
-	for _, wlKind := range env.EnabledWorkloadKinds {
-		switch wlKind {
-		case workload.DeploymentKind:
-			c.dps = make([]cache.SharedIndexInformer, len(nss))
-		case workload.ReplicaSetKind:
-			c.rss = make([]cache.SharedIndexInformer, len(nss))
-		case workload.StatefulSetKind:
-			c.sss = make([]cache.SharedIndexInformer, len(nss))
-		case workload.RolloutKind:
-			c.rls = make([]cache.SharedIndexInformer, len(nss))
+	for _, ns := range namespaces.GetOrGlobal(ctx) {
+		dlog.Debugf(ctx, "Adding watchers for namespace %s", ns)
+		iwc, err := c.startInformers(ctx, ns)
+		if err != nil {
+			dlog.Errorf(ctx, "Failed to create watchers namespace %s: %v", ns, err)
+			continue
 		}
+		c.informers.Store(ns, iwc)
 	}
-	for i, ns := range nss {
-		c.cms[i] = c.startConfigMap(ctx, ns)
-		c.svs[i] = c.startServices(ctx, ns)
-		if c.dps != nil {
-			c.dps[i] = workload.StartDeployments(ctx, ns)
+}
+
+func (c *configWatcher) namespacesChangeWatcher(ctx context.Context) error {
+	defer func() {
+		if err := recover(); err != nil {
+			dlog.Errorf(ctx, "%+v", derror.PanicToError(err))
 		}
-		if c.rss != nil {
-			c.rss[i] = workload.StartReplicaSets(ctx, ns)
-		}
-		if c.sss != nil {
-			c.sss[i] = workload.StartStatefulSets(ctx, ns)
-		}
-		c.startPods(ctx, ns)
-		kf := informer.GetK8sFactory(ctx, ns)
-		kf.Start(ctx.Done())
-		kf.WaitForCacheSync(ctx.Done())
-	}
-	if c.rls != nil {
-		for i, ns := range nss {
-			c.rls[i] = workload.StartRollouts(ctx, ns)
-			rf := informer.GetArgoRolloutsFactory(ctx, ns)
-			rf.Start(ctx.Done())
-			rf.WaitForCacheSync(ctx.Done())
+	}()
+	sid, nsChanges := namespaces.Subscribe(ctx)
+	defer namespaces.Unsubscribe(ctx, sid)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case _, ok := <-nsChanges:
+			if !ok {
+				return nil
+			}
+			nss := namespaces.GetOrGlobal(ctx)
+
+			// Start informers for added namespaces
+			for _, ns := range nss {
+				c.informers.Compute(ns, func(iwc *informersWithCancel, loaded bool) (*informersWithCancel, bool) {
+					if loaded {
+						return iwc, false
+					}
+					dlog.Debugf(ctx, "Adding watchers for namespace %s", ns)
+					iwc, err := c.startInformers(ctx, ns)
+					if err != nil {
+						dlog.Errorf(ctx, "Failed to create watchers namespace %s: %v", ns, err)
+						return nil, true
+					}
+					if err = c.startWatchers(ctx, iwc); err != nil {
+						dlog.Errorf(ctx, "Failed to start watchers namespace %s: %v", ns, err)
+						return nil, true
+					}
+					return iwc, false
+				})
+			}
+
+			// Stop informers for namespaces that are no longer managed
+			c.informers.Range(func(ns string, iwc *informersWithCancel) bool {
+				if !slices.Contains(nss, ns) {
+					c.deleteMapsAndRolloutNS(ctx, ns, iwc)
+				}
+				return true
+			})
 		}
 	}
 }
 
 func (c *configWatcher) DeleteMapsAndRolloutAll(ctx context.Context) {
 	c.cancel() // No more updates from watcher
-	now := meta.NewDeleteOptions(0)
-	api := k8sapi.GetK8sInterface(ctx).CoreV1()
-	c.nsLocks.Range(func(ns string, lock *sync.RWMutex) bool {
-		lock.Lock()
-		defer lock.Unlock()
-		wlm, err := data(ctx, ns)
-		if err != nil {
-			dlog.Errorf(ctx, "unable to get configmap %s.%s: %v", agentconfig.ConfigMap, ns, err)
-			return true
-		}
-		for k, v := range wlm {
-			e := &entry{name: k, namespace: ns, value: v}
-			scx, wl, err := e.workload(ctx)
-			if err != nil {
-				if !errors.IsNotFound(err) {
-					dlog.Errorf(ctx, "unable to get workload for %s.%s %s: %v", k, ns, v, err)
-				}
-				continue
-			}
-			ac := scx.AgentConfig()
-			if ac.Create || ac.Manual {
-				// Deleted before it was generated or manually added, just ignore
-				continue
-			}
-			c.triggerRollout(ctx, wl, nil)
-		}
-		if err := api.ConfigMaps(ns).Delete(ctx, agentconfig.ConfigMap, *now); err != nil {
-			dlog.Errorf(ctx, "unable to delete ConfigMap %s-%s: %v", agentconfig.ConfigMap, ns, err)
-		}
+	c.informers.Range(func(ns string, iwc *informersWithCancel) bool {
+		c.deleteMapsAndRolloutNS(ctx, ns, iwc)
 		return true
 	})
+}
+
+func (c *configWatcher) deleteMapsAndRolloutNS(ctx context.Context, ns string, iwc *informersWithCancel) {
+	lock := c.getNamespaceLock(ns)
+	lock.Lock()
+	defer func() {
+		lock.Unlock()
+		c.nsLocks.Delete(ns)
+		c.informers.Delete(ns)
+	}()
+
+	dlog.Debugf(ctx, "Cancelling watchers for namespace %s", ns)
+	for i := 0; i < watcherMax; i++ {
+		if reg := iwc.eventRegs[i]; reg != nil {
+			_ = iwc.informers[i].RemoveEventHandler(reg)
+		}
+	}
+	iwc.cancel()
+
+	now := meta.NewDeleteOptions(0)
+	api := k8sapi.GetK8sInterface(ctx).CoreV1()
+	wlm, err := data(ctx, ns)
+	if err != nil {
+		dlog.Errorf(ctx, "unable to get configmap %s.%s: %v", agentconfig.ConfigMap, ns, err)
+		return
+	}
+	for k, v := range wlm {
+		e := &entry{name: k, namespace: ns, value: v}
+		scx, wl, err := e.workload(ctx)
+		if err != nil {
+			if !errors.IsNotFound(err) {
+				dlog.Errorf(ctx, "unable to get workload for %s.%s %s: %v", k, ns, v, err)
+			}
+			continue
+		}
+		ac := scx.AgentConfig()
+		if ac.Create || ac.Manual {
+			// Deleted before it was generated or manually added, just ignore
+			continue
+		}
+		c.triggerRollout(ctx, wl, nil)
+	}
+	if err := api.ConfigMaps(ns).Delete(ctx, agentconfig.ConfigMap, *now); err != nil {
+		if !errors.IsNotFound(err) {
+			dlog.Errorf(ctx, "unable to delete ConfigMap %s-%s: %v", agentconfig.ConfigMap, ns, err)
+		}
+	}
 }

@@ -204,9 +204,9 @@ func compareOptions() []cmp.Option {
 		// Only the Conditions are of interest in the DeploymentStatus.
 		cmp.Comparer(func(a, b apps.DeploymentStatus) bool {
 			// Only compare the DeploymentCondition's type and status
-			return cmp.Equal(a.Conditions, b.Conditions, cmp.Comparer(func(c1, c2 apps.DeploymentCondition) bool {
+			return slices.EqualFunc(a.Conditions, b.Conditions, func(c1, c2 apps.DeploymentCondition) bool {
 				return c1.Type == c2.Type && c1.Status == c2.Status
-			}))
+			})
 		}),
 
 		// Treat a nil map or slice as empty.

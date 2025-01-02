@@ -192,11 +192,22 @@ spec:
           - name: AGENT_SECURITY_CONTEXT
             value: '{{ toJson .agent.securityContext }}'
           {{- end }}
+          {{- with fromJsonArray (include "traffic-manager.namespaces" $) }}
+          {{- /*
+           This environment variable it not used, it's here to force a redeploy of the traffic manager when the list
+           changes, because it updates roles and rolebindings and potentially also changes from roles to clusterroles or
+           vice versa.
+           */}}
+          - name: NOT_USED_NSS
+            value: {{ toJson . | quote }}
+          {{- end }}
       {{- end }}
           {{- if .prometheus.port }}  # 0 is false
           - name: PROMETHEUS_PORT
             value: "{{ .prometheus.port }}"
           {{- end }}
+          - name: MAX_NAMESPACE_SPECIFIC_WATCHERS
+            value: {{.maxNamespaceSpecificWatchers | quote }}
           - name: MANAGER_NAMESPACE
             valueFrom:
               fieldRef:
@@ -207,13 +218,7 @@ spec:
               fieldRef:
                 apiVersion: v1
                 fieldPath: status.podIP
-          {{- if .managerRbac.namespaced }}
-          {{- with .managerRbac.namespaces }}
-          - name: MANAGED_NAMESPACES
-            value: "{{ join " " . }}"
-          {{- end }}
-          {{- end }}
-        {{- /*
+         {{- /*
         Client configuration
         */}}
           {{- with .client }}

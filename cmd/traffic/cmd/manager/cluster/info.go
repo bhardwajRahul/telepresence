@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/blang/semver/v4"
+	auth "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
@@ -67,8 +68,6 @@ const IDZero = "00000000-0000-0000-0000-000000000000"
 
 func NewInfo(ctx context.Context) Info {
 	env := managerutil.GetEnv(ctx)
-	managedNamespaces := env.ManagedNamespaces
-	namespaced := len(managedNamespaces) > 0
 	oi := info{}
 	ki := k8sapi.GetK8sInterface(ctx)
 
@@ -147,9 +146,6 @@ func NewInfo(ctx context.Context) Info {
 		}
 	}
 
-	if err != nil {
-		dlog.Warn(ctx, err)
-	}
 	if oi.ServiceSubnet == nil && len(oi.InjectorSvcIp) > 0 {
 		// Using a "kubectl cluster-info dump" or scanning all services generates a lot of unwanted traffic
 		// and would quite possibly also require elevated permissions, so instead, we derive the service subnet
@@ -210,18 +206,14 @@ func NewInfo(ctx context.Context) Info {
 	switch {
 	case strings.EqualFold("auto", podCIDRStrategy):
 		go func() {
-			if namespaced || !oi.watchNodeSubnets(ctx, false) {
-				oi.watchPodSubnets(ctx, managedNamespaces)
+			if !oi.watchNodeSubnets(ctx, false) {
+				oi.watchPodSubnets(ctx)
 			}
 		}()
 	case strings.EqualFold("nodePodCIDRs", podCIDRStrategy):
-		if namespaced {
-			dlog.Errorf(ctx, "cannot use POD_CIDR_STRATEGY %q with a namespaced traffic-manager", podCIDRStrategy)
-		} else {
-			go oi.watchNodeSubnets(ctx, true)
-		}
+		go oi.watchNodeSubnets(ctx, true)
 	case strings.EqualFold("coverPodIPs", podCIDRStrategy):
-		go oi.watchPodSubnets(ctx, managedNamespaces)
+		go oi.watchPodSubnets(ctx)
 	case strings.EqualFold("environment", podCIDRStrategy):
 		oi.setSubnetsFromEnv(ctx)
 	default:
@@ -304,6 +296,18 @@ func clusterDomainFromResolvConf(confFile, namespace string) (string, error) {
 }
 
 func (oi *info) watchNodeSubnets(ctx context.Context, mustSucceed bool) bool {
+	ok, err := k8sapi.CanI(ctx,
+		&auth.ResourceAttributes{
+			Verb:     "list",
+			Resource: "nodes",
+		}, &auth.ResourceAttributes{
+			Verb:     "watch",
+			Resource: "nodes",
+		})
+	if err != nil || !ok {
+		return false
+	}
+
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	informerFactory := informers.NewSharedInformerFactory(k8sapi.GetK8sInterface(ctx), 0)
@@ -347,8 +351,9 @@ func getInjectorSvcIP(ctx context.Context, env *managerutil.Env, client v1.CoreV
 	return iputil.Parse(sc.Spec.ClusterIP), p, nil
 }
 
-func (oi *info) watchPodSubnets(ctx context.Context, namespaces []string) {
-	retriever := newPodWatcher(ctx, namespaces)
+func (oi *info) watchPodSubnets(ctx context.Context) {
+	podIP, _ := netip.AddrFromSlice(oi.ManagerPodIp)
+	retriever := newPodWatcher(ctx, podIP)
 	if !retriever.viable(ctx) {
 		dlog.Errorf(ctx, "Unable to derive subnets from IPs of pods")
 		return

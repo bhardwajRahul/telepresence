@@ -36,7 +36,7 @@ type AgentInjector interface {
 }
 
 // NewAgentInjector creates a new agentInjector.
-func NewAgentInjector(ctx context.Context, agentConfigs Map) AgentInjector {
+func NewAgentInjector(_ context.Context, agentConfigs Map) AgentInjector {
 	ai := &agentInjector{
 		agentConfigs: agentConfigs,
 	}
@@ -215,7 +215,7 @@ func (a *agentInjector) Inject(ctx context.Context, req *admission.AdmissionRequ
 	return patches, nil
 }
 
-// uninstall ensures that no more webhook injections is made and that all the workloads of currently injected
+// Uninstall ensures that no more webhook injections are made and that all the workloads of currently injected
 // pods are rolled out.
 func (a *agentInjector) Uninstall(ctx context.Context) {
 	atomic.StoreInt64(&a.terminating, 1)
