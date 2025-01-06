@@ -25,6 +25,16 @@ namespaceSelector:
 ```</Body>
 </Note>
 <Note>
+	<Title type="feature">Removal of the dormant container during intercept with --replace.</Title>
+	<Body>During a `telepresence intercept --replace operation`, the previously injected dormant container has been
+removed. The Traffic Agent now directly serves as the replacement container, eliminating the need to forward
+traffic to the original application container. This simplification offers several advantages when using the
+`--replace` flag:
+
+- **Removal of the init-container:** The need for a separate init-container is no longer necessary.
+- **Elimination of port renames:** Port renames within the intercepted pod are no longer required.</Body>
+</Note>
+<Note>
 	<Title type="change">Drop deprecated current-cluster-id command.</Title>
 	<Body>The clusterID was deprecated some time ago, and replaced by the ID of the namespace where the traffic-manager is installed.</Body>
 </Note>

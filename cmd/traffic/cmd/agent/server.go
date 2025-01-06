@@ -118,7 +118,7 @@ func (s *state) ReportMetrics(ctx context.Context, metrics *rpc.TunnelMetrics) {
 		mCtx, mCancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
 		defer mCancel()
 		_, err := s.manager.ReportMetrics(mCtx, metrics)
-		if err != nil {
+		if err != nil && status.Code(err) != codes.Canceled {
 			dlog.Errorf(ctx, "ReportMetrics failed: %v", err)
 		}
 	}()

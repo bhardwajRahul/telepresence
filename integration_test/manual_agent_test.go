@@ -17,8 +17,8 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 )
 
-func (s *connectedSuite) Test_ManualAgent() {
-	testManualAgent(&s.Suite, s.NamespacePair)
+func (s *notConnectedSuite) Test_ManualAgent() {
+	testManualAgent(&s.Suite, s)
 }
 
 func testManualAgent(s *itest.Suite, nsp itest.NamespacePair) {
@@ -140,6 +140,9 @@ func testManualAgent(s *itest.Suite, nsp itest.NamespacePair) {
 
 	err = nsp.RolloutStatusWait(ctx, "deploy/"+ac.WorkloadName)
 	require.NoError(err)
+
+	nsp.TelepresenceConnect(ctx)
+	defer itest.TelepresenceQuitOk(ctx)
 
 	stdout = itest.TelepresenceOk(ctx, "list")
 	require.Regexp(regexp.MustCompile(`.*`+ac.WorkloadName+`\s*:\s*ready to intercept \(traffic-agent already installed\).*`), stdout)

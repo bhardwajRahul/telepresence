@@ -433,7 +433,7 @@ func mappingsMap(mappings []*client.DNSMapping) map[string]string {
 		mm := make(map[string]string, l)
 		for _, m := range mappings {
 			al := m.AliasFor
-			if ip := iputil.Parse(al); ip == nil {
+			if _, err := netip.ParseAddr(al); err != nil {
 				al += "."
 			}
 			mm[strings.ToLower(m.Name+".")] = strings.ToLower(al)
@@ -523,11 +523,11 @@ func (s *Server) flushDNS() {
 // splitToUDPAddr splits the given address into an UDPAddr. It's
 // an error if the address is based on a hostname rather than an IP.
 func splitToUDPAddr(netAddr net.Addr) (*net.UDPAddr, error) {
-	ip, port, err := iputil.SplitToIPPort(netAddr)
+	ap, err := iputil.SplitToIPPort(netAddr)
 	if err != nil {
 		return nil, err
 	}
-	return &net.UDPAddr{IP: ip, Port: int(port)}, nil
+	return net.UDPAddrFromAddrPort(ap), nil
 }
 
 // RequestCount returns the number of requests that this server has received.
@@ -954,18 +954,18 @@ func (s *Server) resolveMapping(q *dns.Question) (dnsproxy.RRs, int, error) {
 	if !ok {
 		return nil, dns.RcodeNameError, errNoMapping
 	}
-	if ip := iputil.Parse(mappingAlias); ip != nil {
+	if ip, err := netip.ParseAddr(mappingAlias); err == nil {
 		// The name resolves to an A or AAAA record known by this DNS server.
 		var rrs dnsproxy.RRs
-		if q.Qtype == dns.TypeA && len(ip) == 4 {
+		if q.Qtype == dns.TypeA && ip.Is4() {
 			rrs = dnsproxy.RRs{&dns.A{
 				Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: dnsTTL},
-				A:   ip,
+				A:   ip.AsSlice(),
 			}}
-		} else if q.Qtype == dns.TypeAAAA && len(ip) == 16 {
+		} else if q.Qtype == dns.TypeAAAA && ip.Is6() {
 			rrs = dnsproxy.RRs{&dns.AAAA{
 				Hdr:  dns.RR_Header{Name: q.Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: dnsTTL},
-				AAAA: ip,
+				AAAA: ip.AsSlice(),
 			}}
 		}
 		return rrs, dns.RcodeSuccess, nil

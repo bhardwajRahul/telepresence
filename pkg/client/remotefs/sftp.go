@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"runtime"
 	"sync"
 	"time"
@@ -14,7 +15,6 @@ import (
 	"github.com/datawire/dlib/dgroup"
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/pkg/dpipe"
-	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 	"github.com/telepresenceio/telepresence/v2/pkg/proc"
 )
 
@@ -28,8 +28,9 @@ func NewSFTPMounter(iceptWG, podWG *sync.WaitGroup) Mounter {
 	return &sftpMounter{iceptWG: iceptWG, podWG: podWG}
 }
 
-func (m *sftpMounter) Start(ctx context.Context, workload, container, clientMountPoint, mountPoint string, podIP net.IP, port uint16, ro bool) error {
-	ctx = dgroup.WithGoroutineName(ctx, iputil.JoinIpPort(podIP, port))
+func (m *sftpMounter) Start(ctx context.Context, workload, container, clientMountPoint, mountPoint string, podAddrPort netip.AddrPort, ro bool) error {
+	ctx = dgroup.WithGoroutineName(ctx, podAddrPort.String())
+	podIP := podAddrPort.Addr().Unmap()
 
 	// The mount is terminated and restarted when the intercept pod changes, so we
 	// must set up a wait/done pair here to ensure that this happens synchronously
@@ -83,7 +84,7 @@ func (m *sftpMounter) Start(ctx context.Context, workload, container, clientMoun
 				sshfsArgs = append(sshfsArgs, "-o", "ro")
 			}
 
-			useIPv6 := len(podIP) == 16
+			useIPv6 := podIP.Is6()
 			if useIPv6 {
 				// Must use stdin/stdout because sshfs is not capable of connecting with IPv6
 				sshfsArgs = append(sshfsArgs,
@@ -93,7 +94,7 @@ func (m *sftpMounter) Start(ctx context.Context, workload, container, clientMoun
 				)
 			} else {
 				sshfsArgs = append(sshfsArgs,
-					"-o", fmt.Sprintf("directport=%d", port),
+					"-o", fmt.Sprintf("directport=%d", podAddrPort.Port()),
 					fmt.Sprintf("%s:%s", podIP.String(), mountPoint), // what to mount
 					clientMountPoint, // where to mount it
 				)
@@ -108,7 +109,7 @@ func (m *sftpMounter) Start(ctx context.Context, workload, container, clientMoun
 			var err error
 			if useIPv6 {
 				var conn net.Conn
-				if conn, err = net.Dial("tcp6", iputil.JoinIpPort(podIP, port)); err == nil {
+				if conn, err = net.Dial("tcp6", podAddrPort.String()); err == nil {
 					defer conn.Close()
 					err = dpipe.DPipe(ctx, conn, exe, sshfsArgs...)
 				}

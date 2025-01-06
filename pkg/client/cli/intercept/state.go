@@ -25,7 +25,6 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/dos"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
 	"github.com/telepresenceio/telepresence/v2/pkg/ioutil"
-	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 	"github.com/telepresenceio/telepresence/v2/pkg/proc"
 )
 
@@ -96,7 +95,7 @@ func (s *state) CreateRequest(ctx context.Context) (*connector.CreateInterceptRe
 	}
 
 	spec.TargetPort = int32(s.localPort)
-	if iputil.Parse(s.Address) == nil {
+	if _, err = netip.ParseAddr(s.Address); err != nil {
 		return nil, fmt.Errorf("--address %s is not a valid IP address", s.Address)
 	}
 	spec.TargetHost = s.Address

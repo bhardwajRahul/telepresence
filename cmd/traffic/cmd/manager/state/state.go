@@ -3,7 +3,7 @@ package state
 import (
 	"context"
 	"fmt"
-	"net"
+	"net/netip"
 	"os"
 	"slices"
 	"strings"
@@ -27,7 +27,6 @@ import (
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/watchable"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/dnsproxy"
-	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/v2/pkg/log"
 	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
@@ -778,7 +777,7 @@ func (s *state) Tunnel(ctx context.Context, stream tunnel.Stream) error {
 		peerID := tunnel.GetSession(m)
 		peerSession, _ = s.sessions.Load(peerID)
 	} else {
-		peerSession, err = s.getAgentForDial(ctx, sessionID, stream.ID().Destination())
+		peerSession, err = s.getAgentForDial(ctx, sessionID, stream.ID().DestinationAddr())
 		if err != nil {
 			return err
 		}
@@ -801,7 +800,7 @@ func (s *state) Tunnel(ctx context.Context, stream tunnel.Stream) error {
 	return nil
 }
 
-func (s *state) getAgentForDial(ctx context.Context, clientSessionID string, podIP net.IP) (SessionState, error) {
+func (s *state) getAgentForDial(ctx context.Context, clientSessionID string, podIP netip.Addr) (SessionState, error) {
 	agentKey, err := s.getAgentIdForDial(ctx, clientSessionID, podIP)
 	if err != nil || agentKey == "" {
 		return nil, err
@@ -810,10 +809,13 @@ func (s *state) getAgentForDial(ctx context.Context, clientSessionID string, pod
 	return agent, nil
 }
 
-func (s *state) getAgentIdForDial(ctx context.Context, clientSessionID string, podIP net.IP) (string, error) {
+func (s *state) getAgentIdForDial(ctx context.Context, clientSessionID string, podIP netip.Addr) (string, error) {
 	// An agent with a podIO matching the given podIP has precedence
 	agents := s.agents.LoadAllMatching(func(key string, ai *rpc.AgentInfo) bool {
-		return podIP.Equal(iputil.Parse(ai.PodIp))
+		if aip, err := netip.ParseAddr(ai.PodIp); err == nil {
+			return podIP == aip
+		}
+		return false
 	})
 	for agentID := range agents {
 		dlog.Debugf(ctx, "selecting agent for dial based on podIP %s", podIP)

@@ -4,9 +4,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"net/netip"
 
 	"github.com/telepresenceio/telepresence/v2/pkg/ipproto"
-	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 )
 
 // A ConnID is a compact and immutable representation of protocol, source IP, source port, destination IP and destination port which
@@ -14,24 +14,26 @@ import (
 type ConnID string
 
 func ConnIDFromUDP(src, dst *net.UDPAddr) ConnID {
-	return NewConnID(ipproto.UDP, src.IP, dst.IP, uint16(src.Port), uint16(dst.Port))
+	return NewConnID(ipproto.UDP, src.AddrPort(), dst.AddrPort())
 }
 
 // NewConnID returns a new ConnID for the given values.
-func NewConnID(proto int, src, dst net.IP, srcPort, dstPort uint16) ConnID {
-	src4 := src.To4()
-	dst4 := dst.To4()
-	if src4 != nil && dst4 != nil {
-		// These are not NOOPs because a IPv4 can be represented using a 16 byte net.IP. Here
-		// we ensure that the 4 byte form is used.
-		src = src4
-		dst = dst4
-	} else {
-		src = src.To16()
-		dst = dst.To16()
+func NewConnID(proto int, src, dst netip.AddrPort) ConnID {
+	srcAddr := src.Addr()
+	dstAddr := dst.Addr()
+	if srcAddr.Is4In6() {
+		if dstAddr.Is4() {
+			srcAddr = srcAddr.Unmap()
+		} else if dstAddr.Is4In6() {
+			srcAddr = srcAddr.Unmap()
+			dstAddr = dstAddr.Unmap()
+		}
+	} else if srcAddr.Is4() && dstAddr.Is4In6() {
+		dstAddr = dstAddr.Unmap()
 	}
-	ls := len(src)
-	ld := len(dst)
+
+	ls := srcAddr.BitLen() / 8
+	ld := dstAddr.BitLen() / 8
 	if ls == 0 {
 		panic("invalid source IP")
 	}
@@ -39,12 +41,12 @@ func NewConnID(proto int, src, dst net.IP, srcPort, dstPort uint16) ConnID {
 		panic("invalid destination IP")
 	}
 	bs := make([]byte, ls+ld+5)
-	copy(bs, src)
-	binary.BigEndian.PutUint16(bs[ls:], srcPort)
+	copy(bs, srcAddr.AsSlice())
+	binary.BigEndian.PutUint16(bs[ls:], src.Port())
 	ls += 2
-	copy(bs[ls:], dst)
+	copy(bs[ls:], dstAddr.AsSlice())
 	ls += ld
-	binary.BigEndian.PutUint16(bs[ls:], dstPort)
+	binary.BigEndian.PutUint16(bs[ls:], dst.Port())
 	ls += 2
 	bs[ls] = byte(proto)
 	return ConnID(bs)
@@ -69,21 +71,18 @@ func (id ConnID) IsDestinationIPv4() bool {
 	return id.areBothIPv4() || net.IP(id[18:34]).To4() != nil
 }
 
-// Source returns the source IP.
-func (id ConnID) Source() net.IP {
-	if id.areBothIPv4() {
-		return net.IP(id[0:4])
-	}
-	return iputil.Normalize(net.IP(id[0:16]))
+// Source returns the source address and port.
+func (id ConnID) Source() netip.AddrPort {
+	return netip.AddrPortFrom(id.SourceAddr(), id.SourcePort())
 }
 
-// SourceAddr returns the *net.TCPAddr or *net.UDPAddr that corresponds to the
-// source IP and port of this instance.
-func (id ConnID) SourceAddr() net.Addr {
-	if id.Protocol() == ipproto.TCP {
-		return &net.TCPAddr{IP: id.Source(), Port: int(id.SourcePort())}
+// SourceAddr returns the source IP.
+func (id ConnID) SourceAddr() netip.Addr {
+	b := []byte(id)
+	if id.areBothIPv4() {
+		return netip.AddrFrom4(*(*[4]byte)(b[0:4]))
 	}
-	return &net.UDPAddr{IP: id.Source(), Port: int(id.SourcePort())}
+	return netip.AddrFrom16(*(*[16]byte)(b[0:16])).Unmap()
 }
 
 // SourcePort returns the source port.
@@ -94,21 +93,18 @@ func (id ConnID) SourcePort() uint16 {
 	return binary.BigEndian.Uint16([]byte(id)[16:])
 }
 
-// Destination returns the destination IP.
-func (id ConnID) Destination() net.IP {
-	if id.areBothIPv4() {
-		return net.IP(id[6:10])
-	}
-	return iputil.Normalize(net.IP(id[18:34]))
+// Destination returns the destination address and port.
+func (id ConnID) Destination() netip.AddrPort {
+	return netip.AddrPortFrom(id.DestinationAddr(), id.DestinationPort())
 }
 
-// DestinationAddr returns the *net.TCPAddr or *net.UDPAddr that corresponds to the
-// destination IP and port of this instance.
-func (id ConnID) DestinationAddr() net.Addr {
-	if id.Protocol() == ipproto.TCP {
-		return &net.TCPAddr{IP: id.Destination(), Port: int(id.DestinationPort())}
+// DestinationAddr returns the destination IP.
+func (id ConnID) DestinationAddr() netip.Addr {
+	b := []byte(id)
+	if id.areBothIPv4() {
+		return netip.AddrFrom4(*(*[4]byte)(b[6:10]))
 	}
-	return &net.UDPAddr{IP: id.Destination(), Port: int(id.DestinationPort())}
+	return netip.AddrFrom16(*(*[16]byte)(b[18:34])).Unmap()
 }
 
 // DestinationPort returns the destination port.
@@ -186,15 +182,13 @@ func (id ConnID) DestinationNetwork() string {
 
 // Reply returns a copy of this ConnID with swapped source and destination properties.
 func (id ConnID) Reply() ConnID {
-	return NewConnID(id.Protocol(), id.Destination(), id.Source(), id.DestinationPort(), id.SourcePort())
+	return NewConnID(id.Protocol(), id.Destination(), id.Source())
 }
 
 // ReplyString returns a formatted string suitable for logging showing the destination:destinationPort -> source:sourcePort.
 func (id ConnID) ReplyString() string {
 	return fmt.Sprintf("%s %s -> %s",
-		ipproto.String(id.Protocol()),
-		iputil.JoinIpPort(id.Destination(), id.DestinationPort()),
-		iputil.JoinIpPort(id.Source(), id.SourcePort()))
+		ipproto.String(id.Protocol()), id.Destination(), id.Source())
 }
 
 // String returns a formatted string suitable for logging showing the source:sourcePort -> destination:destinationPort.
@@ -203,7 +197,5 @@ func (id ConnID) String() string {
 		return "bogus ConnID"
 	}
 	return fmt.Sprintf("%s %s -> %s",
-		ipproto.String(id.Protocol()),
-		iputil.JoinIpPort(id.Source(), id.SourcePort()),
-		iputil.JoinIpPort(id.Destination(), id.DestinationPort()))
+		ipproto.String(id.Protocol()), id.Source(), id.Destination())
 }

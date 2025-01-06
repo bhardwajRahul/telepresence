@@ -3,6 +3,7 @@ package trafficmgr
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"sync"
 
 	"google.golang.org/grpc/codes"
@@ -13,7 +14,6 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/remotefs"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/userd"
-	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 )
 
 func (pa *podAccess) shouldMount() bool {
@@ -25,7 +25,12 @@ func (pa *podAccess) shouldMount() bool {
 func (pa *podAccess) startMount(ctx context.Context, iceptWG, podWG *sync.WaitGroup) {
 	var fuseftp rpc.FuseFTPClient
 	useFtp := client.GetConfig(ctx).Intercept().UseFtp
-	var port int32
+	addr, err := netip.ParseAddr(pa.podIP)
+	if err != nil {
+		dlog.Errorf(ctx, "error parsing pod IP address %q: %v", pa.podIP, err)
+		return
+	}
+	var port uint16
 	mountCtx := ctx
 	if useFtp {
 		if pa.ftpPort == 0 {
@@ -42,13 +47,13 @@ func (pa *podAccess) startMount(ctx context.Context, iceptWG, podWG *sync.WaitGr
 			dlog.Errorf(ctx, "Client is configured to perform remote mounts using FTP, but the fuseftp server was unable to start")
 			return
 		}
-		port = pa.ftpPort
+		port = uint16(pa.ftpPort)
 	} else {
 		if pa.sftpPort == 0 {
 			dlog.Errorf(ctx, "Client is configured to perform remote mounts using SFTP, but only FTP is provided by the traffic-agent")
 			return
 		}
-		port = pa.sftpPort
+		port = uint16(pa.sftpPort)
 	}
 
 	m := *pa.mounter
@@ -64,7 +69,7 @@ func (pa *podAccess) startMount(ctx context.Context, iceptWG, podWG *sync.WaitGr
 		}
 		*pa.mounter = m
 	}
-	err := m.Start(mountCtx, pa.workload, pa.container, pa.clientMountPoint, pa.mountPoint, iputil.Parse(pa.podIP), uint16(port), pa.readOnly)
+	err = m.Start(mountCtx, pa.workload, pa.container, pa.clientMountPoint, pa.mountPoint, netip.AddrPortFrom(addr, port), pa.readOnly)
 	if err != nil && ctx.Err() == nil {
 		dlog.Error(ctx, err)
 	}

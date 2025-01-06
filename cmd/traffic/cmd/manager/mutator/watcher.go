@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
@@ -29,6 +30,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/informer"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
+	"github.com/telepresenceio/telepresence/v2/pkg/maps"
 	"github.com/telepresenceio/telepresence/v2/pkg/workload"
 )
 
@@ -104,15 +106,17 @@ func (c *configWatcher) isRolloutNeeded(ctx context.Context, wl k8sapi.Workload,
 		// Annotation controls injection, so no explicit rollout is needed unless the deployment was added before the
 		// traffic-manager or the traffic-manager already received an injection event but failed due to the lack
 		// of an agent config.
-		if c.receivedPrematureInjectEvent(wl) {
-			dlog.Debugf(ctx, "Rollout of %s.%s is necessary. Pod template has inject annotation %s and a premature injection event was received",
-				wl.GetName(), wl.GetNamespace(), ia)
-			return true
-		}
-		if wl.GetCreationTimestamp().After(c.startedAt) {
-			dlog.Debugf(ctx, "Rollout of %s.%s is not necessary. Pod template has inject annotation %s",
-				wl.GetName(), wl.GetNamespace(), ia)
-			return false
+		if !c.terminating.Load() {
+			if c.receivedPrematureInjectEvent(wl) {
+				dlog.Debugf(ctx, "Rollout of %s.%s is necessary. Pod template has inject annotation %s and a premature injection event was received",
+					wl.GetName(), wl.GetNamespace(), ia)
+				return true
+			}
+			if wl.GetCreationTimestamp().After(c.startedAt) {
+				dlog.Debugf(ctx, "Rollout of %s.%s is not necessary. Pod template has inject annotation %s",
+					wl.GetName(), wl.GetNamespace(), ia)
+				return false
+			}
 		}
 	}
 	podLabels := podMeta.GetLabels()
@@ -195,8 +199,8 @@ func isRolloutNeededForPod(ctx context.Context, ac *agentconfig.Sidecar, name, n
 		return fmt.Sprintf("Rollout of %s.%s is necessary. An agent is desired but the pod %s doesn't have one",
 			name, namespace, pod.GetName())
 	}
-	desiredAc := agentconfig.AgentContainer(ctx, pod, ac)
-	if !containerEqual(podAc, desiredAc) {
+	desiredAc, anns := agentconfig.AgentContainer(ctx, pod, ac)
+	if !(containerEqual(ctx, podAc, desiredAc) && maps.Equal(anns, pod.ObjectMeta.Annotations)) {
 		return fmt.Sprintf("Rollout of %s.%s is necessary. The desired agent is not equal to the existing agent in pod %s",
 			name, namespace, pod.GetName())
 	}
@@ -221,22 +225,14 @@ func isRolloutNeededForPod(ctx context.Context, ac *agentconfig.Sidecar, name, n
 				break
 			}
 		}
-		if found == nil {
-			return fmt.Sprintf("Rollout of %s.%s is necessary. The desired pod should contain container %s",
-				name, namespace, cn.Name)
-		}
 		if cn.Replace {
-			// Ensure that the replaced container is disabled
-			if !(found.Image == sleeperImage && slices.Equal(found.Args, sleeperArgs)) {
-				return fmt.Sprintf("Rollout of %s.%s is necessary. The desired pod's container %s should be disabled",
+			if found != nil {
+				return fmt.Sprintf("Rollout of %s.%s is necessary. The %s container must be replaced",
 					name, namespace, cn.Name)
 			}
-		} else {
-			// Ensure that the replaced container is not disabled
-			if found.Image == sleeperImage && slices.Equal(found.Args, sleeperArgs) {
-				return fmt.Sprintf("Rollout of %s.%s is necessary. The desired pod's container %s should not be disabled",
-					name, namespace, cn.Name)
-			}
+		} else if found == nil {
+			return fmt.Sprintf("Rollout of %s.%s is necessary. The %s container should not be replaced",
+				name, namespace, cn.Name)
 		}
 	}
 	return ""
@@ -457,6 +453,7 @@ type configWatcher struct {
 	informers                *xsync.MapOf[string, *informersWithCancel]
 	startedAt                time.Time
 	rolloutDisabled          bool
+	terminating              atomic.Bool
 
 	self Map // For extension
 }
@@ -630,7 +627,11 @@ func (c *configWatcher) startWatchers(ctx context.Context, iwc *informersWithCan
 
 func (c *configWatcher) StartWatchers(ctx context.Context) error {
 	c.startedAt = time.Now()
-	ctx, c.cancel = context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(ctx)
+	c.cancel = func() {
+		c.terminating.Store(true)
+		cancel()
+	}
 	var errs []error
 	c.informers.Range(func(ns string, iwc *informersWithCancel) bool {
 		if err := c.startWatchers(ctx, iwc); err != nil {

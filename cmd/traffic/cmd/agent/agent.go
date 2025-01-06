@@ -95,11 +95,11 @@ func sftpServer(ctx context.Context, sftpPortCh chan<- uint16) error {
 		_ = l.Close()
 	}()
 
-	_, sftpPort, err := iputil.SplitToIPPort(l.Addr())
+	ap, err := iputil.SplitToIPPort(l.Addr())
 	if err != nil {
 		return err
 	}
-	sftpPortCh <- sftpPort
+	sftpPortCh <- ap.Port()
 
 	dlog.Infof(ctx, "Listening at: %s", l.Addr())
 	for {
@@ -163,31 +163,38 @@ func sidecar(ctx context.Context, s State, info *rpc.AgentInfo) error {
 		// Group the container's intercepts by agent port
 		icStates := make(map[agentconfig.PortAndProto][]*agentconfig.Intercept, len(cn.Intercepts))
 		for _, ic := range cn.Intercepts {
-			k := agentconfig.PortAndProto{Port: ic.AgentPort, Proto: ic.Protocol}
+			ap := ic.AgentPort
+			if cn.Replace {
+				// Listen to replaced container's original port.
+				ap = ic.ContainerPort
+			}
+			k := agentconfig.PortAndProto{Port: ap, Proto: ic.Protocol}
 			icStates[k] = append(icStates[k], ic)
 		}
 
 		for pp, ics := range icStates {
 			ic := ics[0] // They all have the same protocol container port, so the first one will do.
+			var fwd forwarder.Interceptor
 			var cp uint16
-			if ic.TargetPortNumeric {
-				// We must differentiate between connections originating from the agent's forwarder to the container
-				// port and those from other sources. The former should not be routed back, while the latter should
-				// always be routed to the agent. We do this by using a proxy port that will be recognized by the
-				// iptables filtering in our init-container.
-				cp = ac.ProxyPort(ic)
+			if !cn.Replace {
+				if ic.TargetPortNumeric {
+					// We must differentiate between connections originating from the agent's forwarder to the container
+					// port and those from other sources. The former should not be routed back, while the latter should
+					// always be routed to the agent. We do this by using a proxy port that will be recognized by the
+					// iptables filtering in our init-container.
+					cp = ac.ProxyPort(ic)
+				} else {
+					cp = ic.ContainerPort
+				}
+				// Redirect non-intercepted traffic to the pod, so that injected sidecars that hijack the ports for
+				// incoming connections will continue to work.
+				targetHost := s.PodIP()
+				fwd = forwarder.NewInterceptor(pp, targetHost, cp)
 			} else {
+				fwd = forwarder.NewInterceptor(pp, "", 0)
 				cp = ic.ContainerPort
 			}
-			lisAddr, err := pp.Addr()
-			if err != nil {
-				return err
-			}
-			// Redirect non-intercepted traffic to the pod, so that injected sidecars that hijack the ports for
-			// incoming connections will continue to work.
-			targetHost := s.PodIP()
 
-			fwd := forwarder.NewInterceptor(lisAddr, targetHost, cp)
 			dgroup.ParentGroup(ctx).Go(fmt.Sprintf("forward-%s", iputil.JoinHostPort(cn.Name, cp)), func(ctx context.Context) error {
 				return fwd.Serve(tunnel.WithPool(ctx, tunnel.NewPool()), nil)
 			})
