@@ -428,6 +428,17 @@ func (s *session) ensureNoPortConflict(spec *manager.InterceptSpec, ir *manager.
 	return nil
 }
 
+func (s *session) compareFinalizedManagerVersion(major, minor, patch uint64) int {
+	mv := s.managerVersion
+	n := mv.Major - major
+	if n == 0 {
+		if n = mv.Minor - minor; n == 0 {
+			n = mv.Patch - patch
+		}
+	}
+	return int(n)
+}
+
 // CanIntercept checks if it is possible to create an intercept for the given request. The intercept can proceed
 // only if the returned rpc.InterceptResult is nil. The returned runtime.Object is either nil, indicating a local
 // intercept, or the workload for the intercept.
@@ -445,6 +456,11 @@ func (s *session) CanIntercept(c context.Context, ir *rpc.CreateInterceptRequest
 	}
 	if spec.Agent == "" {
 		return nil, nil
+	}
+
+	if len(spec.PodPorts) > 0 && s.compareFinalizedManagerVersion(2, 22, 0) < 0 {
+		return nil, InterceptError(common.InterceptError_TRAFFIC_MANAGER_ERROR, errcat.User.Newf(
+			"traffic-manager version %s has no support for multi-port intercepts", s.managerVersion))
 	}
 
 	mgrIr := self.NewCreateInterceptRequest(spec)

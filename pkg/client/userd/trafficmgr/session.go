@@ -678,8 +678,7 @@ func (s *session) WatchWorkloads(c context.Context, wr *rpc.WatchWorkloadsReques
 func (s *session) ensureWatchers(ctx context.Context,
 	namespaces []string,
 ) {
-	v := s.managerVersion
-	managerHasWatcherSupport := v.Major > 2 || v.Major == 2 && v.Minor > 20
+	managerHasWatcherSupport := s.compareFinalizedManagerVersion(2, 20, 0) > 0
 
 	dlog.Debugf(ctx, "Ensure watchers %v", namespaces)
 	wg := sync.WaitGroup{}
