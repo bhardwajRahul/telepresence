@@ -50,7 +50,7 @@ func NewInterceptor(from agentconfig.PortAndProto, targetHost string, targetPort
 	case core.ProtocolUDP:
 		return newUDP(from.Port, targetHost, targetPort)
 	default:
-		panic(fmt.Errorf("unsupported protocodl %s", from.Proto))
+		panic(fmt.Errorf("unsupported protocol %s", from.Proto))
 	}
 }
 
