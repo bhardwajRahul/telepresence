@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-json-experiment/json"
 	jsonv1 "github.com/go-json-experiment/json/v1"
@@ -2048,6 +2049,9 @@ func setupAgentInjector(t *testing.T, ctx context.Context, ci kubernetes.Interfa
 	ctx = WithMap(ctx, cw)
 	cw.DisableRollouts()
 	cw.Start(ctx)
+
 	require.NoError(t, cw.StartWatchers(ctx))
+	informer.GetK8sFactory(ctx, "").WaitForCacheSync(ctx.Done())
+	time.Sleep(time.Second)
 	return ctx
 }
