@@ -399,20 +399,19 @@ func compareVolumeMounts(a, b []core.VolumeMount) bool {
 
 func containerEqual(ctx context.Context, a, b *core.Container) bool {
 	// skips contain defaults assigned by Kubernetes that are not zero values
+	options := cmp.Options{
+		cmp.Comparer(compareProbes),
+		cmp.Comparer(compareVolumeMounts),
+		cmpopts.IgnoreFields(core.Container{}, "ImagePullPolicy", "Resources", "TerminationMessagePath", "TerminationMessagePolicy"),
+	}
 	if dlog.MaxLogLevel(ctx) >= dlog.LogLevelDebug {
-		diff := cmp.Diff(a, b,
-			cmp.Comparer(compareProbes),
-			cmp.Comparer(compareVolumeMounts),
-			cmpopts.IgnoreFields(core.Container{}, "ImagePullPolicy", "Resources", "TerminationMessagePath", "TerminationMessagePolicy"))
+		diff := cmp.Diff(a, b, options...)
 		if diff != "" {
 			dlog.Debug(ctx, diff)
 		}
 		return diff == ""
 	}
-	return cmp.Equal(a, b,
-		cmp.Comparer(compareProbes),
-		cmp.Comparer(compareVolumeMounts),
-		cmpopts.IgnoreFields(core.Container{}, "ImagePullPolicy", "Resources", "TerminationMessagePath", "TerminationMessagePolicy"))
+	return cmp.Equal(a, b, options...)
 }
 
 // addAgentContainer creates a patch operation to add the traffic-agent container.

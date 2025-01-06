@@ -363,7 +363,9 @@ func ConfiguredContainers(ctx context.Context, pod *core.Pod, config *Sidecar) [
 
 func eachConfiguredContainer(configureContainers []*core.Container, config *Sidecar, f func(*core.Container, *Container)) {
 	for i, cn := range configureContainers {
-		f(cn, config.Containers[i])
+		if cn != nil {
+			f(cn, config.Containers[i])
+		}
 	}
 }
 
