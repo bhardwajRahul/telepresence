@@ -94,7 +94,7 @@ func (s *session) getSingleContainerName(ai *manager.AgentInfo) (name string, er
 
 func (s *session) validateAgentForIngest(ai *manager.AgentInfo) error {
 	if len(ai.Containers) == 0 {
-		return status.Error(codes.Unimplemented, fmt.Sprintf("traffic-manager %s have no support for ingest", s.managerVersion))
+		return status.Error(codes.Unimplemented, fmt.Sprintf("traffic-manager %s has no support for ingest", s.managerVersion))
 	}
 	return nil
 }
