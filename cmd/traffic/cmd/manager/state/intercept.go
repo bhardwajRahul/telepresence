@@ -30,8 +30,29 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
+	"github.com/telepresenceio/telepresence/v2/pkg/informer"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 )
+
+func (s *state) inactivateIfHasContainer(ctx context.Context, n, ns, cn string) {
+	api := informer.GetK8sFactory(ctx, ns).Core().V1().Pods().Lister().Pods(ns)
+	for sessionID, ai := range s.getAgentsByName(n, ns) {
+		pod, err := api.Get(ai.PodName)
+		if err != nil {
+			continue
+		}
+		cns := pod.Spec.Containers
+		for i := range cns {
+			if cns[i].Name == cn {
+				dlog.Debugf(ctx, "Inactivating pod %s %s because it contains container %q which is about to be replaced", pod.Name, pod.Status.PodIP, cn)
+				if as, ok := s.GetSession(sessionID).(*agentSessionState); ok {
+					as.active.Store(false)
+				}
+				break
+			}
+		}
+	}
+}
 
 // PrepareIntercept ensures that the given request can be matched against the intercept configuration of
 // the workload that it references. It returns a PreparedIntercept where all intercepted ports have been
@@ -57,10 +78,10 @@ func (s *state) PrepareIntercept(
 	}()
 
 	interceptError := func(err error) (*rpc.PreparedIntercept, error) {
+		dlog.Errorf(ctx, "PrepareIntercept error %v", err)
 		if _, ok := status.FromError(err); ok {
 			return nil, err
 		}
-		dlog.Errorf(ctx, "PrepareIntercept error %v", err)
 		return &rpc.PreparedIntercept{Error: err.Error(), ErrorCategory: int32(errcat.GetCategory(err))}, nil
 	}
 
@@ -74,38 +95,116 @@ func (s *state) PrepareIntercept(
 		return interceptError(err)
 	}
 
+	if spec.Replace {
+		// If we already have an agent config, then any pod that matches the spec and also has the container that we want
+		// to replace must be blacklisted now, or that agent will interfere with the replace.
+		mm := mutator.GetMap(ctx)
+		scx, err := mm.Get(ctx, spec.Agent, spec.Namespace)
+		if err != nil {
+			return interceptError(err)
+		}
+		if scx != nil {
+			if cn, err := findContainer(scx.AgentConfig(), spec); err == nil {
+				s.inactivateIfHasContainer(ctx, spec.Name, spec.Namespace, cn.Name)
+			}
+		}
+	}
+
 	ac, _, err := s.ensureAgent(ctx, wl, s.isExtended(spec), spec)
 	if err != nil {
 		return interceptError(err)
 	}
-	cn, ic, err := findIntercept(ac, spec)
-	if err != nil {
-		return interceptError(err)
+
+	pi = &rpc.PreparedIntercept{
+		Namespace:     ac.Namespace,
+		AgentImage:    ac.AgentImage,
+		WorkloadKind:  ac.WorkloadKind,
+		ContainerName: spec.ContainerName,
+		ServiceName:   spec.ServiceName,
 	}
+
+	var cn *agentconfig.Container
+	if spec.NoDefaultPort {
+		if cn, err = findContainer(ac, spec); err == nil {
+			pi.ContainerName = cn.Name
+			pi.ServiceName = ""
+			if spec.PortIdentifier == "all" {
+				prepareAllContainerPorts(cn, pi)
+			} else if spec.PortIdentifier != "" {
+				err = s.preparePorts(ac, cn, cr, pi)
+			}
+		}
+	} else {
+		err = s.preparePorts(ac, nil, cr, pi)
+	}
+
+	if err != nil {
+		return interceptError(errcat.User.New(err))
+	}
+	return pi, nil
+}
+
+func prepareAllContainerPorts(cn *agentconfig.Container, pi *rpc.PreparedIntercept) {
+	if ni := len(cn.Intercepts); ni > 0 {
+		// Put first port in the intercept itself
+		i0 := cn.Intercepts[0]
+		pi.ContainerPort = int32(i0.ContainerPort)
+		pi.Protocol = string(i0.Protocol)
+		if ni > 1 {
+			// Put remaining ports in PodPorts with a 1:1 mapping to target port on client.
+			pi.PodPorts = make([]string, ni-1)
+			for i := 1; i < ni; i++ {
+				ic := cn.Intercepts[i]
+				pi.PodPorts[i-1] = fmt.Sprintf("%d:%d/%s", ic.ContainerPort, ic.ContainerPort, ic.Protocol)
+			}
+		}
+	}
+}
+
+func (s *state) preparePorts(ac *agentconfig.Sidecar, cn *agentconfig.Container, cr *rpc.CreateInterceptRequest, pi *rpc.PreparedIntercept) (err error) {
+	spec := cr.InterceptSpec
+	portID := agentconfig.PortIdentifier(spec.PortIdentifier)
+	containerOnly := cn != nil
+
+	var ic *agentconfig.Intercept
+	if containerOnly {
+		ic, err = findContainerIntercept(ac, cn, portID)
+	} else {
+		cn, ic, err = findIntercept2(ac, pi.ServiceName, pi.ContainerName, portID)
+	}
+	if err != nil {
+		return err
+	}
+
 	uniqueContainerPorts := make(map[agentconfig.PortAndProto]struct{})
 	uniqueContainerPorts[agentconfig.PortAndProto{Proto: ic.Protocol, Port: ic.ContainerPort}] = struct{}{}
 
 	var podPorts []string
 	if len(spec.PodPorts) > 0 {
-		podPorts = make([]string, len(spec.PodPorts))
 		uniqueTargets := make(map[agentconfig.PortAndProto]struct{})
 		uniqueTargets[agentconfig.PortAndProto{Proto: ic.Protocol, Port: uint16(spec.TargetPort)}] = struct{}{}
+		podPorts = make([]string, len(spec.PodPorts))
 		for i, pms := range spec.PodPorts {
 			pm := agentconfig.PortMapping(pms)
-			_, pmIc, err := findIntercept2(ac, spec.ServiceName, spec.ContainerName, pm.From())
+			var pmIc *agentconfig.Intercept
+			if containerOnly {
+				pmIc, err = findContainerIntercept(ac, cn, pm.From())
+			} else {
+				_, pmIc, err = findIntercept2(ac, spec.ServiceName, spec.ContainerName, pm.From())
+			}
 			if err != nil {
-				return interceptError(err)
+				return err
 			}
 
 			to := pm.To()
 			if _, ok := uniqueTargets[to]; ok {
-				return interceptError(errcat.User.Newf("multiple port definitions targeting %s", to))
+				return fmt.Errorf("multiple port definitions targeting %s", to)
 			}
 			uniqueTargets[to] = struct{}{}
 
 			from := agentconfig.PortAndProto{Proto: pmIc.Protocol, Port: pmIc.ContainerPort}
 			if _, ok := uniqueContainerPorts[from]; ok {
-				return interceptError(errcat.User.Newf("multiple port definitions using container port %s", from))
+				return fmt.Errorf("multiple port definitions using container port %s", from)
 			}
 			uniqueContainerPorts[from] = struct{}{}
 
@@ -133,24 +232,19 @@ func (s *state) PrepareIntercept(
 							client = cps[3]
 						}
 					}
-					return interceptError(errcat.User.Newf("container port %d is already intercepted by %s, intercept %s", cp.Port, client, name))
+					return fmt.Errorf("container port %d is already intercepted by %s, intercept %s", cp.Port, client, name)
 				}
 			}
 		}
 	}
-
-	return &rpc.PreparedIntercept{
-		Namespace:       ac.Namespace,
-		ServiceUid:      string(ic.ServiceUID),
-		ServicePortName: ic.ServicePortName,
-		ContainerName:   cn.Name,
-		Protocol:        string(ic.Protocol),
-		ContainerPort:   int32(ic.ContainerPort),
-		ServicePort:     int32(ic.ServicePort),
-		AgentImage:      ac.AgentImage,
-		WorkloadKind:    ac.WorkloadKind,
-		PodPorts:        podPorts,
-	}, nil
+	pi.ContainerName = cn.Name
+	pi.ServiceUid = string(ic.ServiceUID)
+	pi.ServicePortName = ic.ServicePortName
+	pi.Protocol = string(ic.Protocol)
+	pi.ContainerPort = int32(ic.ContainerPort)
+	pi.ServicePort = int32(ic.ServicePort)
+	pi.PodPorts = podPorts
+	return nil
 }
 
 func (s *state) AddIntercept(ctx context.Context, cir *rpc.CreateInterceptRequest) (*rpc.ClientInfo, *rpc.InterceptInfo, error) {
@@ -401,20 +495,24 @@ func (s *state) RestoreAppContainer(ctx context.Context, ii *rpc.InterceptInfo) 
 		if err != nil {
 			return false, err
 		}
-		cn, _, err := findIntercept(sce.AgentConfig(), spec)
+		var cn *agentconfig.Container
+		if spec.NoDefaultPort {
+			cn, err = findContainer(sce.AgentConfig(), spec)
+		} else {
+			cn, _, err = findIntercept(sce.AgentConfig(), spec)
+		}
 		if !(err == nil && cn.Replace) {
 			return false, nil
 		}
 		cn.Replace = false
 
 		// The pods for this workload will be killed once the new updated sidecar
-		// reaches the configmap. We remove them now, so that they don't continue to
+		// reaches the configmap. We inactivate them now, so that they don't continue to
 		// review intercepts.
-		for sessionID, ai := range s.getAgentsByName(n, ns) {
+		for sessionID := range s.getAgentsByName(n, ns) {
 			if as, ok := s.GetSession(sessionID).(*agentSessionState); ok {
 				as.active.Store(false)
 			}
-			mm.Blacklist(ai.PodName, ns)
 		}
 		return updateSidecar(sce, cm, n)
 	})
@@ -522,7 +620,12 @@ func (s *state) getOrCreateAgentConfig(
 
 		ac := sce.AgentConfig()
 		if spec != nil {
-			cn, _, err := findIntercept(ac, spec)
+			var cn *agentconfig.Container
+			if spec.NoDefaultPort {
+				cn, err = findContainer(ac, spec)
+			} else {
+				cn, _, err = findIntercept(ac, spec)
+			}
 			if err != nil {
 				return false, err
 			}
@@ -779,6 +882,24 @@ func unmarshalConfigMapEntry(y string, name, namespace string) (agentconfig.Side
 	return scx, nil
 }
 
+// findContainer finds the container configuration that matches the given InterceptSpec.
+func findContainer(ac *agentconfig.Sidecar, spec *rpc.InterceptSpec) (foundCN *agentconfig.Container, err error) {
+	if spec.ContainerName == "" {
+		if len(ac.Containers) == 1 {
+			return ac.Containers[0], nil
+		}
+		return nil, errcat.User.Newf("%s %s.%s has more than one container",
+			ac.WorkloadKind, ac.WorkloadName, ac.Namespace)
+	}
+	for _, cn := range ac.Containers {
+		if spec.ContainerName == cn.Name {
+			return cn, nil
+		}
+	}
+	return nil, errcat.User.Newf("%s %s.%s has no container named %s",
+		ac.WorkloadKind, ac.WorkloadName, ac.Namespace, spec.ContainerName)
+}
+
 // findIntercept finds the intercept configuration that matches the given InterceptSpec's service/service port or container port.
 func findIntercept(ac *agentconfig.Sidecar, spec *rpc.InterceptSpec) (foundCN *agentconfig.Container, foundIC *agentconfig.Intercept, err error) {
 	return findIntercept2(ac, spec.ServiceName, spec.ContainerName, agentconfig.PortIdentifier(spec.PortIdentifier))
@@ -852,6 +973,16 @@ func findIntercept2(ac *agentconfig.Sidecar, serviceName, containerName string, 
 		ss = fmt.Sprintf(" matching port %s", pi)
 	}
 	return nil, nil, errcat.User.Newf("%s %s.%s has no interceptable port%s", ac.WorkloadKind, ac.WorkloadName, ac.Namespace, ss)
+}
+
+// findContainerIntercept finds the intercept configuration that matches container port.
+func findContainerIntercept(ac *agentconfig.Sidecar, cn *agentconfig.Container, pi agentconfig.PortIdentifier) (*agentconfig.Intercept, error) {
+	for _, ic := range cn.Intercepts {
+		if agentconfig.IsInterceptForContainer(pi, ic) {
+			return ic, nil
+		}
+	}
+	return nil, errcat.User.Newf("%s %s.%s has no container port matching %s", ac.WorkloadKind, ac.WorkloadName, ac.Namespace, pi)
 }
 
 type InterceptFinalizer func(ctx context.Context, interceptInfo *rpc.InterceptInfo) error

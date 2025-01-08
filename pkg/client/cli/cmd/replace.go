@@ -7,21 +7,21 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/intercept"
 )
 
-func interceptCmd() *cobra.Command {
+func replaceCmd() *cobra.Command {
 	ic := &intercept.Command{}
 	cmd := &cobra.Command{
-		Use:   "intercept [flags] <intercept_base_name> [-- <command with arguments...>]",
+		Use:   "replace [flags] <replace_base_name> [-- <command with arguments...>]",
 		Args:  cobra.MinimumNArgs(1),
-		Short: "Intercept a service",
+		Short: "Replace a container",
 		Annotations: map[string]string{
 			ann.Session:           ann.Required,
 			ann.UpdateCheckFormat: ann.Tel2,
 		},
 		SilenceUsage:      true,
 		SilenceErrors:     true,
-		RunE:              ic.Run,
+		RunE:              ic.RunReplace,
 		ValidArgsFunction: intercept.ValidArgs,
 	}
-	ic.AddInterceptFlags(cmd)
+	ic.AddReplaceFlags(cmd)
 	return cmd
 }

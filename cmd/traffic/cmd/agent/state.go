@@ -37,6 +37,9 @@ type State interface {
 }
 
 type ContainerState interface {
+	State
+	Name() string
+	Replace() bool
 	MountPoint() string
 	Env() map[string]string
 }
@@ -111,17 +114,37 @@ func (s *state) InterceptStates() []InterceptState {
 
 func (s *state) HandleIntercepts(ctx context.Context, iis []*manager.InterceptInfo) []*manager.ReviewInterceptRequest {
 	var rs []*manager.ReviewInterceptRequest
+
+	// Keep track of all InterceptInfos handled by interceptStates
+	handled := make([]bool, len(iis))
 	for _, ist := range s.interceptStates {
 		ms := make([]*manager.InterceptInfo, 0, len(iis))
-		for _, ii := range iis {
-			ic := ist.Target()
-			if ic.MatchForSpec(ii.Spec) {
-				dlog.Debugf(ctx, "intercept id %s svc=%q, portId=%q matches target protocol=%s, agentPort=%d, containerPort=%d",
-					ii.Id, ii.Spec.ServiceName, ii.Spec.PortIdentifier, ic.Protocol(), ic.AgentPort(), ic.ContainerPort())
-				ms = append(ms, ii)
+		for i, ii := range iis {
+			if !handled[i] {
+				ic := ist.Target()
+				if ic.MatchForSpec(ii.Spec) {
+					dlog.Debugf(ctx, "intercept id %s svc=%q, portId=%q matches target protocol=%s, agentPort=%d, containerPort=%d",
+						ii.Id, ii.Spec.ServiceName, ii.Spec.PortIdentifier, ic.Protocol(), ic.AgentPort(), ic.ContainerPort())
+					ms = append(ms, ii)
+					handled[i] = true
+				}
 			}
 		}
 		rs = append(rs, ist.HandleIntercepts(ctx, ms)...)
+	}
+
+	// Collect InterceptInfos weren't handled by interceptStates
+	var unhandled []*manager.InterceptInfo
+	for i, ok := range handled {
+		if !ok {
+			unhandled = append(unhandled, iis[i])
+		}
+	}
+	if len(unhandled) > 0 {
+		// Let containerStates handle the rest.
+		for _, cn := range s.containerStates {
+			rs = append(rs, cn.HandleIntercepts(ctx, unhandled)...)
+		}
 	}
 	return rs
 }

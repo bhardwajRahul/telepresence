@@ -415,9 +415,11 @@ func (s *service) watchAgents(ctx context.Context, includeAgent func(string, *rp
 				return nil
 			}
 			agentSessionIDs := slices.Sorted(maps.Keys(snapshot.State))
-			agents := make([]*rpc.AgentInfo, len(agentSessionIDs))
-			for i, agentSessionID := range agentSessionIDs {
-				agents[i] = snapshot.State[agentSessionID]
+			agents := make([]*rpc.AgentInfo, 0, len(agentSessionIDs))
+			for _, agentSessionID := range agentSessionIDs {
+				if as := s.state.GetSession(agentSessionID); as != nil && as.Active() {
+					agents = append(agents, snapshot.State[agentSessionID])
+				}
 			}
 			if slices.EqualFunc(agents, lastSnap, infosEqual) {
 				continue
@@ -467,12 +469,16 @@ func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_W
 		}
 
 		if agent := s.state.GetAgent(sessionID); agent != nil {
-			// sessionID refers to an agent session. Include everything for the agent, including pod-port children.
 			filter = func(id string, info *rpc.InterceptInfo) bool {
 				if info.Spec.Namespace != agent.Namespace || info.Spec.Agent != agent.Name {
 					// Don't return intercepts for different agents.
 					return false
 				}
+				if as := s.state.GetSession(sessionID); as == nil || !as.Active() {
+					// Session is no longer active
+					return false
+				}
+
 				// Don't return intercepts that aren't in a "agent-owned" state.
 				switch info.Disposition {
 				case rpc.InterceptDispositionType_WAITING,
@@ -506,6 +512,10 @@ func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_W
 		case snapshot, ok := <-snapshotCh:
 			if !ok {
 				dlog.Debugf(ctx, "WatchIntercepts request cancelled")
+				return nil
+			}
+			if as := s.state.GetSession(sessionID); as == nil || !as.Active() {
+				dlog.Debugf(ctx, "WatchIntercepts session no longer active")
 				return nil
 			}
 			dlog.Debugf(ctx, "WatchIntercepts sending update")
@@ -597,13 +607,6 @@ func (s *service) CreateIntercept(ctx context.Context, ciReq *rpc.CreateIntercep
 		return nil, status.Error(codes.InvalidArgument, val)
 	}
 
-	if ciReq.InterceptSpec.Replace {
-		_, err := s.state.PrepareIntercept(ctx, ciReq)
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	client, interceptInfo, err := s.state.AddIntercept(ctx, ciReq)
 	if err != nil {
 		return nil, err
@@ -684,15 +687,15 @@ func (s *service) ReviewIntercept(ctx context.Context, rIReq *rpc.ReviewIntercep
 	sessionID := rIReq.GetSession().GetSessionId()
 	ceptID := rIReq.Id
 
+	agent := s.state.GetActiveAgent(sessionID)
+	if agent == nil {
+		return &empty.Empty{}, nil
+	}
+
 	if rIReq.Disposition == rpc.InterceptDispositionType_AGENT_ERROR {
 		dlog.Errorf(ctx, "ReviewIntercept called: %s - %s: %s", ceptID, rIReq.Disposition, rIReq.Message)
 	} else {
 		dlog.Debugf(ctx, "ReviewIntercept called: %s - %s", ceptID, rIReq.Disposition)
-	}
-
-	agent := s.state.GetActiveAgent(sessionID)
-	if agent == nil {
-		return &empty.Empty{}, nil
 	}
 
 	s.removeExcludedEnvVars(rIReq.Environment)

@@ -102,20 +102,17 @@ func (c *configWatcher) isRolloutNeeded(ctx context.Context, wl k8sapi.Workload,
 	if wl.GetDeletionTimestamp() != nil {
 		return false
 	}
-	if ia, ok := podMeta.GetAnnotations()[agentconfig.InjectAnnotation]; ok {
+
+	injectAnnotation, ok := podMeta.GetAnnotations()[agentconfig.InjectAnnotation]
+	if ok {
 		// Annotation controls injection, so no explicit rollout is needed unless the deployment was added before the
 		// traffic-manager or the traffic-manager already received an injection event but failed due to the lack
 		// of an agent config.
 		if c.running.Load() {
 			if c.receivedPrematureInjectEvent(wl) {
 				dlog.Debugf(ctx, "Rollout of %s.%s is necessary. Pod template has inject annotation %s and a premature injection event was received",
-					wl.GetName(), wl.GetNamespace(), ia)
+					wl.GetName(), wl.GetNamespace(), injectAnnotation)
 				return true
-			}
-			if wl.GetCreationTimestamp().After(c.startedAt) {
-				dlog.Debugf(ctx, "Rollout of %s.%s is not necessary. Pod template has inject annotation %s",
-					wl.GetName(), wl.GetNamespace(), ia)
-				return false
 			}
 		}
 	}
@@ -158,6 +155,11 @@ func (c *configWatcher) isRolloutNeeded(ctx context.Context, wl k8sapi.Workload,
 	}
 	// Rollout if there are no running pods
 	if runningPods == 0 {
+		if injectAnnotation != "" && wl.GetCreationTimestamp().After(c.startedAt) {
+			dlog.Debugf(ctx, "Rollout of %s.%s is not necessary. Pod template has inject annotation %s",
+				wl.GetName(), wl.GetNamespace(), injectAnnotation)
+			return false
+		}
 		if ac != nil {
 			dlog.Debugf(ctx, "Rollout of %s.%s is necessary. An agent is desired and there are no pods",
 				wl.GetName(), wl.GetNamespace())
@@ -231,7 +233,7 @@ func isRolloutNeededForPod(ctx context.Context, ac *agentconfig.Sidecar, name, n
 					name, namespace, cn.Name)
 			}
 		} else if found == nil {
-			return fmt.Sprintf("Rollout of %s.%s is necessary. The %s container should not be replaced",
+			return fmt.Sprintf("Rollout of %s.%s is necessary. The %s container must be restored",
 				name, namespace, cn.Name)
 		}
 	}

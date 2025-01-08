@@ -590,6 +590,7 @@ func (s *session) ApplyConfig(ctx context.Context) error {
 
 // getInfosForWorkloads returns a list of workloads found in the given namespace that fulfils the given filter criteria.
 func (s *session) getInfosForWorkloads(
+	ctx context.Context,
 	namespaces []string,
 	iMap map[string][]*manager.InterceptInfo,
 	gMap map[string][]*rpc.IngestInfo,
@@ -611,8 +612,16 @@ func (s *session) getInfosForWorkloads(
 
 		var ok bool
 		filterMatch := rpc.ListRequest_EVERYTHING
-		if wlInfo.InterceptInfos, ok = iMap[name]; !ok {
-			filterMatch &= ^rpc.ListRequest_INTERCEPTS
+
+		filterMatch &= ^(rpc.ListRequest_REPLACEMENTS | rpc.ListRequest_INTERCEPTS)
+		if wlInfo.InterceptInfos, ok = iMap[name]; ok {
+			for _, ii := range wlInfo.InterceptInfos {
+				if ii.Spec.NoDefaultPort {
+					filterMatch |= rpc.ListRequest_REPLACEMENTS
+				} else {
+					filterMatch |= rpc.ListRequest_INTERCEPTS
+				}
+			}
 		}
 		if wlInfo.IngestInfos, ok = gMap[name]; !ok {
 			filterMatch &= ^rpc.ListRequest_INGESTS
@@ -620,6 +629,7 @@ func (s *session) getInfosForWorkloads(
 		if wlInfo.AgentVersion, ok = sMap[name]; !ok {
 			filterMatch &= ^rpc.ListRequest_INSTALLED_AGENTS
 		}
+		dlog.Debugf(ctx, "filter %d, filterMatch %d", filter, filterMatch)
 		if filter != 0 && filter&filterMatch == 0 {
 			return
 		}
@@ -652,7 +662,7 @@ func (s *session) WatchWorkloads(c context.Context, wr *rpc.WatchWorkloadsReques
 	}()
 
 	send := func() error {
-		ws, err := s.WorkloadInfoSnapshot(c, wr.Namespaces, rpc.ListRequest_EVERYTHING)
+		ws, err := s.WorkloadInfoSnapshot(c, wr.Namespaces, rpc.ListRequest_UNSPECIFIED)
 		if err != nil {
 			return err
 		}
@@ -718,16 +728,11 @@ func (s *session) WorkloadInfoSnapshot(
 
 	var nss []string
 	var sMap map[string]string
-	if filter&(rpc.ListRequest_INTERCEPTS|rpc.ListRequest_INGESTS|rpc.ListRequest_INSTALLED_AGENTS) != 0 {
-		// Special case, we don't care about namespaces in general. Instead, we use the connected namespace
-		nss = []string{s.Namespace}
-	} else {
-		nss = make([]string, 0, len(namespaces))
-		for _, ns := range namespaces {
-			ns = s.ActualNamespace(ns)
-			if ns != "" {
-				nss = append(nss, ns)
-			}
+	nss = make([]string, 0, len(namespaces))
+	for _, ns := range namespaces {
+		ns = s.ActualNamespace(ns)
+		if ns != "" {
+			nss = append(nss, ns)
 		}
 	}
 	if len(nss) == 0 {
@@ -759,7 +764,7 @@ nextIs:
 		return true
 	})
 
-	workloadInfos := s.getInfosForWorkloads(nss, iMap, gMap, sMap, filter)
+	workloadInfos := s.getInfosForWorkloads(ctx, nss, iMap, gMap, sMap, filter)
 	return &rpc.WorkloadInfoSnapshot{Workloads: workloadInfos}, nil
 }
 

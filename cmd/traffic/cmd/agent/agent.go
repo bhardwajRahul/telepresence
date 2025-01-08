@@ -158,7 +158,7 @@ func sidecar(ctx context.Context, s State, info *rpc.AgentInfo) error {
 	ac := s.AgentConfig()
 	for _, cn := range ac.Containers {
 		ci := info.Containers[cn.Name]
-		s.AddContainerState(cn.Name, NewContainerState(ci.MountPoint, ci.Environment))
+		s.AddContainerState(cn.Name, NewContainerState(s, cn, ci.MountPoint, ci.Environment))
 
 		// Group the container's intercepts by agent port
 		icStates := make(map[agentconfig.PortAndProto][]*agentconfig.Intercept, len(cn.Intercepts))

@@ -84,6 +84,7 @@ func (s *state) CreateRequest(ctx context.Context) (*connector.CreateInterceptRe
 	spec.MechanismArgs = s.MechanismArgs
 	spec.Agent = s.AgentName
 	spec.TargetHost = "127.0.0.1"
+	spec.NoDefaultPort = s.NoDefaultPort
 
 	ud := daemon.GetUserClient(ctx)
 

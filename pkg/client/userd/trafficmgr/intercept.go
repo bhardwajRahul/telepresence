@@ -375,7 +375,7 @@ func ensureUniqueLocalPorts(spec *manager.InterceptSpec, pi *manager.PreparedInt
 		targetPort = pi.ContainerPort
 	}
 
-	ports := make(map[agentconfig.PortAndProto]struct{}, len(spec.LocalPorts)+len(spec.PodPorts)+1)
+	ports := make(map[agentconfig.PortAndProto]struct{}, len(spec.LocalPorts)+len(pi.PodPorts)+1)
 	ports[agentconfig.PortAndProto{
 		Port:  uint16(targetPort),
 		Proto: core.Protocol(pi.Protocol),
@@ -518,7 +518,9 @@ func (s *session) AddIntercept(c context.Context, ir *rpc.CreateInterceptRequest
 	// of using PrepareIntercept.
 	pi := iInfo.PreparedIntercept()
 
-	if pi.ServicePort > 0 || pi.ServicePortName != "" {
+	if spec.PortIdentifier == "all" {
+		spec.PortIdentifier = ""
+	} else if pi.ServicePort > 0 || pi.ServicePortName != "" {
 		// Make spec port identifier unambiguous.
 		spec.ServicePortName = pi.ServicePortName
 		spec.ServicePort = pi.ServicePort
@@ -531,6 +533,10 @@ func (s *session) AddIntercept(c context.Context, ir *rpc.CreateInterceptRequest
 	dlog.Debugf(c, "pi.Protocol = %s", pi.Protocol)
 	spec.Protocol = pi.Protocol
 	spec.ContainerPort = pi.ContainerPort
+	spec.ContainerName = pi.ContainerName
+	if spec.NoDefaultPort {
+		spec.Name = spec.Agent + "/" + pi.ContainerName
+	}
 	spec.PodPorts = pi.PodPorts
 	result = iInfo.InterceptResult()
 
@@ -754,15 +760,48 @@ func (s *session) GetInterceptInfo(name string) *manager.InterceptInfo {
 }
 
 // GetInterceptSpec returns the InterceptSpec for the given name, or nil if no such spec exists.
-func (s *session) getInterceptByName(name string) (found *intercept) {
+func (s *session) getInterceptByName(name string) *intercept {
 	s.currentInterceptsLock.Lock()
+	defer s.currentInterceptsLock.Unlock()
 	for _, ic := range s.currentIntercepts {
 		if ic.Spec.Name == name {
-			found = ic
-			break
+			return ic
 		}
 	}
-	s.currentInterceptsLock.Unlock()
+
+	if slashIx := strings.IndexByte(name, '/'); slashIx > 0 {
+		container := name[slashIx+1:]
+		name = name[:slashIx]
+		for _, ic := range s.currentIntercepts {
+			if ic.Spec.Name == name && container == ic.Spec.ContainerName {
+				return ic
+			}
+		}
+		return nil
+	}
+
+	// Check if the name uniquely identifies a `replace` by its workload (always uses <workload>/<container>)
+	namePfx := name + "/"
+	var found *intercept
+	for _, ic := range s.currentIntercepts {
+		if strings.HasPrefix(ic.Spec.Name, namePfx) {
+			if found != nil {
+				// Found a second time using prefix, so the prefix isn't unique and hence not valid.
+				return nil
+			}
+			found = ic
+		}
+	}
+	if found != nil {
+		// Name is not unique if it also identifies an ingest with the same workload.
+		s.currentIngests.Range(func(key ingestKey, ig *ingest) bool {
+			if key.workload == name {
+				found = nil
+				return false
+			}
+			return true
+		})
+	}
 	return found
 }
 

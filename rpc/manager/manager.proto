@@ -176,6 +176,9 @@ message InterceptSpec {
 
   // Whether to replace the running container.
   bool replace = 22;
+
+  // Intercept desire no default port.
+  bool no_default_port = 25;
 }
 
 enum InterceptDispositionType {

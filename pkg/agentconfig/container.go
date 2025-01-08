@@ -149,6 +149,9 @@ func AgentContainer(
 		}
 	})
 
+	if len(ports) == 0 {
+		ports = nil
+	}
 	ac := &core.Container{
 		Name:         ContainerName,
 		Image:        config.AgentImage,
