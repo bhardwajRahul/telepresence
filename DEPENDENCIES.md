@@ -6,7 +6,7 @@ following Free and Open Source software:
     the Go language standard library ("std")                       v1.23                                 3-clause BSD license
     dario.cat/mergo                                                v1.0.1                                3-clause BSD license
     github.com/AdaLogics/go-fuzz-headers                           v0.0.0-20240806141605-e8a1dd7889d6    Apache License 2.0
-    github.com/Azure/go-ansiterm                                   v0.0.0-20230124172434-306776ec8161    MIT license
+    github.com/Azure/go-ansiterm                                   v0.0.0-20250102033503-faa5f7b0171c    MIT license
     github.com/BurntSushi/toml                                     v1.4.1-0.20240526193622-a339e1f7089c  MIT license
     github.com/MakeNowJust/heredoc                                 v1.0.0                                MIT license
     github.com/Masterminds/goutils                                 v1.1.1                                Apache License 2.0
@@ -52,7 +52,7 @@ following Free and Open Source software:
     github.com/fxamacker/cbor/v2                                   v2.7.0                                MIT license
     github.com/go-errors/errors                                    v1.5.1                                MIT license
     github.com/go-gorp/gorp/v3                                     v3.1.0                                MIT license
-    github.com/go-json-experiment/json                             v0.0.0-20241221052253-764075c9f606    3-clause BSD license
+    github.com/go-json-experiment/json                             v0.0.0-20250106061903-e1879d3334f2    3-clause BSD license
     github.com/go-logr/logr                                        v1.4.2                                Apache License 2.0
     github.com/go-logr/stdr                                        v1.2.2                                Apache License 2.0
     github.com/go-openapi/jsonpointer                              v0.21.0                               Apache License 2.0
@@ -98,7 +98,7 @@ following Free and Open Source software:
     github.com/moby/docker-image-spec                              v1.3.1                                Apache License 2.0
     github.com/moby/locker                                         v1.0.1                                Apache License 2.0
     github.com/moby/spdystream                                     v0.5.0                                Apache License 2.0
-    github.com/moby/term                                           v0.5.0                                Apache License 2.0
+    github.com/moby/term                                           v0.5.2                                Apache License 2.0
     github.com/modern-go/concurrent                                v0.0.0-20180306012644-bacd9c7ef1dd    Apache License 2.0
     github.com/modern-go/reflect2                                  v1.0.2                                Apache License 2.0
     github.com/monochromegane/go-gitignore                         v0.0.0-20200626010858-205db1a8cc00    MIT license
@@ -141,27 +141,27 @@ following Free and Open Source software:
     go.opentelemetry.io/otel                                       v1.33.0                               Apache License 2.0
     go.opentelemetry.io/otel/metric                                v1.33.0                               Apache License 2.0
     go.opentelemetry.io/otel/trace                                 v1.33.0                               Apache License 2.0
-    golang.org/x/crypto                                            v0.31.0                               3-clause BSD license
-    golang.org/x/exp                                               v0.0.0-20241217172543-b2144cdd0a67    3-clause BSD license
+    golang.org/x/crypto                                            v0.32.0                               3-clause BSD license
+    golang.org/x/exp                                               v0.0.0-20250106191152-7588d65b2ba8    3-clause BSD license
     golang.org/x/mod                                               v0.22.0                               3-clause BSD license
-    golang.org/x/net                                               v0.33.0                               3-clause BSD license
-    golang.org/x/oauth2                                            v0.24.0                               3-clause BSD license
+    golang.org/x/net                                               v0.34.0                               3-clause BSD license
+    golang.org/x/oauth2                                            v0.25.0                               3-clause BSD license
     golang.org/x/sync                                              v0.10.0                               3-clause BSD license
-    golang.org/x/sys                                               v0.28.0                               3-clause BSD license
-    golang.org/x/term                                              v0.27.0                               3-clause BSD license
+    golang.org/x/sys                                               v0.29.0                               3-clause BSD license
+    golang.org/x/term                                              v0.28.0                               3-clause BSD license
     golang.org/x/text                                              v0.21.0                               3-clause BSD license
-    golang.org/x/time                                              v0.8.0                                3-clause BSD license
-    golang.org/x/tools                                             v0.28.0                               3-clause BSD license
+    golang.org/x/time                                              v0.9.0                                3-clause BSD license
+    golang.org/x/tools                                             v0.29.0                               3-clause BSD license
     golang.zx2c4.com/wintun                                        v0.0.0-20230126152724-0fa3db229ce2    MIT license
     golang.zx2c4.com/wireguard                                     v0.0.0-20231211153847-12269c276173    MIT license
     golang.zx2c4.com/wireguard/windows                             v0.5.3                                MIT license
-    google.golang.org/genproto/googleapis/rpc                      v0.0.0-20241219192143-6b3ec007d9bb    Apache License 2.0
+    google.golang.org/genproto/googleapis/rpc                      v0.0.0-20250106144421-5f5ef82da422    Apache License 2.0
     google.golang.org/grpc                                         v1.69.2                               Apache License 2.0
-    google.golang.org/protobuf                                     v1.36.0                               3-clause BSD license
+    google.golang.org/protobuf                                     v1.36.2                               3-clause BSD license
     gopkg.in/evanphx/json-patch.v4                                 v4.12.0                               3-clause BSD license
     gopkg.in/inf.v0                                                v0.9.1                                3-clause BSD license
     gopkg.in/yaml.v3                                               v3.0.1                                Apache License 2.0, MIT license
-    gvisor.dev/gvisor                                              v0.0.0-20241220022509-4690b2e35d70    Apache License 2.0, MIT license
+    gvisor.dev/gvisor                                              v0.0.0-20250106193742-9c4bf5b667b6    Apache License 2.0, MIT license
     helm.sh/helm/v3                                                v3.16.4                               Apache License 2.0
     k8s.io/api                                                     v0.32.0                               Apache License 2.0
     k8s.io/apiextensions-apiserver                                 v0.32.0                               Apache License 2.0
