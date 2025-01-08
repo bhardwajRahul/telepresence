@@ -16,7 +16,7 @@ import (
 
 type managerGRPCSuite struct {
 	itest.Suite
-	itest.NamespacePair
+	itest.TrafficManager
 	conn   *grpc.ClientConn
 	client manager.ManagerClient
 	si     *manager.SessionInfo
@@ -27,8 +27,8 @@ func (m *managerGRPCSuite) SuiteName() string {
 }
 
 func init() {
-	itest.AddConnectedSuite("", func(h itest.NamespacePair) itest.TestingSuite {
-		return &managerGRPCSuite{Suite: itest.Suite{Harness: h}, NamespacePair: h}
+	itest.AddConnectedSuite("", func(h itest.TrafficManager) itest.TestingSuite {
+		return &managerGRPCSuite{Suite: itest.Suite{Harness: h}, TrafficManager: h}
 	})
 }
 

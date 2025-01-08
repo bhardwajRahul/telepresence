@@ -9,7 +9,7 @@ import (
 
 type connectedSuite struct {
 	itest.Suite
-	itest.NamespacePair
+	itest.TrafficManager
 }
 
 func (s *connectedSuite) SuiteName() string {
@@ -17,8 +17,8 @@ func (s *connectedSuite) SuiteName() string {
 }
 
 func init() {
-	itest.AddConnectedSuite("", func(h itest.NamespacePair) itest.TestingSuite {
-		return &connectedSuite{Suite: itest.Suite{Harness: h}, NamespacePair: h}
+	itest.AddConnectedSuite("", func(h itest.TrafficManager) itest.TestingSuite {
+		return &connectedSuite{Suite: itest.Suite{Harness: h}, TrafficManager: h}
 	})
 }
 

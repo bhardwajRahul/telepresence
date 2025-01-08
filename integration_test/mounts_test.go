@@ -18,7 +18,7 @@ import (
 
 type mountsSuite struct {
 	itest.Suite
-	itest.NamespacePair
+	itest.TrafficManager
 	eksClusterName string
 }
 
@@ -27,10 +27,10 @@ func (s *mountsSuite) SuiteName() string {
 }
 
 func init() {
-	itest.AddConnectedSuite("", func(h itest.NamespacePair) itest.TestingSuite {
+	itest.AddConnectedSuite("", func(h itest.TrafficManager) itest.TestingSuite {
 		return &mountsSuite{
-			Suite:         itest.Suite{Harness: h},
-			NamespacePair: h,
+			Suite:          itest.Suite{Harness: h},
+			TrafficManager: h,
 		}
 	})
 }

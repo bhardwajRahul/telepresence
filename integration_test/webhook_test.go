@@ -10,7 +10,7 @@ import (
 
 type webhookSuite struct {
 	itest.Suite
-	itest.NamespacePair
+	itest.TrafficManager
 }
 
 func (s *webhookSuite) SuiteName() string {
@@ -18,8 +18,8 @@ func (s *webhookSuite) SuiteName() string {
 }
 
 func init() {
-	itest.AddConnectedSuite("", func(h itest.NamespacePair) itest.TestingSuite {
-		return &webhookSuite{Suite: itest.Suite{Harness: h}, NamespacePair: h}
+	itest.AddConnectedSuite("", func(h itest.TrafficManager) itest.TestingSuite {
+		return &webhookSuite{Suite: itest.Suite{Harness: h}, TrafficManager: h}
 	})
 }
 

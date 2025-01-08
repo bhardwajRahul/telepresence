@@ -9,9 +9,22 @@ spec:
   selector:
     app: {{ .Name }}
   ports:
-    - name: http
-      port: 80
+{{- range .ServicePorts }}
+    - port: {{ .Number }}
+{{- with .Name }}
+      name: {{ . }}
+{{- end}}
+{{- with .TargetPort }}
+      targetPort: {{ . }}
+{{- end}}
+{{- with .Protocol }}
+      protocol: {{ . }}
+{{- end}}
+{{- else }}
+    - port: 80
+      name: http
       targetPort: {{ .TargetPort | default "http" }}
+{{- end}}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -37,8 +50,18 @@ spec:
         - name: backend
           image: "{{ .Registry }}/{{ .Image }}"
           ports:
-            - name: http
-              containerPort: {{ .ContainerPort | default 8080 }}
+{{- range .ContainerPorts }}
+            - containerPort: {{ .Number }}
+  {{- with .Name }}
+              name: {{ . }}
+  {{- end}}
+  {{- with .Protocol }}
+              protocol: {{ . }}
+  {{- end}}
+{{- else }}
+            - containerPort: {{ .ContainerPort | default 8080 }}
+              name: http
+{{- end }}
 {{- with .Environment }}
           env:
 {{- toYaml . | nindent 12 }}
