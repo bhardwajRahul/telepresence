@@ -62,7 +62,7 @@ func (wf *workloadInfoWatcher) Watch(ctx context.Context, stream rpc.Manager_Wat
 		return err
 	}
 
-	workloadsCh, err := wf.WatchWorkloads(ctx, wf.clientSession)
+	workloadsCh, err := wf.WatchWorkloads(ctx, wf.namespace)
 	if err != nil {
 		return err
 	}

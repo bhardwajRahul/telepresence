@@ -937,7 +937,7 @@ func (s *service) WatchWorkloads(request *rpc.WorkloadEventsRequest, stream rpc.
 		}
 		dlog.Debugf(ctx, "WatchWorkloads ended")
 	}()
-	dlog.Debugf(ctx, "WatchWorkloads called")
+	dlog.Debugf(ctx, "WatchWorkloads called, namespace %q", request.Namespace)
 
 	if request.SessionInfo == nil {
 		return status.Error(codes.InvalidArgument, "SessionInfo is required")

@@ -90,7 +90,7 @@ type State interface {
 	WatchAgents(context.Context, func(sessionID string, agent *rpc.AgentInfo) bool) <-chan watchable.Snapshot[*rpc.AgentInfo]
 	WatchDial(sessionID string) <-chan *rpc.DialRequest
 	WatchIntercepts(context.Context, func(sessionID string, intercept *rpc.InterceptInfo) bool) <-chan watchable.Snapshot[*rpc.InterceptInfo]
-	WatchWorkloads(ctx context.Context, sessionID string) (ch <-chan []workload.Event, err error)
+	WatchWorkloads(ctx context.Context, namespace string) (ch <-chan []workload.Event, err error)
 	WatchLookupDNS(string) <-chan *rpc.DNSRequest
 	ValidateCreateAgent(context.Context, k8sapi.Workload, agentconfig.SidecarExt) error
 	NewWorkloadInfoWatcher(clientSession, namespace string) WorkloadInfoWatcher
@@ -522,12 +522,7 @@ func (s *state) WatchAgents(
 	}
 }
 
-func (s *state) WatchWorkloads(ctx context.Context, sessionID string) (ch <-chan []workload.Event, err error) {
-	client := s.GetClient(sessionID)
-	if client == nil {
-		return nil, status.Errorf(codes.NotFound, "session %q not found", sessionID)
-	}
-	ns := client.Namespace
+func (s *state) WatchWorkloads(ctx context.Context, ns string) (ch <-chan []workload.Event, err error) {
 	ww, _ := s.workloadWatchers.Compute(ns, func(ww workload.Watcher, loaded bool) (workload.Watcher, bool) {
 		if loaded {
 			return ww, false

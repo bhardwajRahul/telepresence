@@ -106,17 +106,17 @@ func MainWithEnv(ctx context.Context) (err error) {
 	// l := klog.Level(6)
 	// _ = l.Set("6")
 	mgrFactory := false
-	mns := namespaces.Get(ctx)
-	if len(mns) == 0 {
-		ctx = informer.WithFactory(ctx, "")
-	} else {
-		for _, ns := range mns {
-			ctx = informer.WithFactory(ctx, ns)
-		}
-		if !slices.Contains(mns, env.ManagerNamespace) {
-			mgrFactory = true
-			ctx = informer.WithFactory(ctx, env.ManagerNamespace)
-		}
+	mns := namespaces.GetOrGlobal(ctx)
+	global := len(mns) == 1 && mns[0] == ""
+	if global {
+		dlog.Debug(ctx, "Using cluster wide informers")
+	}
+	for _, ns := range mns {
+		ctx = informer.WithFactory(ctx, ns)
+	}
+	if !(global || slices.Contains(mns, env.ManagerNamespace)) {
+		mgrFactory = true
+		ctx = informer.WithFactory(ctx, env.ManagerNamespace)
 	}
 
 	var injectorCertGetter mutator.InjectorCertGetter

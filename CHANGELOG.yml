@@ -25,7 +25,7 @@
 # For older changes, see CHANGELOG.OLD.md
 items:
   - version: 2.22.0
-    date: 2025-02-06
+    date: (TBD)
     notes:
       - type: feature
         title: One single invocation of the Telepresence intercept command can now intercept multiple ports.
@@ -75,6 +75,11 @@ items:
         body: >-
           macOS based systems will often PTR queries using nameslike `b._dns-sd._udp`, lb._dns-sd._udp, or
           `db-dns-sd._udp`. Those queries are no longer dispatched to the cluster.
+      - type: bugfix
+        title: Using the --namespace option with telepresence causes a deadlock.
+        body: >-
+          Using `telepresence list --namespace <ns> with a namespace different from the one that telepresence was
+          connected to, would cause a deadlock, and then produce an empty list.
   - version: 2.21.3
     date: 2025-02-06
     notes:
