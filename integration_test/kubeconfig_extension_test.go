@@ -315,7 +315,7 @@ func (s *notConnectedSuite) Test_DNSSuffixRules() {
 			defaults.IncludeSuffixes,
 			defaults.ExcludeSuffixes,
 			[]string{
-				`Lookup A "` + randomName + randomDomain,
+				`Lookup A "` + randomName + randomDomain + `."`,
 			},
 		},
 		{
@@ -325,8 +325,8 @@ func (s *notConnectedSuite) Test_DNSSuffixRules() {
 			nil,
 			nil,
 			[]string{
-				`Cluster DNS included by include-suffix "` + randomDomain + `" for name "` + randomName + randomDomain,
-				`Lookup A "` + randomName + randomDomain,
+				`Cluster DNS included by include-suffix "` + randomDomain + `" for name "` + randomName + randomDomain + `"`,
+				`Lookup A "` + randomName + randomDomain + `."`,
 			},
 			true,
 			[]string{randomDomain},
@@ -340,8 +340,8 @@ func (s *notConnectedSuite) Test_DNSSuffixRules() {
 			nil,
 			[]string{randomDomain},
 			[]string{
-				`Cluster DNS included by include-suffix "` + randomDomain + `" for name "` + randomName + randomDomain,
-				`Lookup A "` + randomName + randomDomain,
+				`Cluster DNS included by include-suffix "` + randomDomain + `" for name "` + randomName + randomDomain + `"`,
+				`Lookup A "` + randomName + randomDomain + `."`,
 			},
 			true,
 			[]string{randomDomain},
@@ -355,8 +355,8 @@ func (s *notConnectedSuite) Test_DNSSuffixRules() {
 			nil,
 			[]string{randomDomain2},
 			[]string{
-				`Cluster DNS included by include-suffix "` + randomDomain + `" for name "` + randomName + randomDomain,
-				`Lookup A "` + randomName + randomDomain,
+				`Cluster DNS included by include-suffix "` + randomDomain + `" for name "` + randomName + randomDomain + `"`,
+				`Lookup A "` + randomName + randomDomain + `."`,
 			},
 			true,
 			[]string{randomDomain},
@@ -456,7 +456,7 @@ func (s *notConnectedSuite) Test_DNSSuffixRules() {
 			_, _ = net.DefaultResolver.LookupIPAddr(short, tt.domainName)
 
 			// Give query time to reach telepresence and produce a log entry
-			dtime.SleepWithContext(ctx, 100*time.Millisecond)
+			dtime.SleepWithContext(ctx, 500*time.Millisecond)
 
 			for _, wl := range tt.wantedLogEntry {
 				_, err = rootLog.Seek(pos, io.SeekStart)

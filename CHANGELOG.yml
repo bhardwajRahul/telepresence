@@ -80,6 +80,12 @@ items:
         body: >-
           Using `telepresence list --namespace <ns> with a namespace different from the one that telepresence was
           connected to, would cause a deadlock, and then produce an empty list.
+      - type: bugfix
+        title: Fix problem with exclude-suffix being hidden by DNS search path.
+        body: >-
+          In some situations, a name ending with an exclude-suffix like "xyz.com" would be expanded by a search path
+          into "xyz.com.<connected namespace>" and therefore not be excluded. Instead, the name was sent to the cluster
+          to be resolved, causing an unnecessary load on its DNS server.
   - version: 2.21.3
     date: 2025-02-06
     notes:

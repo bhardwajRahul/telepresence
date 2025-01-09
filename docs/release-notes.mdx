@@ -54,6 +54,32 @@ traffic to the original application container. This simplification offers severa
 	<Title type="bugfix">Using the --namespace option with telepresence causes a deadlock.</Title>
 	<Body>Using `telepresence list --namespace <ns> with a namespace different from the one that telepresence was connected to, would cause a deadlock, and then produce an empty list.</Body>
 </Note>
+<Note>
+	<Title type="bugfix">Fix problem with exclude-suffix being hidden by DNS search path.</Title>
+	<Body>In some situations, a name ending with an exclude-suffix like "xyz.com" would be expanded by a search path into "xyz.com.<connected namespace>" and therefore not be excluded. Instead, the name was sent to the cluster to be resolved, causing an unnecessary load on its DNS server.</Body>
+</Note>
+## Version 2.21.3 <span style={{fontSize:'16px'}}>(February  6)</span>
+<Note>
+	<Title type="bugfix">Using the --proxy-via flag would sometimes cause connection timeouts.</Title>
+	<Body>Typically, a `telepresence connect --proxy-via <subnet>=<workflow>` would fail with a "deadline exceeded" message when several workloads were present in the namespace, the one targeted by the proxy-via didn't yet have an agent installed, and other workloads had an agent. This was due to a race condition in the logic for the agent-based port-forwards in the root daemon. The conditions causing this race are now eliminated.</Body>
+</Note>
+<Note>
+	<Title type="bugfix">Fix panic in root daemon when using the "allow conflicting subnets" feature on macOS.</Title>
+	<Body>A regression was introduced in version 2.21.0, causing a panic due to an unimplemented method in the TUN-device on macOS based clients.</Body>
+</Note>
+<Note>
+	<Title type="bugfix">Ensure that annotation enabled traffic-agents are uninstall when uninstalling the traffic-manager.</Title>
+	<Body>A traffic-agent injected because the workload had the inject annotation enabled would sometimes not get uninstalled when the traffic-manager was uninstalled.</Body>
+</Note>
+## Version 2.21.2 <span style={{fontSize:'16px'}}>(January 26)</span>
+<Note>
+	<Title type="bugfix">Fix panic when agentpf.client creates a Tunnel</Title>
+	<Body>A race could occur where several requests where made to `agentpf.client.Tunnel` on a client that had errored when creating its port-forward to the agent. The implementation could handle one such requests but not several, resulting in a panic in situations where multiple simultaneous requests were made to the same client during a very short time period,</Body>
+</Note>
+<Note>
+	<Title type="bugfix">Fix goroutine leak in dialer.</Title>
+	<Body>The context passed to the `Tunnel` call that creates a stream for a dialer, was not cancelled when the dialer was finished, so the stream was never properly closed, leading to one dormant goroutine for each stream.</Body>
+</Note>
 ## Version 2.21.1 <span style={{fontSize:'16px'}}>(December 17)</span>
 <Note>
 	<Title type="bugfix" docs="https://github.com/telepresenceio/telepresence/issues/3741">Allow ingest of serverless deployments without specifying an inject-container-ports annotation</Title>

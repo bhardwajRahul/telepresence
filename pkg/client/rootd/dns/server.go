@@ -227,24 +227,36 @@ func (s *Server) shouldDoClusterLookup(query string) bool {
 
 	// Skip configured exclude-suffixes unless also matched by an include-suffix
 	// that is longer (i.e. more specific).
-	for _, es := range s.ExcludeSuffixes {
-		if strings.HasSuffix(name, es) {
-			// Exclude unless more specific include.
-			for _, is := range s.IncludeSuffixes {
-				if len(is) >= len(es) && strings.HasSuffix(name, is) {
-					dlog.Debugf(s.ctx,
-						"Cluster DNS included by include-suffix %q (overriding exclude-suffix %q) for name %q", is, es, name)
-					return true
+	suffixExcluded := func(n string) (included, excluded bool) {
+		for _, es := range s.ExcludeSuffixes {
+			if strings.HasSuffix(n, es) {
+				// Exclude unless more specific include.
+				for _, is := range s.IncludeSuffixes {
+					if len(is) >= len(es) && strings.HasSuffix(n, is) {
+						dlog.Debugf(s.ctx,
+							"Cluster DNS included by include-suffix %q (overriding exclude-suffix %q) for name %q", is, es, n)
+						return true, false
+					}
 				}
+				dlog.Debugf(s.ctx, "Cluster DNS excluded by exclude-suffix %q for name %q", es, n)
+				return false, true
 			}
-			dlog.Debugf(s.ctx, "Cluster DNS excluded by exclude-suffix %q for name %q", es, name)
-			return false
 		}
+		return false, false
+	}
+
+	if include, exclude := suffixExcluded(name); include || exclude {
+		return include
 	}
 
 	// Always include configured search paths
+	ln := len(name)
 	for _, sfx := range s.search {
-		if strings.HasSuffix(name, sfx) {
+		li := ln - len(sfx) - 1
+		if li > 0 && name[li] == '.' && strings.HasSuffix(name, sfx) {
+			if include, exclude := suffixExcluded(name[:li]); include || exclude {
+				return include
+			}
 			dlog.Debugf(s.ctx, "Cluster DNS included by search %q of name %q", sfx, name)
 			return true
 		}
@@ -252,7 +264,11 @@ func (s *Server) shouldDoClusterLookup(query string) bool {
 
 	// Always include configured routes
 	for sfx := range s.routes {
-		if strings.HasSuffix(name, sfx) {
+		li := ln - len(sfx) - 1
+		if li > 0 && name[li] == '.' && strings.HasSuffix(name, sfx) {
+			if include, exclude := suffixExcluded(name[:li]); include || exclude {
+				return include
+			}
 			dlog.Debugf(s.ctx, "Cluster DNS included by namespace %q of name %q", sfx, name)
 			return true
 		}
@@ -267,6 +283,11 @@ func (s *Server) shouldDoClusterLookup(query string) bool {
 	// Always include configured includeSuffixes
 	for _, sfx := range s.IncludeSuffixes {
 		if strings.HasSuffix(name, sfx) {
+			if sfx[0] == '.' {
+				if include, exclude := suffixExcluded(strings.TrimSuffix(name, sfx)); include || exclude {
+					return include
+				}
+			}
 			dlog.Debugf(s.ctx,
 				"Cluster DNS included by include-suffix %q for name %q", sfx, name)
 			return true
