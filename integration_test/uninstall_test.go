@@ -34,7 +34,7 @@ func (s *notConnectedSuite) Test_Uninstall() {
 
 	s.Eventually(func() bool {
 		stdout, _, err = itest.Telepresence(ctx, "list", "--agents")
-		return err == nil && strings.Contains(stdout, jobname+": ready to intercept (traffic-agent already installed)")
+		return err == nil && strings.Contains(stdout, jobname+": ready to engage (traffic-agent already installed)")
 	}, 30*time.Second, 3*time.Second)
 
 	stdout = itest.TelepresenceOk(ctx, "helm", "uninstall", "-n", s.ManagerNamespace())

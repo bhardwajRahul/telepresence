@@ -39,7 +39,7 @@ func (s *interceptLocalhostSuite) SetupSuite() {
 	s.defaultRoute, err = routing.DefaultRoute(ctx)
 	s.Require().NoError(err)
 	dlog.Infof(ctx, "ip: %s: route: %s", s.defaultRoute.LocalIP, s.defaultRoute)
-	s.port, s.cancelLocal = itest.StartLocalHttpEchoServerWithHost(ctx, s.ServiceName(), s.defaultRoute.LocalIP.String())
+	s.port, s.cancelLocal = itest.StartLocalHttpEchoServerWithAddr(ctx, s.ServiceName(), net.JoinHostPort(s.defaultRoute.LocalIP.String(), "0"))
 	s.CapturePodLogs(ctx, "echo", "traffic-agent", s.AppNamespace())
 }
 

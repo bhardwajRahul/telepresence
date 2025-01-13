@@ -31,7 +31,7 @@ func (s *webhookSuite) Test_AutoInjectedAgent() {
 	require := s.Require()
 	require.Eventually(func() bool {
 		stdout, _, err := itest.Telepresence(ctx, "list", "--agents")
-		return err == nil && strings.Contains(stdout, "echo-auto-inject: ready to intercept (traffic-agent already installed)")
+		return err == nil && strings.Contains(stdout, "echo-auto-inject: ready to engage (traffic-agent already installed)")
 	},
 		20*time.Second, // waitFor
 		2*time.Second,  // polling interval

@@ -85,7 +85,7 @@ func (s *workloadConfigurationSuite) Test_InterceptsDeploymentWithDisabledReplic
 	require.Eventually(
 		func() bool {
 			stdout, _, err := itest.Telepresence(ctx, "list")
-			return err == nil && strings.Contains(stdout, fmt.Sprintf("%s: ready to intercept", wl))
+			return err == nil && strings.Contains(stdout, fmt.Sprintf("%s: ready to engage", wl))
 		},
 		6*time.Second, // waitFor
 		2*time.Second, // polling interval
@@ -120,7 +120,7 @@ func (s *workloadConfigurationSuite) Test_InterceptsReplicaSetWithDisabledDeploy
 	require.Eventually(
 		func() bool {
 			stdout, _, err := itest.Telepresence(ctx, "list")
-			return err == nil && strings.Contains(stdout, fmt.Sprintf("%s: ready to intercept", interceptableWl))
+			return err == nil && strings.Contains(stdout, fmt.Sprintf("%s: ready to engage", interceptableWl))
 		},
 		6*time.Second, // waitFor
 		2*time.Second, // polling interval

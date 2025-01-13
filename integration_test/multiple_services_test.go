@@ -95,7 +95,7 @@ func (s *multipleServicesSuite) Test_LargeRequest() {
 func (s *multipleServicesSuite) Test_List() {
 	stdout := itest.TelepresenceOk(s.Context(), "-n", s.AppNamespace(), "list")
 	for i := 0; i < s.ServiceCount(); i++ {
-		s.Regexp(fmt.Sprintf(`%s-%d\s*: ready to intercept`, s.Name(), i), stdout)
+		s.Regexp(fmt.Sprintf(`%s-%d\s*: ready to engage`, s.Name(), i), stdout)
 	}
 }
 

@@ -145,7 +145,7 @@ func testManualAgent(s *itest.Suite, nsp itest.NamespacePair) {
 	defer itest.TelepresenceQuitOk(ctx)
 
 	stdout = itest.TelepresenceOk(ctx, "list")
-	require.Regexp(regexp.MustCompile(`.*`+ac.WorkloadName+`\s*:\s*ready to intercept \(traffic-agent already installed\).*`), stdout)
+	require.Regexp(regexp.MustCompile(`.*`+ac.WorkloadName+`\s*:\s*ready to engage \(traffic-agent already installed\).*`), stdout)
 
 	svcPort, svcCancel := itest.StartLocalHttpEchoServer(ctx, ac.WorkloadName)
 	defer svcCancel()

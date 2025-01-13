@@ -1120,11 +1120,11 @@ func DeleteNamespaces(ctx context.Context, namespaces ...string) {
 	wg.Wait()
 }
 
-// StartLocalHttpEchoServerWithHost is like StartLocalHttpEchoServer but binds to a specific host instead of localhost.
-func StartLocalHttpEchoServerWithHost(ctx context.Context, name string, host string) (int, context.CancelFunc) {
+// StartLocalHttpEchoServerWithAddr is like StartLocalHttpEchoServer but binds to a specific host instead of localhost.
+func StartLocalHttpEchoServerWithAddr(ctx context.Context, name, addr string) (int, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(ctx)
 	lc := net.ListenConfig{}
-	l, err := lc.Listen(ctx, "tcp", net.JoinHostPort(host, "0"))
+	l, err := lc.Listen(ctx, "tcp", addr)
 	require.NoError(getT(ctx), err, "failed to listen on localhost")
 	sc := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1140,9 +1140,9 @@ func StartLocalHttpEchoServerWithHost(ctx context.Context, name string, host str
 		defer cancel()
 		err = sc.Shutdown(ctx)
 		if err != nil {
-			dlog.Errorf(ctx, "http server on %s exited with error: %v", host, err)
+			dlog.Errorf(ctx, "http server on %s exited with error: %v", addr, err)
 		} else {
-			dlog.Errorf(ctx, "http server on %s exited", host)
+			dlog.Errorf(ctx, "http server on %s exited", addr)
 		}
 	}()
 	return l.Addr().(*net.TCPAddr).Port, cancel
@@ -1151,7 +1151,7 @@ func StartLocalHttpEchoServerWithHost(ctx context.Context, name string, host str
 // StartLocalHttpEchoServer starts a local http server that echoes a line with the given name and
 // the current URL path. The port is returned together with function that cancels the server.
 func StartLocalHttpEchoServer(ctx context.Context, name string) (int, context.CancelFunc) {
-	return StartLocalHttpEchoServerWithHost(ctx, name, "localhost")
+	return StartLocalHttpEchoServerWithAddr(ctx, name, "localhost:0")
 }
 
 // PingInterceptedEchoServer assumes that a server has been created using StartLocalHttpEchoServer and
