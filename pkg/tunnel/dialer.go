@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -219,8 +220,10 @@ func (h *dialer) connToStreamLoop(ctx context.Context, wg *sync.WaitGroup) {
 			case errors.Is(err, net.ErrClosed):
 				endReason = "the connection was closed"
 				h.startDisconnect(ctx, endReason)
+			case strings.Contains(err.Error(), "connection aborted"):
+				endReason = "the connection was aborted"
 			default:
-				endReason = fmt.Sprintf("a read error occurred: %v", err)
+				endReason = fmt.Sprintf("a read error occurred: %T %v", err, err)
 				endLevel = dlog.LogLevelError
 			}
 			return

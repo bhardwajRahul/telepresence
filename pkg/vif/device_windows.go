@@ -2,33 +2,38 @@ package vif
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
 
 	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wireguard/tun"
 	"golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
+	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
 	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dlog"
-	"github.com/telepresenceio/telepresence/v2/pkg/vif/buffer"
 )
 
-// This nativeDevice will require that wintun.dll is available to the loader.
+// This device will require that wintun.dll is available to the loader.
 // See: https://www.wintun.net/ for more info.
-type nativeDevice struct {
-	tun.Device
+type device struct {
+	*channel.Endpoint
+	dev            tun.Device
+	ctx            context.Context
 	name           string
 	dns            netip.Addr
-	interfaceIndex int32
+	interfaceIndex uint32
+	luid           winipcfg.LUID
+	wg             sync.WaitGroup
 }
 
-func openTun(ctx context.Context) (td *nativeDevice, err error) {
+func openTun(ctx context.Context) (td *device, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = derror.PanicToError(r)
@@ -52,24 +57,41 @@ func openTun(ctx context.Context) (td *nativeDevice, err error) {
 		}
 	}
 	interfaceName := fmt.Sprintf(interfaceFmt, ifaceNumber)
+
 	dlog.Infof(ctx, "Creating interface %s", interfaceName)
-	td = &nativeDevice{}
-	if td.Device, err = tun.CreateTUN(interfaceName, 0); err != nil {
+	dev, err := tun.CreateTUN(interfaceName, 0)
+	if err != nil {
 		return nil, fmt.Errorf("failed to create TUN device: %w", err)
 	}
-	if td.name, err = td.Device.Name(); err != nil {
+	name, err := dev.Name()
+	if err != nil {
 		return nil, fmt.Errorf("failed to get real name of TUN device: %w", err)
 	}
-	iface, err := td.getLUID().Interface()
+	luid := winipcfg.LUID(dev.(*tun.NativeTun).LUID())
+	iface, err := luid.Interface()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get interface for TUN device: %w", err)
 	}
-	td.interfaceIndex = int32(iface.InterfaceIndex)
 
-	return td, nil
+	mtu, err := dev.MTU()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get MTU for TUN device: %w", err)
+	}
+	return &device{
+		Endpoint:       channel.New(defaultDevOutQueueLen, uint32(mtu), ""),
+		dev:            dev,
+		ctx:            ctx,
+		name:           name,
+		interfaceIndex: iface.InterfaceIndex,
+		luid:           luid,
+	}, nil
 }
 
-func (t *nativeDevice) Close() error {
+// Close closes both the Device and the Endpoint. This function overrides the LinkEndpoint.Close so
+// it cannot return an error.
+func (d *device) Close() {
+	d.Endpoint.Close()
+
 	// The tun.NativeTun device has a closing mutex which is read locked during
 	// a call to Read(). The read lock prevents a call to Close() to proceed
 	// until Read() actually receives something. To resolve that "deadlock",
@@ -79,7 +101,7 @@ func (t *nativeDevice) Close() error {
 	go func() {
 		// first message is just to indicate that this goroutine has started
 		closeCh <- nil
-		closeCh <- t.Device.Close()
+		closeCh <- d.dev.Close()
 		close(closeCh)
 	}()
 
@@ -91,42 +113,42 @@ func (t *nativeDevice) Close() error {
 	// Send something to the TUN device so that the Read
 	// unlocks the NativeTun.closing mutex and let the actual
 	// Close call continue
-	conn, err := net.Dial("udp", net.JoinHostPort(t.dns.String(), "53"))
+	conn, err := net.Dial("udp", net.JoinHostPort(d.dns.String(), "53"))
 	if err == nil {
 		_, _ = conn.Write([]byte("bogus"))
 	}
-	return <-closeCh
+	<-closeCh
 }
 
-func (t *nativeDevice) getLUID() winipcfg.LUID {
-	return winipcfg.LUID(t.Device.(*tun.NativeTun).LUID())
+func (d *device) getLUID() winipcfg.LUID {
+	return d.luid
 }
 
-func (t *nativeDevice) index() int32 {
-	return t.interfaceIndex
+func (d *device) index() uint32 {
+	return d.interfaceIndex
 }
 
-func (t *nativeDevice) addSubnet(_ context.Context, subnet netip.Prefix) error {
-	return t.getLUID().AddIPAddress(subnet)
+func (d *device) addSubnet(_ context.Context, subnet netip.Prefix) error {
+	return d.getLUID().AddIPAddress(subnet)
 }
 
-func (t *nativeDevice) removeSubnet(_ context.Context, subnet netip.Prefix) error {
-	return t.getLUID().DeleteIPAddress(subnet)
+func (d *device) removeSubnet(_ context.Context, subnet netip.Prefix) error {
+	return d.getLUID().DeleteIPAddress(subnet)
 }
 
-func (t *nativeDevice) setDNS(ctx context.Context, clusterDomain string, server netip.Addr, searchList []string) (err error) {
+func (d *device) setDNS(ctx context.Context, clusterDomain string, server netip.Addr, searchList []string) (err error) {
 	// This function must not be interrupted by a context cancellation, so we give it a timeout instead.
 	dlog.Debugf(ctx, "SetDNS server: %s, searchList: %v, domain: %q", server, searchList, clusterDomain)
 	defer dlog.Debug(ctx, "SetDNS done")
 
-	luid := t.getLUID()
+	luid := d.getLUID()
 	family := addressFamily(server)
-	if t.dns.IsValid() {
-		if oldFamily := addressFamily(t.dns); oldFamily != family {
+	if d.dns.IsValid() {
+		if oldFamily := addressFamily(d.dns); oldFamily != family {
 			_ = luid.FlushDNS(oldFamily)
 		}
 	}
-	t.dns = server
+	d.dns = server
 	clusterDomain = strings.TrimSuffix(clusterDomain, ".")
 	cdi := slices.Index(searchList, clusterDomain)
 	switch cdi {
@@ -139,7 +161,7 @@ func (t *nativeDevice) setDNS(ctx context.Context, clusterDomain string, server 
 		// put clusterDomain first in list, but retain the order of remaining elements
 		searchList = slices.Insert(slices.Delete(searchList, cdi, cdi+1), 0, clusterDomain)
 	}
-	return luid.SetDNS(family, []netip.Addr{t.dns}, searchList)
+	return luid.SetDNS(family, []netip.Addr{d.dns}, searchList)
 }
 
 func addressFamily(ip netip.Addr) winipcfg.AddressFamily {
@@ -150,13 +172,13 @@ func addressFamily(ip netip.Addr) winipcfg.AddressFamily {
 	return f
 }
 
-func (t *nativeDevice) setMTU(int) error {
-	return errors.New("not implemented")
+func (d *device) headerSkip() int {
+	return 0
 }
 
-func (t *nativeDevice) readPacket(into *buffer.Data) (int, error) {
+func (d *device) readPacket(buf []byte) (int, error) {
 	sz := make([]int, 1)
-	packetsN, err := t.Device.Read([][]byte{into.Raw()}, sz, 0)
+	packetsN, err := d.dev.Read([][]byte{buf}, sz, 0)
 	if err != nil {
 		return 0, err
 	}
@@ -166,13 +188,13 @@ func (t *nativeDevice) readPacket(into *buffer.Data) (int, error) {
 	return sz[0], nil
 }
 
-func (t *nativeDevice) writePacket(from *buffer.Data, offset int) (int, error) {
-	packetsN, err := t.Device.Write([][]byte{from.Raw()}, offset)
+func (d *device) writePacket(from *stack.PacketBuffer) error {
+	packetsN, err := d.dev.Write(from.AsSlices(), 0)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	if packetsN == 0 {
-		return 0, io.EOF
+		return io.EOF
 	}
-	return len(from.Raw()), nil
+	return nil
 }

@@ -379,7 +379,7 @@ lint: lint-rpc lint-go
 lint-go: lint-deps ## (QA) Run the golangci-lint
 	$(eval badimports = $(shell find cmd integration_test pkg -name '*.go' | grep -v '/mocks/' | xargs $(tools/gosimports) --local github.com/datawire/,github.com/telepresenceio/ -l))
 	$(if $(strip $(badimports)), echo "The following files have bad import ordering (use make format to fix): " $(badimports) && false)
-ifeq ($(GOHOSTOS),windows)
+ifeq ($(GOOS),windows)
 	CGO_ENABLED=$(CGO_ENABLED) $(tools/golangci-lint) run --timeout 8m ./cmd/telepresence/... ./integration_test/... ./pkg/...
 else
 	CGO_ENABLED=$(CGO_ENABLED) $(tools/golangci-lint) run --timeout 8m ./...

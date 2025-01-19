@@ -28,13 +28,17 @@ func NewTunnelingDevice(ctx context.Context, tunnelStreamCreator tunnel.StreamCr
 	if err != nil {
 		return nil, err
 	}
-	stack, err := NewStack(ctx, dev, tunnelStreamCreator)
+	ep, err := dev.NewLinkEndpoint()
+	if err != nil {
+		return nil, err
+	}
+	netStack, err := NewStack(ctx, ep, tunnelStreamCreator)
 	if err != nil {
 		return nil, err
 	}
 	router := NewRouter(dev, routingTable)
 	return &TunnelingDevice{
-		stack:  stack,
+		stack:  netStack,
 		Device: dev,
 		Router: router,
 		table:  routingTable,
@@ -62,6 +66,5 @@ func (vif *TunnelingDevice) Run(ctx context.Context) (err error) {
 	}()
 
 	vif.stack.Wait()
-	vif.Device.Wait()
 	return nil
 }

@@ -248,6 +248,9 @@ func NewClients(session *manager.SessionInfo) Clients {
 //
 // The function returns nil when there are no agents in the connected namespace.
 func (s *clients) GetClient(ip netip.Addr) (pvd tunnel.Provider) {
+	if s.disabled.Load() {
+		return nil
+	}
 	var primary, secondary, ternary tunnel.Provider
 	s.clients.Range(func(_ string, c *client) bool {
 		podIP, ok := netip.AddrFromSlice(c.info.PodIp)
