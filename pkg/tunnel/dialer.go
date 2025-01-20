@@ -347,12 +347,13 @@ func DialWaitLoop(
 
 func dialRespond(ctx context.Context, tunnelProvider Provider, dr *rpc.DialRequest, sessionID string) {
 	id := ConnID(dr.ConnId)
+	ctx, cancel := context.WithCancel(ctx)
 	mt, err := tunnelProvider.Tunnel(ctx)
 	if err != nil {
 		dlog.Errorf(ctx, "!! CONN %s, call to manager Tunnel failed: %v", id, err)
+		cancel()
 		return
 	}
-	ctx, cancel := context.WithCancel(ctx)
 	s, err := NewClientStream(ctx, mt, id, sessionID, time.Duration(dr.RoundtripLatency), time.Duration(dr.DialTimeout))
 	if err != nil {
 		dlog.Error(ctx, err)
