@@ -43,6 +43,11 @@ items:
           when creating its port-forward to the agent. The implementation could handle one such requests but not
           several, resulting in a panic in situations where multiple simultaneous requests were made to the same client
           during a very short time period,
+      - type: bugfix
+        title: Fix goroutine leak in dialer.
+        body: >-
+          The context passed to the `Tunnel` call that creates a stream for a dialer, was not cancelled when the dialer
+          was finished, so the stream was never properly closed, leading to one dormant goroutine for each stream.
   - version: 2.21.1
     date: 2024-12-17
     notes:
