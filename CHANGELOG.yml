@@ -33,6 +33,16 @@ docDescription: >-
   environments, access to instantaneous feedback loops, and highly
   customizable development environments.
 items:
+  - version: 2.21.2
+    date: (TBD)
+    notes:
+      - type: bugfix
+        title: Fix panic when agentpf.client creates a Tunnel
+        body: >-
+          A race could occur where several requests where made to `agentpf.client.Tunnel` on a client that had errored
+          when creating its port-forward to the agent. The implementation could handle one such requests but not
+          several, resulting in a panic in situations where multiple simultaneous requests were made to the same client
+          during a very short time period,
   - version: 2.21.1
     date: 2024-12-17
     notes:

@@ -53,6 +53,8 @@ func (ac *client) Tunnel(ctx context.Context, opts ...grpc.CallOption) (tunnel.C
 	select {
 	case err, ok := <-ac.ready:
 		if ok {
+			// Put error back on channel in case this Tunnel is used again before it's deleted.
+			ac.ready <- err
 			return nil, err
 		}
 		// ready channel is closed. We are ready to go.
@@ -74,14 +76,24 @@ func (ac *client) Tunnel(ctx context.Context, opts ...grpc.CallOption) (tunnel.C
 }
 
 func (ac *client) connect(ctx context.Context, deleteMe func()) {
-	defer close(ac.ready)
 	dialCtx, dialCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer dialCancel()
 
-	conn, cli, _, err := k8sclient.ConnectToAgent(dialCtx, ac.info.PodName, ac.info.Namespace, uint16(ac.info.ApiPort))
+	var err error
+	defer func() {
+		if err == nil {
+			close(ac.ready)
+		} else {
+			deleteMe()
+			ac.ready <- err
+		}
+	}()
+
+	var conn *grpc.ClientConn
+	var cli agent.AgentClient
+
+	conn, cli, _, err = k8sclient.ConnectToAgent(dialCtx, ac.info.PodName, ac.info.Namespace, uint16(ac.info.ApiPort))
 	if err != nil {
-		deleteMe()
-		ac.ready <- err
 		return
 	}
 
@@ -94,10 +106,7 @@ func (ac *client) connect(ctx context.Context, deleteMe func()) {
 	intercepted := ac.info.Intercepted
 	ac.Unlock()
 	if intercepted {
-		if err = ac.startDialWatcherReady(ctx); err != nil {
-			deleteMe()
-			ac.ready <- err
-		}
+		err = ac.startDialWatcherReady(ctx)
 	}
 }
 
@@ -495,7 +504,7 @@ func (s *clients) updateClients(ctx context.Context, ais []*manager.AgentPodInfo
 				return oldValue, false
 			}
 			ac := &client{
-				ready:   make(chan error),
+				ready:   make(chan error, 1),
 				session: s.session,
 				info:    ai,
 			}
