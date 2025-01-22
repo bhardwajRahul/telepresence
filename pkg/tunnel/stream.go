@@ -105,13 +105,20 @@ func ReadLoop(ctx context.Context, s Stream, p *CounterProbe) (<-chan Message, <
 				endReason = "EOF on input"
 			case errors.Is(err, net.ErrClosed):
 				endReason = "stream closed"
-			case errors.Is(err, context.Canceled), status.Code(err) == codes.Canceled:
+			case errors.Is(err, context.Canceled):
 				endReason = err.Error()
 			default:
-				endReason = err.Error()
-				select {
-				case errCh <- fmt.Errorf("!! %s %s, read from grpc.ClientStream failed: %w", s.Tag(), s.ID(), err):
+				switch status.Code(err) {
+				case codes.NotFound:
+					endReason = "session closed"
+				case codes.Canceled:
+					endReason = err.Error()
 				default:
+					endReason = err.Error()
+					select {
+					case errCh <- fmt.Errorf("!! %s %s, read from grpc.ClientStream failed: %w", s.Tag(), s.ID(), err):
+					default:
+					}
 				}
 			}
 			break

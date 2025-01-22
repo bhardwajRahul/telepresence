@@ -162,7 +162,7 @@ following Free and Open Source software:
     gopkg.in/evanphx/json-patch.v4                                 v4.12.0                               3-clause BSD license
     gopkg.in/inf.v0                                                v0.9.1                                3-clause BSD license
     gopkg.in/yaml.v3                                               v3.0.1                                Apache License 2.0, MIT license
-    gvisor.dev/gvisor                                              v0.0.0-20241210225239-aa8ecac76a04    Apache License 2.0, MIT license
+    gvisor.dev/gvisor                                              v0.0.0-20250115195935-26653e7d8816    Apache License 2.0, MIT license
     helm.sh/helm/v3                                                v3.16.3                               Apache License 2.0
     k8s.io/api                                                     v0.32.0                               Apache License 2.0
     k8s.io/apiextensions-apiserver                                 v0.32.0                               Apache License 2.0

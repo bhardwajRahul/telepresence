@@ -36,7 +36,7 @@ require (
 	github.com/spf13/pflag v1.0.5
 	github.com/stretchr/testify v1.10.0
 	github.com/telepresenceio/go-fuseftp/rpc v0.5.0
-	github.com/telepresenceio/telepresence/rpc/v2 v2.21.1
+	github.com/telepresenceio/telepresence/rpc/v2 v2.21.2-rc.0
 	github.com/vishvananda/netlink v1.3.0
 	golang.org/x/exp v0.0.0-20241210194714-1829a127f884
 	golang.org/x/net v0.32.0
@@ -46,7 +46,7 @@ require (
 	golang.zx2c4.com/wireguard/windows v0.5.3
 	google.golang.org/grpc v1.69.0
 	google.golang.org/protobuf v1.35.2
-	gvisor.dev/gvisor v0.0.0-20241210225239-aa8ecac76a04
+	gvisor.dev/gvisor v0.0.0-20250115195935-26653e7d8816
 	helm.sh/helm/v3 v3.16.3
 	k8s.io/api v0.32.0
 	k8s.io/apimachinery v0.32.0

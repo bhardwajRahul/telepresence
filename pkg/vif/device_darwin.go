@@ -1,6 +1,7 @@
 package vif
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -8,14 +9,16 @@ import (
 	"net/netip"
 	"os"
 	"runtime"
+	"sync"
 	"unsafe"
 
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 	"golang.org/x/sys/unix"
+	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
 	"github.com/telepresenceio/telepresence/v2/pkg/routing"
-	"github.com/telepresenceio/telepresence/v2/pkg/vif/buffer"
 )
 
 const (
@@ -24,12 +27,16 @@ const (
 	uTunControlName = "com.apple.net.utun_control"
 )
 
-type nativeDevice struct {
-	*os.File
+type device struct {
+	*channel.Endpoint
+	file *os.File
+	ctx  context.Context
 	name string
+	wb   bytes.Buffer
+	wg   sync.WaitGroup
 }
 
-func openTun(_ context.Context) (*nativeDevice, error) {
+func openTun(ctx context.Context) (*device, error) {
 	fd, err := unix.Socket(unix.AF_SYSTEM, unix.SOCK_DGRAM, sysProtoControl)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open DGRAM socket: %w", err)
@@ -59,64 +66,83 @@ func openTun(_ context.Context) (*nativeDevice, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &nativeDevice{
-		File: os.NewFile(uintptr(fd), ""),
-		name: name,
+	mtu, err := getMTU(name)
+	if err != nil {
+		return nil, err
+	}
+	return &device{
+		file:     os.NewFile(uintptr(fd), ""),
+		ctx:      ctx,
+		name:     name,
+		Endpoint: channel.New(defaultDevOutQueueLen, mtu, ""),
 	}, nil
 }
 
-func (t *nativeDevice) addSubnet(_ context.Context, subnet netip.Prefix) error {
+func getMTU(name string) (mtu uint32, err error) {
+	err = withSocket(unix.AF_INET, func(fd int) error {
+		ifr, err := unix.IoctlGetIfreqMTU(fd, name)
+		if err == nil {
+			mtu = uint32(ifr.MTU)
+		}
+		return err
+	})
+	return mtu, err
+}
+
+// Close closes both the tun-device and the Endpoint. This function overrides the LinkEndpoint.Close so
+// it can not return an error.
+func (d *device) Close() {
+	d.Endpoint.Close()
+	_ = d.file.Close()
+}
+
+func (d *device) addSubnet(_ context.Context, subnet netip.Prefix) error {
 	to := subnet.Addr().AsSlice()
 	to[len(to)-1] = 1
 	dest, _ := netip.AddrFromSlice(to)
-	if err := t.setAddr(subnet, dest); err != nil {
+	if err := d.setAddr(subnet, dest); err != nil {
 		return err
 	}
 	return routing.Add(1, subnet, dest)
 }
 
-func (t *nativeDevice) index() int32 {
+func (d *device) index() uint32 {
 	panic("not implemented")
 }
 
-func (t *nativeDevice) removeSubnet(_ context.Context, subnet netip.Prefix) error {
+func (d *device) removeSubnet(_ context.Context, subnet netip.Prefix) error {
 	to := subnet.Addr().AsSlice()
 	to[len(to)-1] = 1
 	dest, _ := netip.AddrFromSlice(to)
-	if err := t.removeAddr(subnet, dest); err != nil {
+	if err := d.removeAddr(subnet, dest); err != nil {
 		return err
 	}
 	return routing.Clear(1, subnet, dest)
 }
 
-func (t *nativeDevice) setMTU(mtu int) error {
-	return withSocket(unix.AF_INET, func(fd int) error {
-		var ifr unix.IfreqMTU
-		copy(ifr.Name[:], t.name)
-		ifr.MTU = int32(mtu)
-		err := unix.IoctlSetIfreqMTU(fd, &ifr)
-		if err != nil {
-			err = fmt.Errorf("set MTU on %s failed: %w", t.name, err)
+func (d *device) readPacket(buf []byte) (int, error) {
+	return d.file.Read(buf)
+}
+
+const prefixLen = 4
+
+func (d *device) headerSkip() int {
+	return prefixLen
+}
+
+func (d *device) writePacket(from *stack.PacketBuffer) (err error) {
+	ss := from.AsSlices()
+	var first []byte
+	for _, s := range ss {
+		if len(s) > 0 {
+			first = s
+			break
 		}
-		return err
-	})
-}
-
-func (t *nativeDevice) readPacket(into *buffer.Data) (int, error) {
-	n, err := t.File.Read(into.Raw())
-	if n >= buffer.PrefixLen {
-		n -= buffer.PrefixLen
 	}
-	return n, err
-}
-
-func (t *nativeDevice) writePacket(from *buffer.Data, offset int) (n int, err error) {
-	raw := from.Raw()
-	if len(raw) <= buffer.PrefixLen {
-		return 0, unix.EIO
+	if first == nil {
+		return nil
 	}
-
-	ipVer := raw[buffer.PrefixLen] >> 4
+	ipVer := first[0] >> 4
 	var af byte
 	switch ipVer {
 	case ipv4.Version:
@@ -124,21 +150,20 @@ func (t *nativeDevice) writePacket(from *buffer.Data, offset int) (n int, err er
 	case ipv6.Version:
 		af = unix.AF_INET6
 	default:
-		return 0, errors.New("unable to determine IP version from packet")
+		return errors.New("unable to determine IP version from packet")
 	}
-
-	if offset > 0 {
-		raw = raw[offset:]
-		// Temporarily move AF_INET/AF_INET6 into the offset position.
-		r3 := raw[3]
-		raw[3] = af
-		n, err = t.File.Write(raw)
-		raw[3] = r3
-	} else {
-		raw[3] = af
-		n, err = t.File.Write(raw)
+	wb := &d.wb
+	wb.Reset()
+	wb.WriteByte(0)
+	wb.WriteByte(0)
+	wb.WriteByte(0)
+	wb.WriteByte(af)
+	wb.Write(first)
+	for i := 1; i < len(ss); i++ {
+		wb.Write(ss[i])
 	}
-	return n - buffer.PrefixLen, err
+	_, err = d.file.Write(wb.Bytes())
+	return err
 }
 
 // Address structure for the SIOCAIFADDR ioctlHandle request
@@ -182,7 +207,7 @@ const (
 // SIOCDIFADDR_IN6 is the same ioctlHandle identifier as unix.SIOCDIFADDR adjusted with size of addrIfReq6.
 const SIOCDIFADDR_IN6 = (unix.SIOCDIFADDR & 0xe000ffff) | (uint(unsafe.Sizeof(addrIfReq6{})) << 16)
 
-func (t *nativeDevice) setAddr(subnet netip.Prefix, to netip.Addr) error {
+func (d *device) setAddr(subnet netip.Prefix, to netip.Addr) error {
 	if to.Is4() && subnet.Addr().Is4() {
 		return withSocket(unix.AF_INET, func(fd int) error {
 			ifreq := &addrIfReq{
@@ -190,7 +215,7 @@ func (t *nativeDevice) setAddr(subnet netip.Prefix, to netip.Addr) error {
 				dest: unix.RawSockaddrInet4{Len: unix.SizeofSockaddrInet4, Family: unix.AF_INET},
 				mask: unix.RawSockaddrInet4{Len: unix.SizeofSockaddrInet4, Family: unix.AF_INET},
 			}
-			copy(ifreq.name[:], t.name)
+			copy(ifreq.name[:], d.name)
 			copy(ifreq.mask.Addr[:], net.CIDRMask(subnet.Bits(), 32))
 			ifreq.addr.Addr = subnet.Addr().As4()
 			ifreq.dest.Addr = to.As4()
@@ -208,7 +233,7 @@ func (t *nativeDevice) setAddr(subnet netip.Prefix, to netip.Addr) error {
 			ifreq.addrLifetime.validLifeTime = ND6_INFINITE_LIFETIME
 			ifreq.addrLifetime.prefixLifeTime = ND6_INFINITE_LIFETIME
 
-			copy(ifreq.name[:], t.name)
+			copy(ifreq.name[:], d.name)
 			copy(ifreq.mask.Addr[:], net.CIDRMask(subnet.Bits(), 128))
 			ifreq.addr.Addr = subnet.Addr().As16()
 			err := ioctl(fd, SIOCAIFADDR_IN6, unsafe.Pointer(ifreq))
@@ -218,7 +243,7 @@ func (t *nativeDevice) setAddr(subnet netip.Prefix, to netip.Addr) error {
 	}
 }
 
-func (t *nativeDevice) removeAddr(subnet netip.Prefix, to netip.Addr) error {
+func (d *device) removeAddr(subnet netip.Prefix, to netip.Addr) error {
 	if to.Is4() && subnet.Addr().Is4() {
 		return withSocket(unix.AF_INET, func(fd int) error {
 			ifreq := &addrIfReq{
@@ -226,7 +251,7 @@ func (t *nativeDevice) removeAddr(subnet netip.Prefix, to netip.Addr) error {
 				dest: unix.RawSockaddrInet4{Len: unix.SizeofSockaddrInet6, Family: unix.AF_INET},
 				mask: unix.RawSockaddrInet4{Len: unix.SizeofSockaddrInet6, Family: unix.AF_INET},
 			}
-			copy(ifreq.name[:], t.name)
+			copy(ifreq.name[:], d.name)
 			copy(ifreq.mask.Addr[:], net.CIDRMask(subnet.Bits(), 32))
 			ifreq.addr.Addr = subnet.Addr().As4()
 			ifreq.dest.Addr = to.As4()
@@ -244,7 +269,7 @@ func (t *nativeDevice) removeAddr(subnet netip.Prefix, to netip.Addr) error {
 			ifreq.addrLifetime.validLifeTime = ND6_INFINITE_LIFETIME
 			ifreq.addrLifetime.prefixLifeTime = ND6_INFINITE_LIFETIME
 
-			copy(ifreq.name[:], t.name)
+			copy(ifreq.name[:], d.name)
 			copy(ifreq.mask.Addr[:], net.CIDRMask(subnet.Bits(), 128))
 			ifreq.addr.Addr = subnet.Addr().As16()
 			err := ioctl(fd, SIOCDIFADDR_IN6, unsafe.Pointer(ifreq))
