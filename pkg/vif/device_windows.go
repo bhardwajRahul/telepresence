@@ -1,6 +1,7 @@
 package vif
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -30,6 +31,7 @@ type device struct {
 	dns            netip.Addr
 	interfaceIndex uint32
 	luid           winipcfg.LUID
+	wb             bytes.Buffer
 	wg             sync.WaitGroup
 }
 
@@ -77,6 +79,10 @@ func openTun(ctx context.Context) (td *device, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get MTU for TUN device: %w", err)
 	}
+	if mtu < 1500 {
+		mtu = 1500
+	}
+	dlog.Debugf(ctx, "using MTU = %d", mtu)
 	return &device{
 		Endpoint:       channel.New(defaultDevOutQueueLen, uint32(mtu), ""),
 		dev:            dev,
@@ -121,7 +127,7 @@ func (d *device) Close() {
 }
 
 func (d *device) getLUID() winipcfg.LUID {
-	return d.luid
+	return winipcfg.LUID(d.dev.(*tun.NativeTun).LUID())
 }
 
 func (d *device) index() uint32 {
@@ -189,7 +195,12 @@ func (d *device) readPacket(buf []byte) (int, error) {
 }
 
 func (d *device) writePacket(from *stack.PacketBuffer) error {
-	packetsN, err := d.dev.Write(from.AsSlices(), 0)
+	wb := &d.wb
+	wb.Reset()
+	for _, s := range from.AsSlices() {
+		wb.Write(s)
+	}
+	packetsN, err := d.dev.Write([][]byte{wb.Bytes()}, 0)
 	if err != nil {
 		return err
 	}

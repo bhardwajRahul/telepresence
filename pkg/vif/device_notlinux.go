@@ -80,7 +80,6 @@ func (d *device) tunToDispatch(cancel context.CancelFunc) {
 			Payload: buffer.MakeWithData(data),
 		})
 
-		dlog.Tracef(d.ctx, "injectInbound %d", n-skip)
 		d.InjectInbound(ipv, pb)
 		pb.DecRef()
 	}
