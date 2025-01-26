@@ -34,7 +34,7 @@ docDescription: >-
   customizable development environments.
 items:
   - version: 2.21.2
-    date: (TBD)
+    date: 2025-01-26
     notes:
       - type: bugfix
         title: Fix panic when agentpf.client creates a Tunnel
