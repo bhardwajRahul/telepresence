@@ -34,8 +34,8 @@ import (
 type DefaultsAware interface {
 	defaults() DefaultsAware
 	IsZero() bool
-	MarshalJSONV2(out *jsontext.Encoder, opts json.Options) error
-	UnmarshalJSONV2(in *jsontext.Decoder, opts json.Options) error
+	MarshalJSONTo(out *jsontext.Encoder, opts json.Options) error
+	UnmarshalJSONFrom(in *jsontext.Decoder, opts json.Options) error
 }
 
 func jsonName(f reflect.StructField) string {
@@ -185,7 +185,7 @@ func (c *BaseConfig) MarshalYAML() ([]byte, error) {
 func UnmarshalJSON(data []byte, into any, rejectUnknown bool) error {
 	opts := []json.Options{
 		json.WithUnmarshalers(
-			json.UnmarshalFuncV2(func(dec *jsontext.Decoder, strategy *k8sapi.AppProtocolStrategy, opts json.Options) error {
+			json.UnmarshalFromFunc(func(dec *jsontext.Decoder, strategy *k8sapi.AppProtocolStrategy, opts json.Options) error {
 				var s string
 				if err := json.UnmarshalDecode(dec, &s, opts); err != nil {
 					return err
@@ -203,11 +203,11 @@ func UnmarshalJSON(data []byte, into any, rejectUnknown bool) error {
 }
 
 func MarshalJSON(value any) ([]byte, error) {
-	return json.Marshal(value, json.WithMarshalers(json.NewMarshalers(
-		json.MarshalFuncV2[k8sapi.AppProtocolStrategy](func(enc *jsontext.Encoder, strategy k8sapi.AppProtocolStrategy, _ json.Options) error {
+	return json.Marshal(value, json.WithMarshalers(
+		json.MarshalToFunc[k8sapi.AppProtocolStrategy](func(enc *jsontext.Encoder, strategy k8sapi.AppProtocolStrategy, _ json.Options) error {
 			return enc.WriteToken(jsontext.String(strategy.String()))
 		}),
-	)))
+	))
 }
 
 func UnmarshalJSONConfig(data []byte, rejectUnknown bool) (Config, error) {
@@ -553,11 +553,11 @@ func (t *Timeouts) IsZero() bool {
 	return t == nil || *t == defaultTimeouts
 }
 
-func (t *Timeouts) MarshalJSONV2(out *jsontext.Encoder, opts json.Options) error {
+func (t *Timeouts) MarshalJSONTo(out *jsontext.Encoder, opts json.Options) error {
 	return json.MarshalEncode(out, mapWithoutDefaults(t), opts)
 }
 
-func (t *Timeouts) UnmarshalJSONV2(in *jsontext.Decoder, opts json.Options) error {
+func (t *Timeouts) UnmarshalJSONFrom(in *jsontext.Decoder, opts json.Options) error {
 	// Prevent that the original object is cleared when an empty object is decoded by passing the address
 	// of the pointer to the object. The unmarshal will then instead clear the pointer (wp becomes nil) and
 	// leave the underlying object intact. In other words, this code achieves "omitempty" during unmarshal.
@@ -595,11 +595,11 @@ func (ll *LogLevels) IsZero() bool {
 	return ll == nil || *ll == defaultLogLevels
 }
 
-func (ll *LogLevels) MarshalJSONV2(out *jsontext.Encoder, opts json.Options) error {
+func (ll *LogLevels) MarshalJSONTo(out *jsontext.Encoder, opts json.Options) error {
 	return json.MarshalEncode(out, mapWithoutDefaults(ll), opts)
 }
 
-func (ll *LogLevels) UnmarshalJSONV2(in *jsontext.Decoder, opts json.Options) error {
+func (ll *LogLevels) UnmarshalJSONFrom(in *jsontext.Decoder, opts json.Options) error {
 	// Prevent that the original object is cleared when an empty object is decoded by passing the address
 	// of the pointer to the object. The unmarshal will then instead clear the pointer (wp becomes nil) and
 	// leave the underlying object intact. In other words, this code achieves "omitempty" during unmarshal.
@@ -637,11 +637,11 @@ func (img *Images) IsZero() bool {
 	return img == nil || *img == defaultImages
 }
 
-func (img *Images) MarshalJSONV2(out *jsontext.Encoder, opts json.Options) error {
+func (img *Images) MarshalJSONTo(out *jsontext.Encoder, opts json.Options) error {
 	return json.MarshalEncode(out, mapWithoutDefaults(img), opts)
 }
 
-func (img *Images) UnmarshalJSONV2(in *jsontext.Decoder, opts json.Options) error {
+func (img *Images) UnmarshalJSONFrom(in *jsontext.Decoder, opts json.Options) error {
 	// Prevent that the original object is cleared when an empty object is decoded by passing the address
 	// of the pointer to the object. The unmarshal will then instead clear the pointer (wp becomes nil) and
 	// leave the underlying object intact. In other words, this code achieves "omitempty" during unmarshal.
@@ -731,11 +731,11 @@ func (tm *Telemount) IsZero() bool {
 	return *tm == defaultTelemount
 }
 
-func (tm *Telemount) MarshalJSONV2(out *jsontext.Encoder, opts json.Options) error {
+func (tm *Telemount) MarshalJSONTo(out *jsontext.Encoder, opts json.Options) error {
 	return json.MarshalEncode(out, mapWithoutDefaults(tm), opts)
 }
 
-func (tm *Telemount) UnmarshalJSONV2(in *jsontext.Decoder, opts json.Options) error {
+func (tm *Telemount) UnmarshalJSONFrom(in *jsontext.Decoder, opts json.Options) error {
 	// Prevent that the original object is cleared when an empty object is decoded by passing the address
 	// of the pointer to the object. The unmarshal will then instead clear the pointer (wp becomes nil) and
 	// leave the underlying object intact. In other words, this code achieves "omitempty" during unmarshal.
@@ -778,11 +778,11 @@ func (ic *Intercept) IsZero() bool {
 	return ic == nil || *ic == defaultIntercept
 }
 
-func (ic *Intercept) MarshalJSONV2(out *jsontext.Encoder, opts json.Options) error {
+func (ic *Intercept) MarshalJSONTo(out *jsontext.Encoder, opts json.Options) error {
 	return json.MarshalEncode(out, mapWithoutDefaults(ic), opts)
 }
 
-func (ic *Intercept) UnmarshalJSONV2(in *jsontext.Decoder, opts json.Options) error {
+func (ic *Intercept) UnmarshalJSONFrom(in *jsontext.Decoder, opts json.Options) error {
 	// Prevent that the original object is cleared when an empty object is decoded by passing the address
 	// of the pointer to the object. The unmarshal will then instead clear the pointer (wp becomes nil) and
 	// leave the underlying object intact. In other words, this code achieves "omitempty" during unmarshal.
@@ -826,11 +826,11 @@ func (cc *Cluster) IsZero() bool {
 	return cc == nil || isDefault(cc)
 }
 
-func (cc *Cluster) MarshalJSONV2(out *jsontext.Encoder, opts json.Options) error {
+func (cc *Cluster) MarshalJSONTo(out *jsontext.Encoder, opts json.Options) error {
 	return json.MarshalEncode(out, mapWithoutDefaults(cc), opts)
 }
 
-func (cc *Cluster) UnmarshalJSONV2(in *jsontext.Decoder, opts json.Options) error {
+func (cc *Cluster) UnmarshalJSONFrom(in *jsontext.Decoder, opts json.Options) error {
 	// Prevent that the original object is cleared when an empty object is decoded by passing the address
 	// of the pointer to the object. The unmarshal will then instead clear the pointer (wp becomes nil) and
 	// leave the underlying object intact. In other words, this code achieves "omitempty" during unmarshal.
@@ -908,11 +908,11 @@ func (r *Routing) IsZero() bool {
 	return r == nil || isDefault(r)
 }
 
-func (r *Routing) MarshalJSONV2(out *jsontext.Encoder, opts json.Options) error {
+func (r *Routing) MarshalJSONTo(out *jsontext.Encoder, opts json.Options) error {
 	return json.MarshalEncode(out, mapWithoutDefaults(r), opts)
 }
 
-func (r *Routing) UnmarshalJSONV2(in *jsontext.Decoder, opts json.Options) error {
+func (r *Routing) UnmarshalJSONFrom(in *jsontext.Decoder, opts json.Options) error {
 	// Prevent that the original object is cleared when an empty object is decoded by passing the address
 	// of the pointer to the object. The unmarshal will then instead clear the pointer (wp becomes nil) and
 	// leave the underlying object intact. In other words, this code achieves "omitempty" during unmarshal.
@@ -960,11 +960,11 @@ func (d *DNS) IsZero() bool {
 	return d == nil || d.Equal(&defaultDNS)
 }
 
-func (d *DNS) MarshalJSONV2(out *jsontext.Encoder, opts json.Options) error {
+func (d *DNS) MarshalJSONTo(out *jsontext.Encoder, opts json.Options) error {
 	return json.MarshalEncode(out, mapWithoutDefaults(d), opts)
 }
 
-func (d *DNS) UnmarshalJSONV2(in *jsontext.Decoder, opts json.Options) error {
+func (d *DNS) UnmarshalJSONFrom(in *jsontext.Decoder, opts json.Options) error {
 	// Prevent that the original object is cleared when an empty object is decoded by passing the address
 	// of the pointer to the object. The unmarshal will then instead clear the pointer (wp becomes nil) and
 	// leave the underlying object intact. In other words, this code achieves "omitempty" during unmarshal.

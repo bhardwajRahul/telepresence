@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -222,8 +223,10 @@ func (h *dialer) connToStreamLoop(ctx context.Context, wg *sync.WaitGroup) {
 			case errors.Is(err, net.ErrClosed):
 				endReason = "the connection was closed"
 				h.startDisconnect(ctx, endReason)
+			case strings.Contains(err.Error(), "connection aborted"):
+				endReason = "the connection was aborted"
 			default:
-				endReason = fmt.Sprintf("a read error occurred: %v", err)
+				endReason = fmt.Sprintf("a read error occurred: %T %v", err, err)
 				endLevel = dlog.LogLevelError
 			}
 			return
@@ -350,12 +353,13 @@ func DialWaitLoop(
 
 func dialRespond(ctx context.Context, tunnelProvider Provider, dr *rpc.DialRequest, sessionID string) {
 	id := ConnID(dr.ConnId)
+	ctx, cancel := context.WithCancel(ctx)
 	mt, err := tunnelProvider.Tunnel(ctx)
 	if err != nil {
 		dlog.Errorf(ctx, "!! CONN %s, call to manager Tunnel failed: %v", id, err)
+		cancel()
 		return
 	}
-	ctx, cancel := context.WithCancel(ctx)
 	s, err := NewClientStream(ctx, mt, id, sessionID, time.Duration(dr.RoundtripLatency), time.Duration(dr.DialTimeout))
 	if err != nil {
 		dlog.Error(ctx, err)

@@ -3,28 +3,14 @@ package vif
 import (
 	"context"
 	"net/netip"
-	"sync"
 
-	"gvisor.dev/gvisor/pkg/buffer"
-	"gvisor.dev/gvisor/pkg/tcpip"
-	"gvisor.dev/gvisor/pkg/tcpip/header"
-	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
-
-	"github.com/datawire/dlib/dlog"
-	vifBuffer "github.com/telepresenceio/telepresence/v2/pkg/vif/buffer"
 )
 
-type device struct {
-	*channel.Endpoint
-	ctx context.Context
-	wg  sync.WaitGroup
-	dev *nativeDevice
-}
-
 type Device interface {
-	stack.LinkEndpoint
-	Index() int32
+	Close() // Overrides stack.LinkEndpoint.Close. Must not return error.
+	NewLinkEndpoint() (stack.LinkEndpoint, error)
+	Index() uint32
 	Name() string
 	AddSubnet(context.Context, netip.Prefix) error
 	RemoveSubnet(context.Context, netip.Prefix) error
@@ -32,139 +18,40 @@ type Device interface {
 	WaitForDevice()
 }
 
-const defaultDevMtu = 1500
-
-// Queue length for outbound packet, arriving at fd side for read. Overflow
-// causes packet drops. gVisor implementation-specific.
-const defaultDevOutQueueLen = 1024
-
 var _ Device = (*device)(nil)
 
 // OpenTun creates a new TUN device and ensures that it is up and running.
 func OpenTun(ctx context.Context) (Device, error) {
-	dev, err := openTun(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return &device{
-		Endpoint: channel.New(defaultDevOutQueueLen, defaultDevMtu, ""),
-		ctx:      ctx,
-		dev:      dev,
-	}, nil
-}
-
-func (d *device) Attach(dp stack.NetworkDispatcher) {
-	go func() {
-		d.Endpoint.Attach(dp)
-		if dp == nil {
-			// Stack is closing
-			return
-		}
-		dlog.Info(d.ctx, "Starting Endpoint")
-		ctx, cancel := context.WithCancel(d.ctx)
-		d.wg.Add(2)
-		go d.tunToDispatch(cancel)
-		d.dispatchToTun(ctx)
-	}()
+	return openTun(ctx)
 }
 
 // AddSubnet adds a subnet to this TUN device and creates a route for that subnet which
 // is associated with the device (removing the device will automatically remove the route).
 func (d *device) AddSubnet(ctx context.Context, subnet netip.Prefix) (err error) {
-	return d.dev.addSubnet(ctx, subnet)
-}
-
-func (d *device) Close() {
-	_ = d.dev.Close()
+	return d.addSubnet(ctx, subnet)
 }
 
 // Index returns the index of this device.
-func (d *device) Index() int32 {
-	return d.dev.index()
+func (d *device) Index() uint32 {
+	return d.index()
 }
 
 // Name returns the name of this device, e.g. "tun0".
 func (d *device) Name() string {
-	return d.dev.name
+	return d.name
+}
+
+func (d *device) NewLinkEndpoint() (stack.LinkEndpoint, error) {
+	return d.createLinkEndpoint()
 }
 
 // SetDNS sets the DNS configuration for the device on the windows platform.
 func (d *device) SetDNS(ctx context.Context, clusterDomain string, server netip.Addr, domains []string) (err error) {
-	return d.dev.setDNS(ctx, clusterDomain, server, domains)
-}
-
-func (d *device) SetMTU(mtu uint32) {
-	_ = d.dev.setMTU(int(mtu))
+	return d.setDNS(ctx, clusterDomain, server, domains)
 }
 
 // RemoveSubnet removes a subnet from this TUN device and also removes the route for that subnet which
 // is associated with the device.
 func (d *device) RemoveSubnet(ctx context.Context, subnet netip.Prefix) (err error) {
-	return d.dev.removeSubnet(ctx, subnet)
-}
-
-func (d *device) WaitForDevice() {
-	d.wg.Wait()
-	dlog.Info(d.ctx, "Endpoint done")
-}
-
-func (d *device) tunToDispatch(cancel context.CancelFunc) {
-	defer func() {
-		cancel()
-		d.wg.Done()
-	}()
-	buf := vifBuffer.NewData(0x10000)
-	data := buf.Buf()
-	for ok := true; ok; {
-		n, err := d.dev.readPacket(buf)
-		if err != nil {
-			ok = d.IsAttached()
-			if ok && d.ctx.Err() == nil {
-				dlog.Errorf(d.ctx, "read packet error: %v", err)
-			}
-			return
-		}
-		if n == 0 {
-			continue
-		}
-
-		var ipv tcpip.NetworkProtocolNumber
-		switch header.IPVersion(data) {
-		case header.IPv4Version:
-			ipv = header.IPv4ProtocolNumber
-		case header.IPv6Version:
-			ipv = header.IPv6ProtocolNumber
-		default:
-			continue
-		}
-
-		pb := stack.NewPacketBuffer(stack.PacketBufferOptions{
-			Payload: buffer.MakeWithData(data[:n]),
-		})
-
-		d.InjectInbound(ipv, pb)
-		pb.DecRef()
-	}
-}
-
-func (d *device) dispatchToTun(ctx context.Context) {
-	defer d.wg.Done()
-	buf := vifBuffer.NewData(0x10000)
-	for {
-		pb := d.ReadContext(ctx)
-		if pb == nil {
-			break
-		}
-		buf.Resize(pb.Size())
-		b := buf.Buf()
-		for _, s := range pb.AsSlices() {
-			copy(b, s)
-			b = b[len(s):]
-		}
-		pb.DecRef()
-		if _, err := d.dev.writePacket(buf, 0); err != nil {
-			dlog.Errorf(ctx, "WritePacket failed: %v", err)
-		}
-	}
+	return d.removeSubnet(ctx, subnet)
 }

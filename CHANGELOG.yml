@@ -75,6 +75,21 @@ items:
         body: >-
           macOS based systems will often PTR queries using nameslike `b._dns-sd._udp`, lb._dns-sd._udp, or
           `db-dns-sd._udp`. Those queries are no longer dispatched to the cluster.
+  - version: 2.21.2
+    date: 2025-01-26
+    notes:
+      - type: bugfix
+        title: Fix panic when agentpf.client creates a Tunnel
+        body: >-
+          A race could occur where several requests where made to `agentpf.client.Tunnel` on a client that had errored
+          when creating its port-forward to the agent. The implementation could handle one such requests but not
+          several, resulting in a panic in situations where multiple simultaneous requests were made to the same client
+          during a very short time period,
+      - type: bugfix
+        title: Fix goroutine leak in dialer.
+        body: >-
+          The context passed to the `Tunnel` call that creates a stream for a dialer, was not cancelled when the dialer
+          was finished, so the stream was never properly closed, leading to one dormant goroutine for each stream.
   - version: 2.21.1
     date: 2024-12-17
     notes:
