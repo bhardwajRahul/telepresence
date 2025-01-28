@@ -486,14 +486,11 @@ func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_W
 					rpc.InterceptDispositionType_ACTIVE,
 					rpc.InterceptDispositionType_AGENT_ERROR:
 					// agent-owned state: include the intercept
-					dlog.Debugf(ctx, "Intercept %s.%s valid. Disposition: %s", info.Spec.Agent, info.Spec.Namespace, info.Disposition)
 					return true
 				case rpc.InterceptDispositionType_REMOVED:
-					dlog.Debugf(ctx, "Intercept %s.%s valid but removed", info.Spec.Agent, info.Spec.Namespace)
 					return true
 				default:
 					// otherwise: don't return this intercept
-					dlog.Debugf(ctx, "Intercept %s.%s is not in agent-owned state. Disposition: %s", info.Spec.Agent, info.Spec.Namespace, info.Disposition)
 					return false
 				}
 			}

@@ -200,19 +200,19 @@ func (a *agentInjector) Inject(ctx context.Context, req *admission.AdmissionRequ
 
 	// Create patch operations to add the traffic-agent sidecar
 	if len(patches) > 0 {
-		dlog.Infof(ctx, "Injecting %d patches into pod %s.%s", len(patches), pod.Name, pod.Namespace)
-		if dlog.MaxLogLevel(ctx) >= dlog.LogLevelDebug {
+		dlog.Debugf(ctx, "Injecting %d patches into pod %s.%s", len(patches), pod.Name, pod.Namespace)
+		if dlog.MaxLogLevel(ctx) >= dlog.LogLevelTrace {
 			cns := strings.Builder{}
 			for i, cn := range pod.Spec.Containers {
 				cns.WriteString(fmt.Sprintf("%d %s\n", i, cn.Name))
 			}
-			dlog.Debugf(ctx, "Containers \n%s", cns.String())
+			dlog.Tracef(ctx, "Containers \n%s", cns.String())
 			if pj, err := json.Marshal(patches, jsontext.WithIndent("  ")); err == nil {
-				dlog.Debugf(ctx, "\n%s", string(pj))
+				dlog.Tracef(ctx, "\n%s", string(pj))
 			}
 		}
 	} else {
-		dlog.Infof(ctx, "Pod %s.%s was left untouched", pod.Name, pod.Namespace)
+		dlog.Debugf(ctx, "Pod %s.%s was left untouched", pod.Name, pod.Namespace)
 	}
 	return patches, nil
 }
