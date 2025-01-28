@@ -510,17 +510,22 @@ func (s *cluster) CapturePodLogs(ctx context.Context, app, container, ns string)
 	}
 	present := struct{}{}
 
-	// Use another logger to avoid errors due to logs arriving after the tests complete.
-	ctx = dlog.WithLogger(ctx, dlog.WrapLogrus(logrus.StandardLogger()))
-	pod := pods[0]
-	key := pod
-	if container != "" {
-		key += "/" + container
+	var pod string
+	for i, key := range pods {
+		if container != "" {
+			key += "/" + container
+		}
+		if _, ok := s.logCapturingPods.LoadOrStore(key, present); !ok {
+			pod = pods[i]
+			break
+		}
 	}
-	if _, ok := s.logCapturingPods.LoadOrStore(key, present); ok {
-		return ""
+	if pod == "" {
+		return "" // All pods already captured
 	}
 
+	// Use another logger to avoid errors due to logs arriving after the tests complete.
+	ctx = dlog.WithLogger(ctx, dlog.WrapLogrus(logrus.StandardLogger()))
 	logFile, err := os.Create(
 		filepath.Join(filelocation.AppUserLogDir(ctx), fmt.Sprintf("%s-%s.log", dtime.Now().Format("20060102T150405"), pod)))
 	if err != nil {
