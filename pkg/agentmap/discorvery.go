@@ -25,7 +25,7 @@ import (
 var ReplicaSetNameRx = regexp.MustCompile(`\A(.+)-[a-f0-9]+\z`)
 
 func FindOwnerWorkload(ctx context.Context, obj k8sapi.Object, supportedWorkloadKinds []string) (k8sapi.Workload, error) {
-	dlog.Debugf(ctx, "FindOwnerWorkload(%s,%s,%s)", obj.GetName(), obj.GetNamespace(), obj.GetKind())
+	dlog.Tracef(ctx, "FindOwnerWorkload(%s,%s,%s)", obj.GetName(), obj.GetNamespace(), obj.GetKind())
 	lbs := obj.GetLabels()
 	if wlName, ok := lbs[agentconfig.WorkloadNameLabel]; ok {
 		return GetWorkload(ctx, wlName, obj.GetNamespace(), lbs[agentconfig.WorkloadKindLabel])
@@ -62,7 +62,7 @@ func FindOwnerWorkload(ctx context.Context, obj k8sapi.Object, supportedWorkload
 }
 
 func GetWorkload(ctx context.Context, name, namespace, workloadKind string) (obj k8sapi.Workload, err error) {
-	dlog.Debugf(ctx, "GetWorkload(%s,%s,%s)", name, namespace, workloadKind)
+	dlog.Tracef(ctx, "GetWorkload(%s,%s,%s)", name, namespace, workloadKind)
 	i := informer.GetFactory(ctx, namespace)
 	if i == nil {
 		dlog.Debugf(ctx, "fetching %s %s.%s using direct API call", workloadKind, name, namespace)
@@ -200,7 +200,7 @@ func findServicesSelecting(ctx context.Context, namespace string, lbs labels.Lab
 		}
 	} else {
 		// This shouldn't happen really.
-		dlog.Debugf(ctx, "Fetching services in %s using direct API call", namespace)
+		dlog.Tracef(ctx, "Fetching services in %s using direct API call", namespace)
 		l, err := k8sapi.GetK8sInterface(ctx).CoreV1().Services(namespace).List(ctx, meta.ListOptions{})
 		if err != nil {
 			return nil, err
@@ -219,7 +219,7 @@ func findServicesSelecting(ctx context.Context, namespace string, lbs labels.Lab
 	sort.Slice(ms, func(i, j int) bool {
 		return ms[i].GetName() < ms[j].GetName()
 	})
-	dlog.Debugf(ctx, "Scanned %d services in namespace %s and found that %s selects labels %v", scanned, namespace, objectsStringer(ms), lbs)
+	dlog.Tracef(ctx, "Scanned %d services in namespace %s and found that %s selects labels %v", scanned, namespace, objectsStringer(ms), lbs)
 	return ms, nil
 }
 

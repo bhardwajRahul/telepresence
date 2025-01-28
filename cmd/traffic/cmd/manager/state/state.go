@@ -314,8 +314,8 @@ func (s *state) RemoveSession(ctx context.Context, sessionID string) {
 }
 
 func (s *state) consolidateAgentSessionIntercepts(ctx context.Context, agent *rpc.AgentInfo) {
-	dlog.Debugf(ctx, "Consolidating intercepts after removal of agent %s", agent.PodName)
-	mutator.GetMap(s.backgroundCtx).Inactivate(agent.PodName)
+	dlog.Debugf(ctx, "Consolidating intercepts after removal of agent %s(%s)", agent.PodName, agent.PodIp)
+	mutator.GetMap(s.backgroundCtx).Inactivate(agent.PodIp)
 	s.intercepts.Range(func(interceptID string, intercept *rpc.InterceptInfo) bool {
 		if intercept.Disposition == rpc.InterceptDispositionType_REMOVED || agent.PodIp != intercept.PodIp {
 			// Not of interest. Continue iteration.
@@ -331,7 +331,7 @@ func (s *state) consolidateAgentSessionIntercepts(ctx context.Context, agent *rp
 			})
 		} else {
 			// The agent is about to die, but apparently more agents are present. Let some other agent pick it up then.
-			dlog.Debugf(ctx, "Intercept %q lost its agent pod %s. Setting it disposition to WAITING", interceptID, agent.PodName)
+			dlog.Debugf(ctx, "Intercept %q lost its agent pod %s(%s). Setting it disposition to WAITING", interceptID, agent.PodName, agent.PodIp)
 			s.UpdateIntercept(interceptID, func(intercept *rpc.InterceptInfo) {
 				intercept.PodIp = ""
 				intercept.PodName = ""
@@ -447,10 +447,10 @@ func (s *state) CountTunnelEgress() uint64 {
 // Sessions: Agents ////////////////////////////////////////////////////////////////////////////////
 
 func (s *state) AddAgent(ctx context.Context, agent *rpc.AgentInfo, now time.Time) (string, error) {
-	if mutator.GetMap(ctx).IsInactive(agent.PodName) {
+	if mutator.GetMap(ctx).IsInactive(agent.PodIp) {
 		return "", status.Error(codes.Aborted, "inactivated pod")
 	}
-	sessionID := AgentSessionIDPrefix + agent.PodName + "." + agent.Namespace
+	sessionID := AgentSessionIDPrefix + agent.PodIp + "." + agent.Namespace
 	if oldAgent, hasConflict := s.agents.LoadOrStore(sessionID, agent); hasConflict {
 		return "", status.Error(codes.AlreadyExists, fmt.Sprintf("duplicate id %q, existing %+v, new %+v", sessionID, oldAgent, agent))
 	}
@@ -481,7 +481,7 @@ func (s *state) AddAgent(ctx context.Context, agent *rpc.AgentInfo, now time.Tim
 
 func (s *state) GetAgent(sessionID string) *rpc.AgentInfo {
 	if ret, ok := s.agents.Load(sessionID); ok {
-		if !mutator.GetMap(s.backgroundCtx).IsInactive(ret.PodName) {
+		if !mutator.GetMap(s.backgroundCtx).IsInactive(ret.PodIp) {
 			return ret
 		}
 	}
@@ -491,7 +491,7 @@ func (s *state) GetAgent(sessionID string) *rpc.AgentInfo {
 func (s *state) EachAgent(f func(string, *rpc.AgentInfo) bool) {
 	m := mutator.GetMap(s.backgroundCtx)
 	s.agents.Range(func(si string, ag *rpc.AgentInfo) bool {
-		if !m.IsInactive(ag.PodName) {
+		if !m.IsInactive(ag.PodIp) {
 			return f(si, ag)
 		}
 		return true
@@ -501,7 +501,7 @@ func (s *state) EachAgent(f func(string, *rpc.AgentInfo) bool) {
 func (s *state) LoadMatchingAgents(f func(string, *rpc.AgentInfo) bool) map[string]*rpc.AgentInfo {
 	m := mutator.GetMap(s.backgroundCtx)
 	return s.agents.LoadMatching(func(s string, ai *rpc.AgentInfo) bool {
-		return !m.IsInactive(ai.PodName) && f(s, ai)
+		return !m.IsInactive(ai.PodIp) && f(s, ai)
 	})
 }
 

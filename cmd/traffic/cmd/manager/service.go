@@ -209,7 +209,7 @@ func (s *service) ArriveAsClient(ctx context.Context, client *rpc.ClientInfo) (*
 
 // ArriveAsAgent establishes a session between an agent and the Manager.
 func (s *service) ArriveAsAgent(ctx context.Context, agent *rpc.AgentInfo) (*rpc.SessionInfo, error) {
-	dlog.Debugf(ctx, "ArriveAsAgent %s called", agent.PodName)
+	dlog.Debugf(ctx, "ArriveAsAgent %s(%s) called", agent.PodName, agent.PodIp)
 	if val := validateAgent(agent); val != "" {
 		return nil, status.Error(codes.InvalidArgument, val)
 	}
@@ -433,7 +433,7 @@ func (s *service) watchAgents(ctx context.Context, includeAgent func(string, *rp
 					names[i] = a.PodName + "." + a.Namespace
 					i++
 				}
-				dlog.Debugf(ctx, "WatchAgentsNS sending update %v", names)
+				dlog.Tracef(ctx, "WatchAgentsNS sending update %v", names)
 			}
 			resp := &rpc.AgentInfoSnapshot{
 				Agents: agents,
@@ -516,7 +516,7 @@ func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_W
 				dlog.Debugf(ctx, "WatchIntercepts session no longer active")
 				return nil
 			}
-			dlog.Debugf(ctx, "WatchIntercepts sending update")
+			dlog.Tracef(ctx, "WatchIntercepts sending update")
 			intercepts := make([]*rpc.InterceptInfo, 0, len(snapshot))
 			for _, intercept := range snapshot {
 				intercepts = append(intercepts, intercept)
@@ -695,8 +695,8 @@ func (s *service) ReviewIntercept(ctx context.Context, rIReq *rpc.ReviewIntercep
 		if intercept.Spec.Namespace != agent.Namespace || intercept.Spec.Agent != agent.Name {
 			return
 		}
-		if mutator.GetMap(ctx).IsInactive(agent.PodName) {
-			dlog.Debugf(ctx, "Pod %s.%s is blacklisted", agent.PodName, agent.Namespace)
+		if mutator.GetMap(ctx).IsInactive(agent.PodIp) {
+			dlog.Debugf(ctx, "Pod %s(%s) is blacklisted", agent.PodName, agent.PodIp)
 			return
 		}
 

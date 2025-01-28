@@ -37,8 +37,8 @@ type Map interface {
 	OnAdd(context.Context, k8sapi.Workload, agentconfig.SidecarExt) error
 	OnDelete(context.Context, string, string) error
 	DeleteMapsAndRolloutAll(context.Context)
-	IsInactive(podName string) bool
-	Inactivate(podName string)
+	IsInactive(podIP string) bool
+	Inactivate(podIP string)
 	DeletePodsWithConfig(ctx context.Context, wl k8sapi.Workload) error
 	DeletePodsWithConfigMismatch(ctx context.Context, scx agentconfig.SidecarExt) error
 	DeleteAllPodsWithConfig(ctx context.Context, namespace string) error
@@ -572,22 +572,22 @@ func (c *configWatcher) DeleteAllPodsWithConfig(ctx context.Context, namespace s
 
 func (c *configWatcher) DeleteIfMismatch(ctx context.Context, pod *core.Pod, cfgJSON string) error {
 	if c.IsDeleted(pod.Name) {
-		dlog.Debugf(ctx, "Skipping pod %s because it is already deleted", pod.Name)
+		dlog.Tracef(ctx, "Skipping pod %s because it is already deleted", pod.Name)
 		return nil
 	}
 	a := pod.ObjectMeta.Annotations
 	if v, ok := a[agentconfig.ManualInjectAnnotation]; ok && v == "true" {
-		dlog.Debugf(ctx, "Skipping pod %s because it is managed manually", pod.Name)
+		dlog.Tracef(ctx, "Skipping pod %s because it is managed manually", pod.Name)
 		return nil
 	}
 	if a[agentconfig.ConfigAnnotation] == cfgJSON {
-		dlog.Debugf(ctx, "Keeping pod %s because its config is still valid", pod.Name)
+		dlog.Tracef(ctx, "Keeping pod %s because its config is still valid", pod.Name)
 		return nil
 	}
 	var err error
 	c.inactivePods.Compute(pod.Name, func(v inactivation, loaded bool) (inactivation, bool) {
 		if loaded && v.deleted {
-			dlog.Debugf(ctx, "Skipping pod %s because it was deleted by another thread", pod.Name)
+			dlog.Tracef(ctx, "Skipping pod %s because it was deleted by another thread", pod.Name)
 			return v, false
 		}
 		dlog.Debugf(ctx, "Deleting pod %s because its config is no longer valid", pod.Name)
@@ -667,12 +667,9 @@ func podList(ctx context.Context, kind, name, namespace string) ([]*core.Pod, er
 		if !podIsRunning(pod) {
 			continue
 		}
-		dlog.Debugf(ctx, "getting owner workload for pod %s.%s", pod.Name, pod.Namespace)
 		wl, err := agentmap.FindOwnerWorkload(ctx, k8sapi.Pod(pod), supportedKinds)
 		if err == nil {
-			dlog.Debugf(ctx, "owner workload for pod %s.%s is %s %s", pod.Name, pod.Namespace, wl.GetKind(), wl.GetName())
 			if (kind == "" || wl.GetKind() == kind) && (name == "" || wl.GetName() == name) {
-				dlog.Debugf(ctx, "owner workload was a match. Pod %s.%s is of interest", pod.Name, pod.Namespace)
 				podsOfInterest = append(podsOfInterest, pod)
 			}
 		} else {

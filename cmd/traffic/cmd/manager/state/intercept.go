@@ -768,10 +768,10 @@ func (s *state) waitForAgents(ctx context.Context, ac *agentconfig.Sidecar, fail
 			}
 			as := make([]*rpc.AgentInfo, 0, len(snapshot))
 			for _, a := range snapshot {
-				if mm.IsInactive(a.PodName) {
-					dlog.Debugf(ctx, "Agent %s.%s is blacklisted", a.PodName, a.Namespace)
+				if mm.IsInactive(a.PodIp) {
+					dlog.Debugf(ctx, "Agent %s(%s) is blacklisted", a.PodName, a.PodIp)
 				} else {
-					dlog.Debugf(ctx, "Agent %s.%s is ready", a.Name, a.Namespace)
+					dlog.Debugf(ctx, "Agent %s(%s) is ready", a.Name, a.PodIp)
 					as = append(as, a)
 					break
 				}

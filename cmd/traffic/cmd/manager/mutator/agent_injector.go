@@ -110,7 +110,7 @@ func (a *agentInjector) Inject(ctx context.Context, req *admission.AdmissionRequ
 	}
 
 	if isDelete {
-		a.agentConfigs.Inactivate(pod.Name)
+		a.agentConfigs.Inactivate(pod.Status.PodIP)
 		return nil, nil
 	}
 
@@ -414,7 +414,7 @@ func addAgentContainer(
 		return patches, replaceAnnotations
 	}
 
-	refPodName := pod.Name + "." + pod.Namespace
+	refPodName := pod.Name + "(" + pod.Status.PodIP + ")"
 	for i := range pod.Spec.Containers {
 		pcn := &pod.Spec.Containers[i]
 		if pcn.Name == agentconfig.ContainerName {
