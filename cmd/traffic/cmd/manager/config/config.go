@@ -16,6 +16,7 @@ import (
 
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/namespaces"
+	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/v2/pkg/labels"
@@ -25,7 +26,7 @@ const (
 	clientConfigFileName            = "client.yaml"
 	agentEnvConfigFileName          = "agent-env.yaml"
 	namespaceSelectorConfigFileName = "namespace-selector.yaml"
-	cfgConfigMapName                = "traffic-manager"
+	cfgConfigMapName                = agentmap.ManagerAppName
 )
 
 type Watcher interface {

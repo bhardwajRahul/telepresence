@@ -233,7 +233,7 @@ func getTestClientConn(ctx context.Context, t *testing.T) *grpc.ClientConn {
 
 	_, err = fakeClient.CoreV1().ConfigMaps(mgrNs).Create(ctx, &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "traffic-manager",
+			Name:      agentmap.ManagerAppName,
 			Namespace: mgrNs,
 		},
 		Data: map[string]string{"namespace-selector.yaml": ` 

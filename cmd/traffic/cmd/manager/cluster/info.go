@@ -29,8 +29,6 @@ import (
 
 const (
 	supportedKubeAPIVersion = "1.17.0"
-	agentContainerName      = "traffic-agent"
-	managerAppName          = "traffic-manager"
 )
 
 type Info interface {

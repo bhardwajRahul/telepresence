@@ -56,7 +56,7 @@ const mgrNs = "default"
 func TestTrafficAgentConfigGenerator(t *testing.T) {
 	managerConfig := core.ConfigMap{
 		ObjectMeta: meta.ObjectMeta{
-			Name:      "traffic-manager",
+			Name:      agentmap.ManagerAppName,
 			Namespace: mgrNs,
 		},
 		Data: map[string]string{"namespace-selector.yaml": ` 
@@ -912,7 +912,7 @@ func TestTrafficAgentInjector(t *testing.T) {
 	one := int32(1)
 	managerConfig := core.ConfigMap{
 		ObjectMeta: meta.ObjectMeta{
-			Name:      "traffic-manager",
+			Name:      agentmap.ManagerAppName,
 			Namespace: mgrNs,
 		},
 		Data: map[string]string{"namespace-selector.yaml": ` 
