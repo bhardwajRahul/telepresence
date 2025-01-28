@@ -300,12 +300,10 @@ func (s *state) RemoveSession(ctx context.Context, sessionID string) {
 
 		// kill the session
 		defer sess.Cancel()
-		s.gcSessionIntercepts(ctx, sessionID)
-
-		agent, isAgent := s.agents.LoadAndDelete(sessionID)
-		if isAgent {
-			mutator.GetMap(s.backgroundCtx).Inactivate(agent.PodName)
+		if agent, isAgent := s.agents.LoadAndDelete(sessionID); isAgent {
+			s.consolidateAgentSessionIntercepts(ctx, agent)
 		} else if client, isClient := s.clients.LoadAndDelete(sessionID); isClient {
+			s.gcClientSessionIntercepts(ctx, sessionID, client)
 			scm := sess.(*clientSessionState).consumptionMetrics
 			atomic.AddUint64(&s.tunnelIngressCounter, scm.FromClientBytes.GetValue())
 			atomic.AddUint64(&s.tunnelEgressCounter, scm.ToClientBytes.GetValue())
@@ -315,12 +313,38 @@ func (s *state) RemoveSession(ctx context.Context, sessionID string) {
 	})
 }
 
-func (s *state) gcSessionIntercepts(ctx context.Context, sessionID string) {
-	// GC any intercepts that relied on this session; prune any intercepts that
-	//  1. Don't have a client session (intercept.ClientSession.SessionId)
-	//  2. Don't have any agents (agent.PodIp == intercept.PodIp)
-	// Alternatively, if the intercept is still live but has been switched over to a different agent, send it back to
-	// WAITING state
+func (s *state) consolidateAgentSessionIntercepts(ctx context.Context, agent *rpc.AgentInfo) {
+	dlog.Debugf(ctx, "Consolidating intercepts after removal of agent %s", agent.PodName)
+	mutator.GetMap(s.backgroundCtx).Inactivate(agent.PodName)
+	s.intercepts.Range(func(interceptID string, intercept *rpc.InterceptInfo) bool {
+		if intercept.Disposition == rpc.InterceptDispositionType_REMOVED || agent.PodIp != intercept.PodIp {
+			// Not of interest. Continue iteration.
+			return true
+		}
+
+		if errCode, errMsg := s.checkAgentsForIntercept(intercept); errCode != rpc.InterceptDispositionType_UNSPECIFIED {
+			// No agents matching this intercept are available, so the intercept is now dormant or in error.
+			dlog.Debugf(ctx, "Intercept %q no longer has available agents. Setting it disposition to %s", interceptID, errCode)
+			s.UpdateIntercept(interceptID, func(intercept *rpc.InterceptInfo) {
+				intercept.Disposition = errCode
+				intercept.Message = errMsg
+			})
+		} else {
+			// The agent is about to die, but apparently more agents are present. Let some other agent pick it up then.
+			dlog.Debugf(ctx, "Intercept %q lost its agent pod %s. Setting it disposition to WAITING", interceptID, agent.PodName)
+			s.UpdateIntercept(interceptID, func(intercept *rpc.InterceptInfo) {
+				intercept.PodIp = ""
+				intercept.PodName = ""
+				intercept.Disposition = rpc.InterceptDispositionType_WAITING
+			})
+		}
+		// Only one agent with this IP. Break iteration.
+		return false
+	})
+}
+
+func (s *state) gcClientSessionIntercepts(ctx context.Context, sessionID string, client *rpc.ClientInfo) {
+	// GC all intercepts for the client session (intercept.ClientSession.SessionId)
 	s.intercepts.Range(func(interceptID string, intercept *rpc.InterceptInfo) bool {
 		if intercept.Disposition == rpc.InterceptDispositionType_REMOVED {
 			return true
@@ -328,26 +352,9 @@ func (s *state) gcSessionIntercepts(ctx context.Context, sessionID string) {
 		if intercept.ClientSession.SessionId == sessionID {
 			// Client went away:
 			// Delete it.
-			if client := s.GetClient(sessionID); client != nil {
-				wl := strings.SplitN(interceptID, ":", 2)[1]
-				s.allInterceptsFinalizerCall(client, &wl)
-			}
+			wl := strings.SplitN(interceptID, ":", 2)[1]
+			s.allInterceptsFinalizerCall(client, &wl)
 			s.self.RemoveIntercept(ctx, interceptID)
-		} else if errCode, errMsg := s.checkAgentsForIntercept(intercept); errCode != 0 {
-			// Refcount went to zero:
-			// Tell the client, so that the client can tell us to delete it.
-			s.UpdateIntercept(interceptID, func(intercept *rpc.InterceptInfo) {
-				intercept.Disposition = errCode
-				intercept.Message = errMsg
-			})
-		} else {
-			if agent := s.GetAgent(sessionID); agent != nil && agent.PodIp == intercept.PodIp {
-				// The agent whose podIP was stored by the intercept is dead, but it's not the last agent
-				// Send it back to waiting so that one of the other agents can pick it up and set their own podIP
-				s.UpdateIntercept(interceptID, func(intercept *rpc.InterceptInfo) {
-					intercept.Disposition = rpc.InterceptDispositionType_WAITING
-				})
-			}
 		}
 		return true
 	})

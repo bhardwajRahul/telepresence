@@ -286,7 +286,6 @@ func (s *Service) manageSessions(c context.Context) error {
 	// terminates this function, it terminates the whole process.
 	wg := sync.WaitGroup{}
 	defer wg.Wait()
-	c, s.quit = context.WithCancel(c)
 
 	for {
 		// Wait for a connection request
@@ -378,10 +377,11 @@ func (s *Service) startSession(parentCtx context.Context, oi *rpc.NetworkConfig,
 	return reply
 }
 
-func (s *Service) serveGrpc(c context.Context, l net.Listener) error {
+func (s *Service) serveGrpc(c context.Context, l net.Listener) (err error) {
 	defer func() {
 		// Error recovery.
 		if perr := derror.PanicToError(recover()); perr != nil {
+			err = perr
 			dlog.Errorf(c, "%+v", perr)
 		}
 	}()
@@ -391,6 +391,7 @@ func (s *Service) serveGrpc(c context.Context, l net.Listener) error {
 	if mz := cfg.Grpc().MaxReceiveSize(); mz > 0 {
 		opts = append(opts, grpc.MaxRecvMsgSize(int(mz)))
 	}
+	c, s.quit = context.WithCancel(c)
 	svc := server.New(c, opts...)
 	rpc.RegisterDaemonServer(svc, s)
 	return server.Serve(c, svc, l)
