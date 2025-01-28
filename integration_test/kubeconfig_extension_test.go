@@ -421,12 +421,22 @@ func (s *notConnectedSuite) Test_DNSSuffixRules() {
 				})
 			}
 			ctx = itest.WithKubeConfigExtension(ctx, func(cluster *api.Cluster) map[string]any {
-				return map[string]any{
-					"dns": map[string][]string{
-						"exclude-suffixes": tt.excludeSuffixes,
-						"include-suffixes": tt.includeSuffixes,
+				m := map[string]any{
+					"logLevels": map[string]string{
+						"rootDaemon": "trace",
 					},
 				}
+				if len(tt.excludeSuffixes)+len(tt.includeSuffixes) > 0 {
+					dns := map[string]any{}
+					if len(tt.excludeSuffixes) > 0 {
+						dns["excludeSuffixes"] = tt.excludeSuffixes
+					}
+					if len(tt.includeSuffixes) > 0 {
+						dns["includeSuffixes"] = tt.includeSuffixes
+					}
+					m["dns"] = dns
+				}
+				return m
 			})
 			require := s.Require()
 
