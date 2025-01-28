@@ -340,13 +340,21 @@ func DialWaitLoop(
 	defer cancel()
 	for ctx.Err() == nil {
 		dr, err := dialStream.Recv()
-		if err != nil {
-			if ctx.Err() == nil && !(errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || status.Code(err) == codes.NotFound) {
-				return fmt.Errorf("dial request stream recv: %w", err)
-			}
+		if err == nil {
+			go dialRespond(ctx, tunnelProvider, dr, sessionID)
+			continue
+		}
+		if ctx.Err() != nil {
 			return nil
 		}
-		go dialRespond(ctx, tunnelProvider, dr, sessionID)
+		if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || status.Code(err) == codes.NotFound {
+			return nil
+		}
+		switch status.Code(err) {
+		case codes.NotFound, codes.Unavailable:
+			return nil
+		}
+		return fmt.Errorf("dial request stream recv: %w", err)
 	}
 	return nil
 }

@@ -232,6 +232,7 @@ func (ac *client) startDialWatcherReady(ctx context.Context) error {
 		if err != nil {
 			dlog.Error(ctx, err)
 		}
+		ac.cancel()
 	}()
 	return nil
 }

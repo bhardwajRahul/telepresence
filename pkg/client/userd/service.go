@@ -44,7 +44,7 @@ type Service interface {
 	ManageSessions(context.Context) error
 }
 
-type NewServiceFunc func(context.Context, *dgroup.Group, client.Config, *grpc.Server) (Service, error)
+type NewServiceFunc func(context.Context, context.CancelFunc, *dgroup.Group, client.Config, *grpc.Server) (Service, error)
 
 type newServiceKey struct{}
 

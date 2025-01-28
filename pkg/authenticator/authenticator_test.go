@@ -8,6 +8,7 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
+	"k8s.io/client-go/tools/clientcmd"
 	clientcmd_api "k8s.io/client-go/tools/clientcmd/api"
 
 	mock_authenticator "github.com/telepresenceio/telepresence/v2/pkg/authenticator/mocks"
@@ -36,6 +37,10 @@ type SuiteService struct {
 	service *Service
 }
 
+func (s *SuiteService) ClientConfig() (clientcmd.ClientConfig, error) {
+	return s.kubeClientConfig, nil
+}
+
 func (s *SuiteService) SetupTest() {
 	s.ctrl = gomock.NewController(s.T())
 
@@ -43,7 +48,7 @@ func (s *SuiteService) SetupTest() {
 	s.execCredentialsResolver = mock_authenticator.NewMockExecCredentialsResolver(s.ctrl)
 
 	s.service = &Service{
-		kubeClientConfig:        s.kubeClientConfig,
+		clientConfigProvider:    s,
 		execCredentialsResolver: s.execCredentialsResolver,
 	}
 }

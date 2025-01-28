@@ -147,16 +147,7 @@ func (s *Service) Status(context.Context, *emptypb.Empty) (*rpc.DaemonStatus, er
 
 func (s *Service) Quit(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
 	dlog.Debug(ctx, "Received gRPC Quit")
-	if !s.sessionLock.TryRLock() {
-		// A running session is blocking with a write-lock. Give it some time to quit, then kill it
-		time.Sleep(2 * time.Second)
-		if !s.sessionLock.TryRLock() {
-			s.quit()
-			return &emptypb.Empty{}, nil
-		}
-	}
-	defer s.sessionLock.RUnlock()
-	s.cancelSessionReadLocked()
+	s.cancelSession()
 	s.quit()
 	return &emptypb.Empty{}, nil
 }
@@ -233,25 +224,15 @@ func (s *Service) WaitForNetwork(ctx context.Context, e *emptypb.Empty) (*emptyp
 	return &emptypb.Empty{}, err
 }
 
-func (s *Service) cancelSessionReadLocked() {
-	if s.sessionCancel != nil {
-		s.sessionCancel()
-	}
-}
-
 func (s *Service) cancelSession() {
-	if !atomic.CompareAndSwapInt32(&s.sessionQuitting, 0, 1) {
-		return
+	if atomic.CompareAndSwapInt32(&s.sessionQuitting, 0, 1) {
+		if s.sessionCancel != nil {
+			s.sessionCancel()
+		}
+		s.session = nil
+		s.sessionCancel = nil
+		atomic.StoreInt32(&s.sessionQuitting, 0)
 	}
-	s.sessionLock.RLock()
-	s.cancelSessionReadLocked()
-	s.sessionLock.RUnlock()
-
-	s.sessionLock.Lock()
-	s.session = nil
-	s.sessionCancel = nil
-	atomic.StoreInt32(&s.sessionQuitting, 0)
-	s.sessionLock.Unlock()
 }
 
 func (s *Service) WithSession(f func(context.Context, *Session) error) error {
@@ -360,7 +341,12 @@ func (s *Service) startSession(parentCtx context.Context, oi *rpc.NetworkConfig,
 	s.sessionContext = ctx
 	s.sessionCancel = func() {
 		cancel()
-		<-session.Done()
+		wCtx, wCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer wCancel()
+		select {
+		case <-session.Done():
+		case <-wCtx.Done():
+		}
 	}
 	_ = client.ReloadDaemonLogLevel(ctx, true)
 	reply.status.OutboundConfig = s.session.getNetworkConfig(ctx)
@@ -373,15 +359,7 @@ func (s *Service) startSession(parentCtx context.Context, oi *rpc.NetworkConfig,
 	wg.Add(1)
 	go func() {
 		defer func() {
-			if r := recover(); r != nil {
-				s.sessionLock.TryLock()
-				s.sessionLock.Unlock()
-				dlog.Errorf(ctx, "%+v", derror.PanicToError(r))
-			}
-			s.sessionLock.Lock()
-			s.session = nil
-			s.sessionCancel = nil
-			s.sessionLock.Unlock()
+			s.cancelSession()
 			_ = client.ReloadDaemonLogLevel(parentCtx, true)
 			wg.Done()
 		}()
@@ -394,7 +372,7 @@ func (s *Service) startSession(parentCtx context.Context, oi *rpc.NetworkConfig,
 	case err := <-initErrCh:
 		if err != nil {
 			reply.err = err
-			s.cancelSessionReadLocked()
+			s.cancelSession()
 		}
 	}
 	return reply
@@ -481,7 +459,7 @@ func run(cmd *cobra.Command, args []string) error {
 	vif.InitLogger(c)
 
 	g := dgroup.NewGroup(c, dgroup.GroupConfig{
-		SoftShutdownTimeout:  2 * time.Second,
+		SoftShutdownTimeout:  5 * time.Second,
 		EnableSignalHandling: true,
 		ShutdownOnNonError:   true,
 	})

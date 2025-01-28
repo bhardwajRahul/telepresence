@@ -65,11 +65,6 @@ type service struct {
 	// The quit function that quits the server.
 	quit func()
 
-	// quitDisable will temporarily disable the quit function. This is used when there's a desire
-	// to cancel the session without cancelling the process although the simplified session management
-	// is in effect (rootSessionInProc == true).
-	quitDisable bool
-
 	clientConfig    clientcmd.ClientConfig
 	session         userd.Session
 	sessionCancel   context.CancelFunc
@@ -100,7 +95,7 @@ func (s *service) ClientConfig() (clientcmd.ClientConfig, error) {
 	return s.clientConfig, nil
 }
 
-func NewService(ctx context.Context, _ *dgroup.Group, cfg client.Config, srv *grpc.Server) (userd.Service, error) {
+func NewService(ctx context.Context, cancel context.CancelFunc, _ *dgroup.Group, cfg client.Config, srv *grpc.Server) (userd.Service, error) {
 	s := &service{
 		srv:             srv,
 		connectRequest:  make(chan userd.ConnectRequest),
@@ -108,6 +103,7 @@ func NewService(ctx context.Context, _ *dgroup.Group, cfg client.Config, srv *gr
 		managerProxy:    &mgrProxy{},
 		timedLogLevel:   log.NewTimedLevel(cfg.LogLevels().UserDaemon.String(), log.SetLevel),
 		fuseFtpMgr:      remotefs.NewFuseFTPManager(),
+		quit:            cancel,
 	}
 	s.self = s
 	if srv != nil {
@@ -117,7 +113,6 @@ func NewService(ctx context.Context, _ *dgroup.Group, cfg client.Config, srv *gr
 		rpc.RegisterManagerProxyServer(srv, s.managerProxy)
 	} else {
 		s.rootSessionInProc = true
-		s.quit = func() {}
 	}
 	return s, nil
 }
@@ -222,12 +217,6 @@ func (s *service) configReload(c context.Context) error {
 // a session and writes a reply to the connectErrCh. The session is then started if it was
 // successfully created.
 func (s *service) ManageSessions(c context.Context) error {
-	c, cancel := context.WithCancel(c)
-	s.quit = func() {
-		if !s.quitDisable {
-			cancel()
-		}
-	}
 	wg := sync.WaitGroup{}
 	defer wg.Wait()
 
@@ -363,30 +352,25 @@ func runAliveAndCancellation(ctx context.Context, cancel context.CancelFunc, dae
 	}
 }
 
-func (s *service) cancelSessionReadLocked() {
-	if s.sessionCancel != nil {
-		if err := s.session.ClearIngestsAndIntercepts(s.sessionContext); err != nil {
-			dlog.Errorf(s.sessionContext, "failed to clear intercepts: %v", err)
-		}
-		s.sessionCancel()
-	}
-}
-
 func (s *service) cancelSession() {
-	if !atomic.CompareAndSwapInt32(&s.sessionQuitting, 0, 1) {
-		return
+	if atomic.CompareAndSwapInt32(&s.sessionQuitting, 0, 1) {
+		if s.sessionCancel != nil {
+			// We use a TryRLock here because the session-lock will be held during
+			// session initialization, and we might well receive a quit-call during
+			// that time (the initialization may take a long time if there are
+			// problems connecting to the cluster).
+			if s.sessionLock.TryRLock() {
+				if err := s.session.ClearIngestsAndIntercepts(s.sessionContext); err != nil {
+					dlog.Errorf(s.sessionContext, "failed to clear intercepts: %v", err)
+				}
+				s.sessionLock.RUnlock()
+			}
+			s.sessionCancel()
+		}
+		s.session = nil
+		s.sessionCancel = nil
+		atomic.StoreInt32(&s.sessionQuitting, 0)
 	}
-	s.sessionLock.RLock()
-	s.cancelSessionReadLocked()
-	s.sessionLock.RUnlock()
-
-	// We have to cancel the session before we can acquire this write-lock, because we need any long-running RPCs
-	// that may be holding the RLock to die.
-	s.sessionLock.Lock()
-	s.session = nil
-	s.sessionCancel = nil
-	atomic.StoreInt32(&s.sessionQuitting, 0)
-	s.sessionLock.Unlock()
 }
 
 // run is the main function when executing as the connector.
@@ -422,6 +406,7 @@ func run(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+
 	rootSessionInProc, _ := flags.GetBool(embedNetworkFlag)
 	var daemonAddress *net.TCPAddr
 	if addr, _ := flags.GetString(addressFlag); addr != "" {
@@ -462,12 +447,16 @@ func run(cmd *cobra.Command, _ []string) error {
 	// when the group is cancelled.
 	siCh := make(chan userd.Service)
 	g.Go("serve-grpc", func(c context.Context) error {
+		// svcCancel is what a `quit -s` call will cancel. The Group provides soft cancellation to it.
+		// which will result in a graceful termination of the grpc server.
+		c, svcCancel := context.WithCancel(c)
+
 		var opts []grpc.ServerOption
 		if mz := cfg.Grpc().MaxReceiveSize(); mz > 0 {
 			opts = append(opts, grpc.MaxRecvMsgSize(int(mz)))
 		}
 		svc := server.New(c, opts...)
-		si, err := userd.GetNewServiceFunc(c)(c, g, cfg, svc)
+		si, err := userd.GetNewServiceFunc(c)(c, svcCancel, g, cfg, svc)
 		if err != nil {
 			close(siCh)
 			return err

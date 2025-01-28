@@ -438,11 +438,10 @@ func (s *service) SetLogLevel(ctx context.Context, request *rpc.LogLevelRequest)
 
 func (s *service) Quit(ctx context.Context, ex *empty.Empty) (*empty.Empty, error) {
 	s.LogCall(ctx, "Quit", func(c context.Context) {
-		s.sessionLock.RLock()
-		defer s.sessionLock.RUnlock()
-		s.cancelSessionReadLocked()
+		s.cancelSession()
 		s.quit()
-		_ = s.withRootDaemon(ctx, func(ctx context.Context, rd daemon.DaemonClient) error {
+		_ = s.withRootDaemon(context.WithoutCancel(ctx), func(ctx context.Context, rd daemon.DaemonClient) error {
+			dlog.Debug(ctx, "Telling root daemon to Quit")
 			_, err := rd.Quit(ctx, ex)
 			return err
 		})
