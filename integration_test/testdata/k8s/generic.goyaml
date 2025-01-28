@@ -48,7 +48,11 @@ spec:
     spec:
       containers:
         - name: backend
-          image: "{{ .Registry }}/{{ .Image }}"
+{{- if .Registry }}
+          image: {{ .Registry }}/{{ .Image }}
+{{- else }}
+          image: {{ .Image }}
+{{- end}}
           ports:
 {{- range .ContainerPorts }}
             - containerPort: {{ .Number }}
