@@ -7,17 +7,19 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/pkg/sftp"
+	"golang.org/x/sys/unix"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/datawire/dlib/dgroup"
-	"github.com/datawire/dlib/dhttp"
 	"github.com/datawire/dlib/dlog"
 	ftp "github.com/datawire/go-ftpserver"
 	"github.com/telepresenceio/telepresence/rpc/v2/agent"
@@ -25,6 +27,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/dos"
 	"github.com/telepresenceio/telepresence/v2/pkg/forwarder"
+	"github.com/telepresenceio/telepresence/v2/pkg/grpc/server"
 	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 	"github.com/telepresenceio/telepresence/v2/pkg/restapi"
 	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
@@ -131,6 +134,22 @@ func sftpServer(ctx context.Context, sftpPortCh chan<- uint16) error {
 func Main(ctx context.Context, _ ...string) error {
 	dlog.Infof(ctx, "Traffic Agent %s", version.Version)
 
+	ctx, cancel := context.WithCancel(ctx)
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, unix.SIGTERM)
+	defer func() {
+		signal.Stop(sigs)
+		cancel()
+	}()
+
+	go func() {
+		select {
+		case <-sigs:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
 	// Handle configuration
 	config, err := LoadConfig(ctx)
 	if err != nil {
@@ -138,9 +157,8 @@ func Main(ctx context.Context, _ ...string) error {
 	}
 
 	g := dgroup.NewGroup(ctx, dgroup.GroupConfig{
-		EnableSignalHandling: true,
+		SoftShutdownTimeout: 10 * time.Second, // Agent must be able to depart.
 	})
-
 	s := NewState(config)
 	info, err := StartServices(ctx, g, config, s)
 	if err != nil {
@@ -246,22 +264,14 @@ func StartServices(ctx context.Context, g *dgroup.Group, config Config, srv Stat
 		if err != nil {
 			return err
 		}
-		defer func() {
-			_ = grpcListener.Close()
-		}()
 		grpcAddress := grpcListener.Addr().(*net.TCPAddr)
 		grpcPortCh <- uint16(grpcAddress.Port)
 
 		dlog.Debugf(ctx, "Listener opened on %s", grpcAddress)
 
-		grpcHandler := grpc.NewServer(grpcOpts...)
-		agent.RegisterAgentServer(grpcHandler, srv)
-		sc := &dhttp.ServerConfig{Handler: grpcHandler}
-		dlog.Info(ctx, "gRPC server started")
-		if err = sc.Serve(ctx, grpcListener); err != nil && ctx.Err() != nil {
-			err = nil // Normal shutdown
-		}
-		return err
+		svc := server.New(ctx, grpcOpts...)
+		agent.RegisterAgentServer(svc, srv)
+		return server.Serve(ctx, svc, grpcListener)
 	})
 
 	sftpPortCh := make(chan uint16)

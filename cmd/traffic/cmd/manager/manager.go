@@ -3,10 +3,10 @@ package manager
 import (
 	"context"
 	"fmt"
-	"net/http"
+	"net"
 	"os"
 	"slices"
-	"strings"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -28,8 +28,8 @@ import (
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/mutator"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/namespaces"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
+	"github.com/telepresenceio/telepresence/v2/pkg/grpc/server"
 	"github.com/telepresenceio/telepresence/v2/pkg/informer"
-	"github.com/telepresenceio/telepresence/v2/pkg/ioutil"
 	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/v2/pkg/version"
@@ -270,15 +270,15 @@ func (s *service) serveHTTP(ctx context.Context) error {
 	env := managerutil.GetEnv(ctx)
 	host := env.ServerHost
 	port := env.ServerPort
+	l, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(int(port))))
+	if err != nil {
+		return err
+	}
+
 	var opts []grpc.ServerOption
 	if mz, ok := env.MaxReceiveSize.AsInt64(); ok {
 		opts = append(opts, grpc.MaxRecvMsgSize(int(mz)))
 	}
-
-	grpcHandler := grpc.NewServer(opts...)
-	httpHandler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ioutil.Printf(w, "Hello World from: %s\n", r.URL.Path)
-	}))
 
 	lg := dlog.StdLogger(ctx, dlog.MaxLogLevel(ctx))
 	addr := iputil.JoinHostPort(host, port)
@@ -287,22 +287,9 @@ func (s *service) serveHTTP(ctx context.Context) error {
 	} else {
 		lg.SetPrefix(fmt.Sprintf("grpc-api %s", addr))
 	}
-	sc := &dhttp.ServerConfig{
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.ProtoMajor == 2 && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
-				atomic.AddInt32(&s.activeGrpcRequests, 1)
-				grpcHandler.ServeHTTP(w, r)
-				atomic.AddInt32(&s.activeGrpcRequests, -1)
-			} else {
-				atomic.AddInt32(&s.activeHttpRequests, 1)
-				httpHandler.ServeHTTP(w, r)
-				atomic.AddInt32(&s.activeHttpRequests, -1)
-			}
-		}),
-		ErrorLog: lg,
-	}
-	s.self.RegisterServers(grpcHandler)
-	return sc.ListenAndServe(ctx, fmt.Sprintf("%s:%d", host, port))
+	svc := server.New(ctx, opts...)
+	s.self.RegisterServers(svc)
+	return server.Serve(ctx, svc, l)
 }
 
 func (s *service) RegisterServers(grpcHandler *grpc.Server) {

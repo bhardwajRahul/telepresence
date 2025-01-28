@@ -18,7 +18,6 @@ import (
 
 	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dgroup"
-	"github.com/datawire/dlib/dhttp"
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/rpc/v2/common"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/daemon"
@@ -29,6 +28,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/client/socket"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
 	"github.com/telepresenceio/telepresence/v2/pkg/filelocation"
+	"github.com/telepresenceio/telepresence/v2/pkg/grpc/server"
 	"github.com/telepresenceio/telepresence/v2/pkg/log"
 	"github.com/telepresenceio/telepresence/v2/pkg/pprof"
 	"github.com/telepresenceio/telepresence/v2/pkg/proc"
@@ -413,20 +413,9 @@ func (s *Service) serveGrpc(c context.Context, l net.Listener) error {
 	if mz := cfg.Grpc().MaxReceiveSize(); mz > 0 {
 		opts = append(opts, grpc.MaxRecvMsgSize(int(mz)))
 	}
-	svc := grpc.NewServer(opts...)
+	svc := server.New(c, opts...)
 	rpc.RegisterDaemonServer(svc, s)
-
-	sc := &dhttp.ServerConfig{
-		Handler: svc,
-	}
-	dlog.Info(c, "gRPC server started")
-	err := sc.Serve(c, l)
-	if err != nil {
-		dlog.Errorf(c, "gRPC server ended with: %v", err)
-	} else {
-		dlog.Debug(c, "gRPC server ended")
-	}
-	return err
+	return server.Serve(c, svc, l)
 }
 
 // run is the main function when executing as the daemon.

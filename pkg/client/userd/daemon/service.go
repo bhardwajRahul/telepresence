@@ -16,12 +16,13 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/datawire/dlib/dgroup"
-	"github.com/datawire/dlib/dhttp"
 	"github.com/datawire/dlib/dlog"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/connector"
 	"github.com/telepresenceio/telepresence/rpc/v2/manager"
+	authGrpc "github.com/telepresenceio/telepresence/v2/pkg/authenticator/grpc"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/daemon"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/logging"
@@ -32,6 +33,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/client/userd/trafficmgr"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
 	"github.com/telepresenceio/telepresence/v2/pkg/filelocation"
+	"github.com/telepresenceio/telepresence/v2/pkg/grpc/server"
 	"github.com/telepresenceio/telepresence/v2/pkg/log"
 	"github.com/telepresenceio/telepresence/v2/pkg/pprof"
 	"github.com/telepresenceio/telepresence/v2/pkg/proc"
@@ -68,6 +70,7 @@ type service struct {
 	// is in effect (rootSessionInProc == true).
 	quitDisable bool
 
+	clientConfig    clientcmd.ClientConfig
 	session         userd.Session
 	sessionCancel   context.CancelFunc
 	sessionContext  context.Context
@@ -90,6 +93,13 @@ type service struct {
 	self userd.Service
 }
 
+func (s *service) ClientConfig() (clientcmd.ClientConfig, error) {
+	if s.clientConfig == nil {
+		return nil, errors.New("user daemon has no client config")
+	}
+	return s.clientConfig, nil
+}
+
 func NewService(ctx context.Context, _ *dgroup.Group, cfg client.Config, srv *grpc.Server) (userd.Service, error) {
 	s := &service{
 		srv:             srv,
@@ -103,6 +113,7 @@ func NewService(ctx context.Context, _ *dgroup.Group, cfg client.Config, srv *gr
 	if srv != nil {
 		// The podd daemon never registers the gRPC servers
 		rpc.RegisterConnectorServer(srv, s)
+		authGrpc.RegisterAuthenticatorServer(srv, s)
 		rpc.RegisterManagerProxyServer(srv, s.managerProxy)
 	} else {
 		s.rootSessionInProc = true
@@ -261,6 +272,7 @@ func (s *service) startSession(parentCtx context.Context, cr userd.ConnectReques
 			ErrorCategory: int32(errcat.GetCategory(err)),
 		}
 	}
+	s.clientConfig = config.ClientConfig
 
 	ctx, cancel := context.WithCancel(ctx)
 	ctx = userd.WithService(ctx, s.self)
@@ -299,6 +311,7 @@ func (s *service) startSession(parentCtx context.Context, cr userd.ConnectReques
 		defer func() {
 			s.sessionLock.Lock()
 			s.self.SetManagerClient(nil)
+			s.clientConfig = nil
 			s.session = nil
 			s.sessionCancel = nil
 			s.sessionLock.Unlock()
@@ -417,9 +430,6 @@ func run(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 		daemonAddress = grpcListener.Addr().(*net.TCPAddr)
-		defer func() {
-			_ = grpcListener.Close()
-		}()
 	} else {
 		socketPath := socket.UserDaemonPath(c)
 		dlog.Infof(c, "Starting socket listener for %s", socketPath)
@@ -451,21 +461,20 @@ func run(cmd *cobra.Command, _ []string) error {
 	// Start services from within a group routine so that it gets proper cancellation
 	// when the group is cancelled.
 	siCh := make(chan userd.Service)
-	g.Go("service", func(c context.Context) error {
+	g.Go("serve-grpc", func(c context.Context) error {
 		var opts []grpc.ServerOption
 		if mz := cfg.Grpc().MaxReceiveSize(); mz > 0 {
 			opts = append(opts, grpc.MaxRecvMsgSize(int(mz)))
 		}
-		si, err := userd.GetNewServiceFunc(c)(c, g, cfg, grpc.NewServer(opts...))
+		svc := server.New(c, opts...)
+		si, err := userd.GetNewServiceFunc(c)(c, g, cfg, svc)
 		if err != nil {
 			close(siCh)
 			return err
 		}
 		siCh <- si
 		close(siCh)
-
-		<-c.Done() // wait for context cancellation
-		return nil
+		return server.Serve(c, svc, grpcListener)
 	})
 
 	si, ok := <-siCh
@@ -492,20 +501,6 @@ func run(cmd *cobra.Command, _ []string) error {
 			return nil
 		})
 	}
-
-	g.Go("server-grpc", func(c context.Context) (err error) {
-		sc := &dhttp.ServerConfig{Handler: s.srv}
-		dlog.Info(c, "gRPC server started")
-		if err = sc.Serve(c, grpcListener); err != nil && c.Err() != nil {
-			err = nil // Normal shutdown
-		}
-		if err != nil {
-			dlog.Errorf(c, "gRPC server ended with: %v", err)
-		} else {
-			dlog.Debug(c, "gRPC server ended")
-		}
-		return err
-	})
 
 	g.Go("config-reload", s.configReload)
 	g.Go(sessionName, func(c context.Context) error {

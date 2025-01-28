@@ -34,14 +34,12 @@ import (
 	"github.com/datawire/dlib/dgroup"
 	"github.com/datawire/dlib/dlog"
 	"github.com/datawire/dlib/dtime"
-	"github.com/telepresenceio/telepresence/rpc/v2/authenticator"
 	"github.com/telepresenceio/telepresence/rpc/v2/common"
 	"github.com/telepresenceio/telepresence/rpc/v2/connector"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/connector"
 	rootdRpc "github.com/telepresenceio/telepresence/rpc/v2/daemon"
 	"github.com/telepresenceio/telepresence/rpc/v2/manager"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
-	authGrpc "github.com/telepresenceio/telepresence/v2/pkg/authenticator/grpc"
 	"github.com/telepresenceio/telepresence/v2/pkg/authenticator/patcher"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/daemon"
@@ -277,11 +275,7 @@ func NewSession(
 			// Root daemon needs this to authenticate with the cluster. Potential exec configurations in the kubeconfig
 			// must be executed by the user, not by root.
 			konfig, err := patcher.CreateExternalKubeConfig(ctx, config.ClientConfig, cluster.Context, func([]string) (string, string, error) {
-				s := userd.GetService(ctx)
-				if _, ok := s.Server().GetServiceInfo()[authenticator.Authenticator_ServiceDesc.ServiceName]; !ok {
-					authGrpc.RegisterAuthenticatorServer(s.Server(), config.ClientConfig)
-				}
-				return client.GetExe(ctx), s.ListenerAddress(ctx), nil
+				return client.GetExe(ctx), userd.GetService(ctx).ListenerAddress(ctx), nil
 			}, nil)
 			if err != nil {
 				return ctx, nil, connectError(rpc.ConnectInfo_DAEMON_FAILED, err)

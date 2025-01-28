@@ -664,6 +664,10 @@ func (kf *Kubeconfig) GetContext() string {
 	return kf.Context
 }
 
+func (kf *Kubeconfig) GetClientConfig() clientcmd.ClientConfig {
+	return kf.ClientConfig
+}
+
 func (kf *Kubeconfig) GetRestConfig() *rest.Config {
 	return kf.RestConfig
 }
