@@ -56,7 +56,7 @@ func TestLookup(t *testing.T) {
 				t.Skip("SRV sporadically fails to parse reply on darwin")
 			}
 			ctx := dlog.NewTestContext(t, false)
-			got, _, err := Lookup(ctx, tt.qType, tt.qName)
+			got, _, err := Lookup(ctx, tt.qType, tt.qName, "")
 			require.NoError(t, err)
 			require.Greater(t, len(got), 0)
 		})

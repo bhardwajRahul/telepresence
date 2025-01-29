@@ -234,7 +234,7 @@ func lookupDNSWaitLoop(ctx context.Context, manager rpc.ManagerClient, session *
 func lookupDNSAndRespond(ctx context.Context, manager rpc.ManagerClient, session *rpc.SessionInfo, lr *rpc.DNSRequest) {
 	qType := uint16(lr.Type)
 	tqn := dns2.TypeToString[qType]
-	rrs, rCode, err := dnsproxy.Lookup(ctx, qType, lr.Name)
+	rrs, rCode, err := dnsproxy.Lookup(ctx, qType, lr.Name, "")
 	if err != nil {
 		dlog.Errorf(ctx, "LookupDNS %s %s: %v", lr.Name, tqn, err)
 		return

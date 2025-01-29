@@ -138,10 +138,14 @@ func NewHeader(qName string, qType uint16) dns.RR_Header {
 }
 
 // useLookupName takes care of an undocumented "feature" in some lookup functions.
-// If the name ends with a dot, then no search path will be applied. If however,
-// the name doesn't end with a dot, the search path is always applied and the name
+// If the name ends with a dot, then no search path will be applied. If, however,
+// the name doesn't end with a dot, the search path is always applied, and the name
 // is never used verbatim.
-func useLookupName(qName string) (string, bool) {
+// A name ending with noSearchDomain will always be considered final.
+func useLookupName(qName, noSearchDomain string) (string, bool) {
+	if noSearchDomain != "" && strings.HasSuffix(qName, noSearchDomain) {
+		return qName, true
+	}
 	dots := 0
 	name := qName[:len(qName)-1]
 	for _, c := range qName {
@@ -162,8 +166,8 @@ func useLookupName(qName string) (string, bool) {
 	}
 }
 
-func lookupIP(ctx context.Context, network, qName string, r *net.Resolver) ([]net.IP, error) {
-	name, final := useLookupName(qName)
+func lookupIP(ctx context.Context, network, qName, noSearchDomain string, r *net.Resolver) ([]net.IP, error) {
+	name, final := useLookupName(qName, noSearchDomain)
 	ips, err := r.LookupIP(ctx, network, name)
 	if err != nil && !final {
 		dlog.Errorf(ctx, "LookupIP failed, trying LookupIP %q", qName)
@@ -194,12 +198,12 @@ func makeError(err error) (RRs, int, error) {
 	return nil, dns.RcodeServerFailure, status.Error(codes.Internal, err.Error())
 }
 
-func Lookup(ctx context.Context, qType uint16, qName string) (RRs, int, error) {
+func Lookup(ctx context.Context, qType uint16, qName, noSearchDomain string) (RRs, int, error) {
 	var answer RRs
 	r := &net.Resolver{StrictErrors: true}
 	switch qType {
 	case dns.TypeA, dns.TypeAAAA:
-		ips, err := lookupIP(ctx, "ip", qName, r)
+		ips, err := lookupIP(ctx, "ip", qName, noSearchDomain, r)
 		if err != nil {
 			return makeError(err)
 		}
@@ -235,7 +239,7 @@ func Lookup(ctx context.Context, qType uint16, qName string) (RRs, int, error) {
 			}
 		}
 	case dns.TypeCNAME:
-		name, final := useLookupName(qName)
+		name, final := useLookupName(qName, noSearchDomain)
 		target, err := r.LookupCNAME(ctx, name)
 		if err != nil && !final {
 			target, err = r.LookupCNAME(ctx, qName)

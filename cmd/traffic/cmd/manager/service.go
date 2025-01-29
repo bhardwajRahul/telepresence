@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net"
 	"net/netip"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/blang/semver/v4"
@@ -62,6 +64,9 @@ type service struct {
 	configWatcher      config.Watcher
 	activeHttpRequests int32
 	activeGrpcRequests int32
+	serviceNameNs      string
+	serviceNameFQN     string
+	dotClusterDomain   string
 
 	// Possibly extended version of the service. Use when calling interface methods.
 	self Service
@@ -104,6 +109,12 @@ func NewService(ctx context.Context, configWatcher config.Watcher) (Service, *dg
 	// These are context dependent so build them once the pool is up
 	ret.clusterInfo = cluster.NewInfo(ctx)
 	ret.state = state.NewStateFunc(ctx)
+
+	ns := managerutil.GetEnv(ctx).ManagerNamespace
+	ret.dotClusterDomain = "." + ret.clusterInfo.ClusterDomain()
+	ret.serviceNameNs = fmt.Sprintf("%s.%s.", agentmap.ManagerAppName, ns)
+	ret.serviceNameFQN = fmt.Sprintf("%s.%s.svc%s", agentmap.ManagerAppName, ns, ret.dotClusterDomain)
+
 	ret.self = ret
 	g := dgroup.NewGroup(ctx, dgroup.GroupConfig{
 		EnableSignalHandling: true,
@@ -799,24 +810,99 @@ func hasDomainSuffix(name, suffix string) bool {
 	return name[sfp-1] == '.' && name[sfp:] == suffix
 }
 
-func (s *service) LookupDNS(ctx context.Context, request *rpc.DNSRequest) (*rpc.DNSResponse, error) {
+func (s *service) resolveSelfDNS(svcIP net.IP, request *rpc.DNSRequest) (rrs dnsproxy.RRs) {
+	qType := uint16(request.Type)
+	switch qType {
+	case dns2.TypeA:
+		rrs = dnsproxy.RRs{&dns2.A{
+			Hdr: dns2.RR_Header{
+				Name:   request.Name,
+				Rrtype: qType,
+				Class:  dns2.ClassINET,
+			},
+			A: svcIP.To4(),
+		}}
+	case dns2.TypeAAAA:
+		var ip net.IP
+		if svcIP.To4() == nil {
+			ip = svcIP.To16()
+		}
+		rrs = dnsproxy.RRs{&dns2.AAAA{
+			Hdr: dns2.RR_Header{
+				Name:   request.Name,
+				Rrtype: qType,
+				Class:  dns2.ClassINET,
+			},
+			AAAA: ip,
+		}}
+	case dns2.TypeCNAME:
+		rrs = dnsproxy.RRs{&dns2.CNAME{
+			Hdr: dns2.RR_Header{
+				Name:   request.Name,
+				Rrtype: qType,
+				Class:  dns2.ClassINET,
+			},
+			Target: s.serviceNameFQN,
+		}}
+	}
+	return rrs
+}
+
+func (s *service) LookupDNS(ctx context.Context, request *rpc.DNSRequest) (response *rpc.DNSResponse, err error) {
 	ctx = managerutil.WithSessionInfo(ctx, request.GetSession())
 	qType := uint16(request.Type)
 	qtn := dns2.TypeToString[qType]
-	dlog.Debugf(ctx, "LookupDNS %s %s", request.Name, qtn)
+	var rrs dnsproxy.RRs
+	if dlog.MaxLogLevel(ctx) >= dlog.LogLevelDebug {
+		defer func() {
+			var result string
+			switch {
+			case err != nil:
+				result = err.Error()
+			case len(rrs) == 0:
+				result = dns2.RcodeToString[int(response.RCode)]
+			default:
+				result = rrs.String()
+			}
+			dlog.Debugf(ctx, "LookupDNS: %s %s -> %s", request.Name, qtn, result)
+		}()
+	}
 
-	rrs, rCode, err := s.state.AgentsLookupDNS(ctx, request.GetSession().GetSessionId(), request)
-	if err != nil {
-		dlog.Errorf(ctx, "AgentsLookupDNS %s %s: %v", request.Name, qtn, err)
-	} else if rCode != state.RcodeNoAgents {
-		if len(rrs) == 0 {
-			dlog.Debugf(ctx, "LookupDNS on agents: %s %s -> %s", request.Name, qtn, dns2.RcodeToString[rCode])
-		} else {
-			dlog.Debugf(ctx, "LookupDNS on agents: %s %s -> %s", request.Name, qtn, rrs)
+	if svcIP := s.clusterInfo.ServiceIP(); svcIP != nil && (request.Name == s.serviceNameNs || request.Name == s.serviceNameFQN) {
+		rrs = s.resolveSelfDNS(svcIP, request)
+		if len(rrs) > 0 {
+			return dnsproxy.ToRPC(rrs, dns2.RcodeSuccess)
 		}
 	}
+
+	tmNamespace := managerutil.GetEnv(ctx).ManagerNamespace
+	noSearchDomain := s.dotClusterDomain
+	var rCode int
+	switch {
+	case request.Name == "tel2-recursion-check.kube-system.":
+		rCode = state.RcodeNoAgents
+		noSearchDomain = ".kube-system."
+	case hasDomainSuffix(request.Name, tmNamespace):
+		// It's enough to propagate this one to the traffic-manager
+		noSearchDomain = tmNamespace + "."
+		rCode = state.RcodeNoAgents
+	case strings.HasSuffix(request.Name, s.dotClusterDomain):
+		// It's enough to propagate this one to the traffic-manager
+		rCode = state.RcodeNoAgents
+	default:
+		rrs, rCode, err = s.state.AgentsLookupDNS(ctx, request.GetSession().GetSessionId(), request)
+		if err != nil {
+			dlog.Errorf(ctx, "AgentsLookupDNS %s %s: %v", request.Name, qtn, err)
+		} else if rCode != state.RcodeNoAgents {
+			if len(rrs) == 0 {
+				dlog.Tracef(ctx, "LookupDNS on agents: %s %s -> %s", request.Name, qtn, dns2.RcodeToString[rCode])
+			} else {
+				dlog.Tracef(ctx, "LookupDNS on agents: %s %s -> %s", request.Name, qtn, rrs)
+			}
+		}
+	}
+
 	if rCode == state.RcodeNoAgents {
-		tmNamespace := managerutil.GetEnv(ctx).ManagerNamespace
 		client := s.state.GetClient(request.GetSession().GetSessionId())
 		name := request.Name
 		restoreName := false
@@ -828,35 +914,36 @@ func (s *service) LookupDNS(ctx context.Context, request *rpc.DNSRequest) (*rpc.
 				}
 			}
 			if nDots == 1 && client.Namespace != tmNamespace {
-				name += client.Namespace + "."
+				noSearchDomain = client.Namespace + "."
+				name += noSearchDomain
 				restoreName = true
 			}
 		}
-		dlog.Debugf(ctx, "LookupDNS on traffic-manager: %s", name)
-		rrs, rCode, err = dnsproxy.Lookup(ctx, qType, name)
+		dlog.Tracef(ctx, "LookupDNS on traffic-manager: %s", name)
+		rrs, rCode, err = dnsproxy.Lookup(ctx, qType, name, noSearchDomain)
 		if err != nil {
 			// Could still be x.y.<client namespace>, but let's avoid x.<cluster domain>.<client namespace> and x.<client-namespace>.<client namespace>
-			if client != nil && nDots > 1 && client.Namespace != tmNamespace && !hasDomainSuffix(name, s.ClusterInfo().ClusterDomain()) && !hasDomainSuffix(name, client.Namespace) {
+			if client != nil && nDots > 1 && client.Namespace != tmNamespace && !strings.HasSuffix(name, s.dotClusterDomain) && !hasDomainSuffix(name, client.Namespace) {
 				name += client.Namespace + "."
 				restoreName = true
 				dlog.Debugf(ctx, "LookupDNS on traffic-manager: %s", name)
-				rrs, rCode, err = dnsproxy.Lookup(ctx, qType, name)
+				rrs, rCode, err = dnsproxy.Lookup(ctx, qType, name, noSearchDomain)
 			}
 			if err != nil {
-				dlog.Debugf(ctx, "LookupDNS on traffic-manager: %s %s -> %s %s", request.Name, qtn, dns2.RcodeToString[rCode], err)
+				dlog.Tracef(ctx, "LookupDNS on traffic-manager: %s %s -> %s %s", request.Name, qtn, dns2.RcodeToString[rCode], err)
 				return nil, err
 			}
 		}
 		if len(rrs) == 0 {
-			dlog.Debugf(ctx, "LookupDNS on traffic-manager: %s %s -> %s", request.Name, qtn, dns2.RcodeToString[rCode])
+			dlog.Tracef(ctx, "LookupDNS on traffic-manager: %s %s -> %s", request.Name, qtn, dns2.RcodeToString[rCode])
 		} else {
 			if restoreName {
-				dlog.Debugf(ctx, "LookupDNS on traffic-manager: restore %s to %s", name, request.Name)
+				dlog.Tracef(ctx, "LookupDNS on traffic-manager: restore %s to %s", name, request.Name)
 				for _, rr := range rrs {
 					rr.Header().Name = request.Name
 				}
 			}
-			dlog.Debugf(ctx, "LookupDNS on traffic-manager: %s %s -> %s", request.Name, qtn, rrs)
+			dlog.Tracef(ctx, "LookupDNS on traffic-manager: %s %s -> %s", request.Name, qtn, rrs)
 		}
 	}
 	return dnsproxy.ToRPC(rrs, rCode)
