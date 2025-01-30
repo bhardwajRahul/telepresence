@@ -1,0 +1,74 @@
+{{- /*gotype: github.com/telepresenceio/telepresence/v2/integration_test/itest.PersistentVolume*/ -}}
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: local-pv
+  labels:
+    purpose: tp-cli-testing
+spec:
+  capacity:
+    storage: 0.5Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /data/local-pv
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: local-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Name }}
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ .Name }}
+  ports:
+  - name: proxied
+    port: 80
+    targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Name }}
+  labels:
+    app: {{ .Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Name }}
+    spec:
+      volumes:
+      - name: rw-volume
+        persistentVolumeClaim:
+          claimName: local-pvc
+      containers:
+      - name: {{ .Name }}-app
+        image: ghcr.io/telepresenceio/echo-server:latest
+        ports:
+          - containerPort: 8080
+            name: http
+        resources:
+          limits:
+            cpu: 50m
+            memory: 128Mi
+        volumeMounts:
+        - mountPath: {{ .MountDirectory }}
+          name: rw-volume

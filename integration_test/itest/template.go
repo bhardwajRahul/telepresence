@@ -39,6 +39,14 @@ type Generic struct {
 	ServiceAccount string
 }
 
+type PersistentVolume struct {
+	// Deployment and service name
+	Name string
+
+	// MountDirectory in the pod
+	MountDirectory string
+}
+
 func OpenTemplate(ctx context.Context, name string, data any) (io.Reader, error) {
 	b, err := ReadTemplate(ctx, name, data)
 	if err != nil {

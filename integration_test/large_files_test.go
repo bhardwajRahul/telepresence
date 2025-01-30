@@ -32,12 +32,6 @@ type largeFilesSuite struct {
 	largeFiles   []string
 }
 
-type qname struct {
-	Name       string
-	Namespace  string
-	VolumeSize string
-}
-
 func (s *largeFilesSuite) SuiteName() string {
 	return "LargeFiles"
 }
@@ -84,10 +78,9 @@ func (s *largeFilesSuite) SetupSuite() {
 		go func(i int) {
 			defer wg.Done()
 			svc := fmt.Sprintf("%s-%d", s.Name(), i)
-			rdr, err := itest.OpenTemplate(ctx, filepath.Join(k8s, "hello-pv-volume.yaml"), &qname{
-				Name:       svc,
-				Namespace:  s.AppNamespace(),
-				VolumeSize: "350Mi", // must cover fileCountPerSvc * fileSize
+			rdr, err := itest.OpenTemplate(ctx, filepath.Join(k8s, "hello-pv-volume.goyaml"), &itest.PersistentVolume{
+				Name:           svc,
+				MountDirectory: "/home/scratch",
 			})
 			require.NoError(err)
 			require.NoError(s.Kubectl(dos.WithStdin(ctx, rdr), "apply", "-f", "-"))
@@ -134,15 +127,12 @@ func (s *largeFilesSuite) leaveIntercepts(ctx context.Context) {
 
 func (s *largeFilesSuite) TearDownSuite() {
 	ctx := s.Context()
-	k8s := filepath.Join("testdata", "k8s")
 	wg := sync.WaitGroup{}
 	wg.Add(s.ServiceCount())
 	for i := 0; i < s.ServiceCount(); i++ {
 		go func(i int) {
 			defer wg.Done()
-			rdr, err := itest.OpenTemplate(ctx, filepath.Join(k8s, "hello-pv-volume.yaml"), &qname{Name: fmt.Sprintf("%s-%d", s.Name(), i), Namespace: s.AppNamespace()})
-			s.NoError(err)
-			s.NoError(s.Kubectl(dos.WithStdin(ctx, rdr), "delete", "-f", "-"))
+			s.DeleteSvcAndWorkload(ctx, "deploy", fmt.Sprintf("%s-%d", s.Name(), i))
 		}(i)
 	}
 	itest.TelepresenceQuitOk(ctx)

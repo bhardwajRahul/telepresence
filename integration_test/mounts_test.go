@@ -105,7 +105,11 @@ func (s *mountsSuite) Test_MountWrite() {
 	}
 
 	ctx := s.Context()
-	s.ApplyApp(ctx, "hello-w-volumes", "deploy/hello")
+	k8s := filepath.Join("testdata", "k8s")
+	s.ApplyTemplate(ctx, filepath.Join(k8s, "hello-pv-volume.goyaml"), &itest.PersistentVolume{
+		Name:           "hello",
+		MountDirectory: "/data",
+	})
 	defer s.DeleteSvcAndWorkload(ctx, "deploy", "hello")
 
 	mountPoint := filepath.Join(s.T().TempDir(), "mnt")
@@ -123,8 +127,8 @@ func (s *mountsSuite) Test_MountWrite() {
 	mountPoint = filepath.Join(s.T().TempDir(), "data")
 	itest.TelepresenceOk(ctx, "intercept", "hello", "--mount", mountPoint, "--port", "80:80")
 	defer itest.TelepresenceOk(ctx, "leave", "hello")
+	s.CapturePodLogs(ctx, "hello", "traffic-agent", s.AppNamespace())
 
-	time.Sleep(2 * time.Second)
 	path = filepath.Join(mountPoint, "data", "hello.txt")
 	data, err := os.ReadFile(path)
 	rq.NoError(err)

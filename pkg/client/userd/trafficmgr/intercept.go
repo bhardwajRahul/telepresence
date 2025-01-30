@@ -69,6 +69,10 @@ type intercept struct {
 
 	// Mount read-only
 	readOnly bool
+
+	// finalRemovalDone is closed when the traffic-manager sends a snapshot that no longer contains
+	// this intercept.
+	finalRemovalDone chan struct{}
 }
 
 // interceptResult is what gets written to the awaitIntercept's waitCh channel when the
@@ -120,6 +124,7 @@ func (ic *intercept) podAccess(rd daemon.DaemonClient) *podAccess {
 		localMountPort:   ic.localMountPort,
 		readOnly:         ic.readOnly,
 		mounter:          &ic.Mounter,
+		wg:               &ic.wg,
 	}
 	if err := pa.ensureAccess(ic.ctx, rd); err != nil {
 		dlog.Error(ic.ctx, err)
@@ -245,7 +250,6 @@ func (s *session) getCurrentInterceptInfos() []*manager.InterceptInfo {
 
 func (s *session) setCurrentIntercepts(ctx context.Context, iis []*manager.InterceptInfo) {
 	s.currentInterceptsLock.Lock()
-	defer s.currentInterceptsLock.Unlock()
 	intercepts := make(map[string]*intercept, len(iis))
 	sb := strings.Builder{}
 	sb.WriteByte('[')
@@ -256,7 +260,7 @@ func (s *session) setCurrentIntercepts(ctx context.Context, iis []*manager.Inter
 			ii.ClientMountPoint = ic.ClientMountPoint
 			ic.InterceptInfo = ii
 		} else {
-			ic = &intercept{InterceptInfo: ii}
+			ic = &intercept{InterceptInfo: ii, finalRemovalDone: make(chan struct{})}
 			ic.ctx, ic.cancel = context.WithCancel(ctx)
 			dlog.Debugf(ctx, "Received new intercept %s", ic.Spec.Name)
 			if aw, ok := s.interceptWaiters[ii.Spec.Name]; ok {
@@ -277,14 +281,21 @@ func (s *session) setCurrentIntercepts(ctx context.Context, iis []*manager.Inter
 	dlog.Debugf(ctx, "setCurrentIntercepts(%s)", sb.String())
 
 	// Cancel those that no longer exists
+	var removed []*intercept
 	for id, ic := range s.currentIntercepts {
 		if _, ok := intercepts[id]; !ok {
-			dlog.Debugf(ctx, "Cancelling context for intercept %s", ic.Spec.Name)
-			ic.cancel()
+			removed = append(removed, ic)
 		}
 	}
 	s.currentIntercepts = intercepts
 	s.reconcileAPIServers(ctx)
+	s.currentInterceptsLock.Unlock()
+
+	for _, ic := range removed {
+		dlog.Debugf(ctx, "Cancelling context for intercept %s", ic.Spec.Name)
+		ic.cancel()
+		close(ic.finalRemovalDone)
+	}
 }
 
 func InterceptError(tp common.InterceptError, err error) *rpc.InterceptResult {
@@ -661,12 +672,22 @@ func (s *session) removeIntercept(c context.Context, ic *intercept) error {
 	ic.wg.Wait()
 
 	dlog.Debugf(c, "telling manager to remove intercept %s", name)
-	c, cancel := client.GetConfig(c).Timeouts().TimeoutContext(c, client.TimeoutTrafficManagerAPI)
+	tos := client.GetConfig(c).Timeouts()
+	cc, cancel := tos.TimeoutContext(c, client.TimeoutTrafficManagerAPI)
 	defer cancel()
-	_, err := s.managerClient.RemoveIntercept(c, &manager.RemoveInterceptRequest2{
+	_, err := s.managerClient.RemoveIntercept(cc, &manager.RemoveInterceptRequest2{
 		Session: s.SessionInfo(),
 		Name:    name,
 	})
+	if err == nil {
+		select {
+		case <-c.Done():
+		case <-ic.finalRemovalDone:
+
+		// Just in case the traffic-manager dies before it sends a new snapshot to our intercept watcher.
+		case <-time.After(tos.Get(client.TimeoutTrafficManagerAPI)):
+		}
+	}
 	return err
 }
 

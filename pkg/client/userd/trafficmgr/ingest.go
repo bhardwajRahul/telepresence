@@ -3,6 +3,7 @@ package trafficmgr
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -26,6 +27,7 @@ func (ik ingestKey) String() string {
 type ingest struct {
 	*manager.AgentInfo
 	ingestKey
+	wg               sync.WaitGroup
 	ctx              context.Context
 	cancel           context.CancelFunc
 	localMountPoint  string
@@ -51,6 +53,7 @@ func (ig *ingest) podAccess(rd daemon.DaemonClient) *podAccess {
 		localMountPort:   ig.localMountPort,
 		mounter:          &ig.mounter,
 		readOnly:         true,
+		wg:               &ig.wg,
 	}
 	if err := pa.ensureAccess(ig.ctx, rd); err != nil {
 		dlog.Error(ig.ctx, err)
@@ -250,5 +253,6 @@ func (s *session) LeaveIngest(c context.Context, rq *rpc.IngestIdentifier) (ii *
 	}
 	s.stopHandler(c, fmt.Sprintf("%s/%s", ig.workload, ig.container), ig.handlerContainer, ig.pid)
 	ig.cancel()
+	ig.wg.Wait()
 	return ig.response(), nil
 }

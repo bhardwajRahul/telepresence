@@ -27,7 +27,7 @@ type podAccess struct {
 	ctx context.Context
 
 	// wg is the group to wait for after a call to cancel
-	wg sync.WaitGroup
+	wg *sync.WaitGroup
 
 	localPorts       []string
 	workload         string
@@ -202,7 +202,7 @@ func (lpf *podAccessTracker) privateStart(pa *podAccess) {
 	ctx, cancel := context.WithCancel(pa.ctx)
 	lp := &podAccessSync{workload: pa.workload, cancelPod: cancel}
 	if pa.shouldMount() {
-		pa.startMount(ctx, &pa.wg, &lp.wg)
+		pa.startMount(ctx, pa.wg, &lp.wg)
 	}
 	if pa.shouldForward() {
 		pa.startForwards(ctx, &lp.wg)

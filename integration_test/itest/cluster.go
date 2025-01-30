@@ -233,6 +233,8 @@ func (s *cluster) tearDown(ctx context.Context) {
 		ctx = WithWorkingDir(ctx, GetOSSRoot(ctx))
 		_ = Run(ctx, "kubectl", "delete", "-f", filepath.Join("testdata", "k8s", "client_rbac.yaml"))
 		_ = Run(ctx, "kubectl", "delete", "--wait=false", "ns", "-l", "purpose=tp-cli-testing")
+		_ = Run(ctx, "kubectl", "delete", "--wait=false", "pv", "-l", "purpose=tp-cli-testing")
+		_ = Run(ctx, "kubectl", "delete", "--wait=false", "storageclass", "-l", "purpose=tp-cli-testing")
 	}
 }
 
