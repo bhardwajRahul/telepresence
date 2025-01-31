@@ -22,6 +22,8 @@ import (
 //	1 used MuxTunnel instead of one tunnel per connection.
 const Version = uint16(2)
 
+type SessionID string
+
 // Endpoint is an endpoint for a Stream such as a Dialer or a bidirectional pipe.
 type Endpoint interface {
 	Start(ctx context.Context)
@@ -63,7 +65,7 @@ type Stream interface {
 	Send(context.Context, Message) error
 	CloseSend(ctx context.Context) error
 	PeerVersion() uint16
-	SessionID() string
+	SessionID() SessionID
 	DialTimeout() time.Duration
 	RoundtripLatency() time.Duration
 }
@@ -180,7 +182,7 @@ type stream struct {
 	id               ConnID
 	dialTimeout      time.Duration
 	roundtripLatency time.Duration
-	sessionID        string
+	sessionID        SessionID
 	tag              string
 	syncRatio        uint32 // send and check sync after each syncRatio message
 	ackWindow        uint32 // maximum permitted difference between sent and received ack
@@ -211,7 +213,7 @@ func (s *stream) RoundtripLatency() time.Duration {
 	return s.roundtripLatency
 }
 
-func (s *stream) SessionID() string {
+func (s *stream) SessionID() SessionID {
 	return s.sessionID
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/remotefs"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/userd"
+	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
 )
 
 func (pa *podAccess) shouldMount() bool {
@@ -61,7 +62,7 @@ func (pa *podAccess) startMount(ctx context.Context, iceptWG, podWG *sync.WaitGr
 		switch {
 		case pa.localMountPort != 0:
 			session := userd.GetSession(ctx)
-			m = remotefs.NewBridgeMounter(session.SessionInfo().SessionId, session.ManagerClient(), uint16(pa.localMountPort))
+			m = remotefs.NewBridgeMounter(tunnel.SessionID(session.SessionInfo().SessionId), session.ManagerClient(), uint16(pa.localMountPort))
 		case useFtp:
 			m = remotefs.NewFTPMounter(fuseftp, iceptWG)
 		default:

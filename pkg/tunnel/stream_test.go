@@ -113,7 +113,7 @@ func TestStream_Connect(t *testing.T) {
 
 	tunnel := newBidi(10, ctx.Done())
 	id := NewConnID(ipproto.TCP, netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), 1001), netip.AddrPortFrom(netip.AddrFrom4([4]byte{192, 168, 0, 1}), 8080))
-	si := uuid.New().String()
+	si := SessionID(uuid.New().String())
 
 	wg := sync.WaitGroup{}
 	wg.Add(2)
@@ -214,7 +214,7 @@ func TestStream_Xfer(t *testing.T) {
 	defer cancel()
 
 	id := NewConnID(ipproto.TCP, netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), 1001), netip.AddrPortFrom(netip.AddrFrom4([4]byte{192, 168, 0, 1}), 8080))
-	si := uuid.New().String()
+	si := SessionID(uuid.New().String())
 	b := make([]byte, 0x1000)
 	for i := range b {
 		b[i] = byte(i & 0xff)

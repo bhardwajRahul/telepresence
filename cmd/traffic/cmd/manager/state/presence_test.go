@@ -7,6 +7,7 @@ import (
 
 	"github.com/datawire/dlib/dlog"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/manager"
+	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
 )
 
 func TestPresence(t *testing.T) {
@@ -21,7 +22,7 @@ func TestPresence(t *testing.T) {
 
 	// A@0 B@0
 
-	isPresent := func(sessionID string) bool {
+	isPresent := func(sessionID tunnel.SessionID) bool {
 		_, err := p.SessionDone(sessionID)
 		return err == nil
 	}
@@ -36,12 +37,12 @@ func TestPresence(t *testing.T) {
 	a.Equal("item-a", p.GetClient(sa).Name)
 	a.Nil(p.GetClient("c"))
 
-	a.True(p.MarkSession(&rpc.RemainRequest{Session: &rpc.SessionInfo{SessionId: sa}}, now))
-	a.True(p.MarkSession(&rpc.RemainRequest{Session: &rpc.SessionInfo{SessionId: sb}}, now))
+	a.True(p.MarkSession(&rpc.RemainRequest{Session: &rpc.SessionInfo{SessionId: string(sa)}}, now))
+	a.True(p.MarkSession(&rpc.RemainRequest{Session: &rpc.SessionInfo{SessionId: string(sb)}}, now))
 	a.False(p.MarkSession(&rpc.RemainRequest{Session: &rpc.SessionInfo{SessionId: "c"}}, now))
 
 	now = now.Add(time.Second)
-	a.True(p.MarkSession(&rpc.RemainRequest{Session: &rpc.SessionInfo{SessionId: sb}}, now))
+	a.True(p.MarkSession(&rpc.RemainRequest{Session: &rpc.SessionInfo{SessionId: string(sb)}}, now))
 	sc := p.AddClient(&rpc.ClientInfo{Name: "item-c"}, now)
 
 	// A@0 B@1 C@1
@@ -52,7 +53,7 @@ func TestPresence(t *testing.T) {
 	a.False(isPresent("d"))
 
 	collected := make([]string, 0, 3)
-	p.EachClient(func(id string, item *rpc.ClientInfo) bool {
+	p.EachClient(func(id tunnel.SessionID, item *ClientSession) bool {
 		collected = append(collected, fmt.Sprintf("%s/%v", id, item.Name))
 		return true
 	})

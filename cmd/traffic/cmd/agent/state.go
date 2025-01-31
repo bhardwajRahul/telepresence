@@ -56,8 +56,8 @@ type state struct {
 	Config
 	ftpPort          uint16
 	sftpPort         uint16
-	dialWatchers     *xsync.MapOf[string, chan *manager.DialRequest]
-	awaitingForwards *xsync.MapOf[string, *xsync.MapOf[tunnel.ConnID, *awaitingForward]]
+	dialWatchers     *xsync.MapOf[tunnel.SessionID, chan *manager.DialRequest]
+	awaitingForwards *xsync.MapOf[tunnel.SessionID, *xsync.MapOf[tunnel.ConnID, *awaitingForward]]
 
 	// The sessionInfo and manager client are needed when forwarders establish their
 	// tunnel to the traffic-manager.
@@ -91,8 +91,8 @@ func NewState(config Config) State {
 	return &state{
 		Config:           config,
 		containerStates:  make(map[string]ContainerState),
-		dialWatchers:     xsync.NewMapOf[string, chan *manager.DialRequest](),
-		awaitingForwards: xsync.NewMapOf[string, *xsync.MapOf[tunnel.ConnID, *awaitingForward]](),
+		dialWatchers:     xsync.NewMapOf[tunnel.SessionID, chan *manager.DialRequest](),
+		awaitingForwards: xsync.NewMapOf[tunnel.SessionID, *xsync.MapOf[tunnel.ConnID, *awaitingForward]](),
 	}
 }
 

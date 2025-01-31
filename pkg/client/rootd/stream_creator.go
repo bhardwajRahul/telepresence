@@ -59,7 +59,7 @@ func (s *Session) streamCreator(ctx context.Context) tunnel.StreamCreator {
 			if s.isForDNS(destAddr, id.DestinationPort()) {
 				pipeId := tunnel.NewConnID(p, id.Source(), s.dnsLocalAddr.AddrPort())
 				dlog.Tracef(c, "Intercept DNS %s to %s", id, pipeId.Destination())
-				from, to := tunnel.NewPipe(pipeId, s.session.SessionId)
+				from, to := tunnel.NewPipe(pipeId, tunnel.SessionID(s.session.SessionId))
 				tunnel.NewDialerTTL(to, func() {}, dnsConnTTL, nil, nil).Start(c)
 				return from, nil
 			}
@@ -128,7 +128,8 @@ func (s *Session) streamCreator(ctx context.Context) tunnel.StreamCreator {
 		}
 
 		tc := client.GetConfig(c).Timeouts()
-		return tunnel.NewClientStream(c, ct, id, s.session.SessionId, tc.Get(client.TimeoutRoundtripLatency), tc.Get(client.TimeoutEndpointDial))
+		return tunnel.NewClientStream(
+			c, ct, id, tunnel.SessionID(s.session.SessionId), tc.Get(client.TimeoutRoundtripLatency), tc.Get(client.TimeoutEndpointDial))
 	}
 }
 

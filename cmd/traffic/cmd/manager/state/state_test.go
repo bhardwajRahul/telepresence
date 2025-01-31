@@ -16,6 +16,7 @@ import (
 	testdata "github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/test"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/watchable"
 	"github.com/telepresenceio/telepresence/v2/pkg/log"
+	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
 	"github.com/telepresenceio/telepresence/v2/pkg/workload"
 )
 
@@ -31,10 +32,9 @@ func (s *suiteState) SetupTest() {
 	s.state = &state{
 		backgroundCtx:    s.ctx,
 		intercepts:       watchable.NewMap[string, *Intercept](interceptEqual, time.Millisecond),
-		agents:           watchable.NewMap[string, *manager.AgentInfo](agentsEqual, time.Millisecond),
-		clients:          xsync.NewMapOf[string, *manager.ClientInfo](),
+		agents:           watchable.NewMap[tunnel.SessionID, *AgentSession](agentsEqual, time.Millisecond),
+		clients:          xsync.NewMapOf[tunnel.SessionID, *ClientSession](),
 		workloadWatchers: xsync.NewMapOf[string, workload.Watcher](),
-		sessions:         xsync.NewMapOf[string, SessionState](),
 		timedLogLevel:    log.NewTimedLevel("debug", log.SetLevel),
 		llSubs:           newLoglevelSubscribers(),
 	}
@@ -48,25 +48,6 @@ func (fc *FakeClock) Now() time.Time {
 	base := time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
 	offset := time.Duration(fc.When) * time.Second
 	return base.Add(offset)
-}
-
-func getAllAgents(st *state) []*manager.AgentInfo {
-	agents := make([]*manager.AgentInfo, 0, st.agents.Size())
-	st.agents.Range(func(_ string, a *manager.AgentInfo) bool {
-		agents = append(agents, a)
-		return true
-	})
-	return agents
-}
-
-func getAgentsByName(st *state, name, namespace string) (agents []*manager.AgentInfo) {
-	st.agents.Range(func(_ string, a *manager.AgentInfo) bool {
-		if a.Name == name && a.Namespace == namespace {
-			agents = append(agents, a)
-		}
-		return true
-	})
-	return agents
 }
 
 func (s *suiteState) TestStateInternal() {
@@ -97,36 +78,10 @@ func (s *suiteState) TestStateInternal() {
 		d2, err := st.AddAgent(ctx, demoAgent2, clock.Now())
 		require.NoError(t, err)
 
-		a.Equal(helloAgent, st.GetAgent(h))
-		a.Equal(helloProAgent, st.GetAgent(hp))
-		a.Equal(demoAgent1, st.GetAgent(d1))
-		a.Equal(demoAgent2, st.GetAgent(d2))
-
-		agents := getAllAgents(st)
-		a.Len(agents, 4)
-		a.Contains(agents, helloAgent)
-		a.Contains(agents, helloProAgent)
-		a.Contains(agents, demoAgent1)
-		a.Contains(agents, demoAgent2)
-
-		agents = getAgentsByName(st, "hello", "default")
-		a.Len(agents, 1)
-		a.Contains(agents, helloAgent)
-
-		agents = getAgentsByName(st, "hello-pro", "default")
-		a.Len(agents, 1)
-		a.Contains(agents, helloProAgent)
-
-		agents = getAgentsByName(st, "demo", "default")
-		a.Len(agents, 2)
-		a.Contains(agents, demoAgent1)
-		a.Contains(agents, demoAgent2)
-
-		agents = getAgentsByName(st, "does-not-exist", "default")
-		a.Len(agents, 0)
-
-		agents = getAgentsByName(st, "hello", "does-not-exist")
-		a.Len(agents, 0)
+		a.Equal(helloAgent, st.GetAgent(h).AgentInfo)
+		a.Equal(helloProAgent, st.GetAgent(hp).AgentInfo)
+		a.Equal(demoAgent1, st.GetAgent(d1).AgentInfo)
+		a.Equal(demoAgent2, st.GetAgent(d2).AgentInfo)
 	})
 
 	s.T().Run("presence-redundant", func(t *testing.T) {
@@ -145,12 +100,12 @@ func (s *suiteState) TestStateInternal() {
 		a.NotNil(s.GetClient(c3))
 		a.Nil(s.GetClient("asdf"))
 
-		a.Equal(testClients["alice"], s.GetClient(c1))
+		a.Equal(testClients["alice"], s.GetClient(c1).ClientInfo)
 
 		clock.When = 10
 
-		a.True(s.MarkSession(&manager.RemainRequest{Session: &manager.SessionInfo{SessionId: c1}}, clock.Now()))
-		a.True(s.MarkSession(&manager.RemainRequest{Session: &manager.SessionInfo{SessionId: c2}}, clock.Now()))
+		a.True(s.MarkSession(&manager.RemainRequest{Session: &manager.SessionInfo{SessionId: string(c1)}}, clock.Now()))
+		a.True(s.MarkSession(&manager.RemainRequest{Session: &manager.SessionInfo{SessionId: string(c2)}}, clock.Now()))
 		a.False(s.MarkSession(&manager.RemainRequest{Session: &manager.SessionInfo{SessionId: "asdf"}}, clock.Now()))
 
 		moment := epoch.Add(5 * time.Second)
@@ -162,9 +117,9 @@ func (s *suiteState) TestStateInternal() {
 
 		clock.When = 20
 
-		a.True(s.MarkSession(&manager.RemainRequest{Session: &manager.SessionInfo{SessionId: c1}}, clock.Now()))
-		a.True(s.MarkSession(&manager.RemainRequest{Session: &manager.SessionInfo{SessionId: c2}}, clock.Now()))
-		a.False(s.MarkSession(&manager.RemainRequest{Session: &manager.SessionInfo{SessionId: c3}}, clock.Now()))
+		a.True(s.MarkSession(&manager.RemainRequest{Session: &manager.SessionInfo{SessionId: string(c1)}}, clock.Now()))
+		a.True(s.MarkSession(&manager.RemainRequest{Session: &manager.SessionInfo{SessionId: string(c2)}}, clock.Now()))
+		a.False(s.MarkSession(&manager.RemainRequest{Session: &manager.SessionInfo{SessionId: string(c3)}}, clock.Now()))
 
 		moment = epoch.Add(5 * time.Second)
 		s.ExpireSessions(ctx, moment, moment)
@@ -179,9 +134,9 @@ func (s *suiteState) TestStateInternal() {
 		a.Nil(s.GetClient(c2))
 		a.Nil(s.GetClient(c3))
 
-		a.True(s.MarkSession(&manager.RemainRequest{Session: &manager.SessionInfo{SessionId: c1}}, clock.Now()))
-		a.False(s.MarkSession(&manager.RemainRequest{Session: &manager.SessionInfo{SessionId: c2}}, clock.Now()))
-		a.False(s.MarkSession(&manager.RemainRequest{Session: &manager.SessionInfo{SessionId: c3}}, clock.Now()))
+		a.True(s.MarkSession(&manager.RemainRequest{Session: &manager.SessionInfo{SessionId: string(c1)}}, clock.Now()))
+		a.False(s.MarkSession(&manager.RemainRequest{Session: &manager.SessionInfo{SessionId: string(c2)}}, clock.Now()))
+		a.False(s.MarkSession(&manager.RemainRequest{Session: &manager.SessionInfo{SessionId: string(c3)}}, clock.Now()))
 	})
 }
 
@@ -199,21 +154,33 @@ func (s *suiteState) TestAddClient() {
 	}, now)
 
 	// then
-	assert.Equal(s.T(), 1, s.state.sessions.Size())
+	assert.Equal(s.T(), 1, s.state.clients.Size())
 }
 
 func (s *suiteState) TestRemoveSession() {
 	// given
 	now := time.Now()
-	s.state.sessions.Store("session-1", newClientSessionState(s.ctx, now))
-	s.state.sessions.Store("session-2", newAgentSessionState(s.ctx, now))
+	s1 := s.state.AddClient(&manager.ClientInfo{
+		Name:      "my-client",
+		InstallId: "1234",
+		Product:   "5668",
+		Version:   "2.14.2",
+		ApiKey:    "xxxx",
+	}, now)
+	s2 := s.state.AddClient(&manager.ClientInfo{
+		Name:      "your-client",
+		InstallId: "5678",
+		Product:   "5668",
+		Version:   "2.14.2",
+		ApiKey:    "xxxx",
+	}, now)
 
-	// when
-	s.state.RemoveSession(s.ctx, "session-1")
-	s.state.RemoveSession(s.ctx, "session-2") // won't fail trying to delete consumption.
+	assert.Equal(s.T(), s.state.CountSessions(), 2)
 
-	// then
-	assert.Equal(s.T(), s.state.sessions.Size(), 0)
+	s.state.RemoveSession(s.ctx, s1)
+	s.state.RemoveSession(s.ctx, s2) // won't fail trying to delete consumption.
+
+	assert.Equal(s.T(), s.state.CountSessions(), 0)
 }
 
 func TestSuiteState(testing *testing.T) {

@@ -119,7 +119,7 @@ func NewMessage(code MessageCode, payload []byte) Message {
 	return msg{byte(code)}
 }
 
-func StreamInfoMessage(id ConnID, sessionID string, callDelay, dialTimeout time.Duration) Message {
+func StreamInfoMessage(id ConnID, sessionID SessionID, callDelay, dialTimeout time.Duration) Message {
 	b := bytes.Buffer{}
 	b.WriteByte(byte(streamInfo))
 
@@ -151,12 +151,12 @@ func StreamOKMessage() Message {
 	return m[:n+1]
 }
 
-func SessionMessage(sessionID string) Message {
+func SessionMessage(sessionID SessionID) Message {
 	return NewMessage(Session, []byte(sessionID))
 }
 
-func GetSession(m Message) string {
-	return string(m.Payload())
+func GetSession(m Message) SessionID {
+	return SessionID(m.Payload())
 }
 
 func makeMessage(code MessageCode, payloadLength int) msg {
@@ -211,6 +211,6 @@ func setConnectInfo(m Message, s *stream) error {
 		return errMalformedConnect
 	}
 	pl = pl[n:]
-	s.sessionID = string(pl[:v])
+	s.sessionID = SessionID(pl[:v])
 	return nil
 }

@@ -27,6 +27,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/mutator"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/namespaces"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/state"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/grpc/server"
 	"github.com/telepresenceio/telepresence/v2/pkg/informer"
@@ -247,11 +248,11 @@ func (s *service) servePrometheus(ctx context.Context) error {
 			"Flag to indicate when an intercept is active. 1 for active, 0 for not active.", append(labels, "workload")),
 	)
 
-	s.state.SetAllClientSessionsFinalizer(func(client *rpc.ClientInfo) {
+	s.state.SetAllClientSessionsFinalizer(func(client *state.ClientSession) {
 		SetGauge(s.state.GetConnectActiveStatus(), client.Name, client.InstallId, nil, 0)
 	})
 
-	s.state.SetAllInterceptsFinalizer(func(client *rpc.ClientInfo, workload *string) {
+	s.state.SetAllInterceptsFinalizer(func(client *state.ClientSession, workload *string) {
 		SetGauge(s.state.GetInterceptActiveStatus(), client.Name, client.InstallId, workload, 0)
 	})
 

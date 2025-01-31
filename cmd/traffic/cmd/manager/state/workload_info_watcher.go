@@ -15,6 +15,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/mutator"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
+	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
 	"github.com/telepresenceio/telepresence/v2/pkg/workload"
 )
 
@@ -24,18 +25,18 @@ type WorkloadInfoWatcher interface {
 
 type workloadInfoWatcher struct {
 	State
-	clientSession  string
+	clientSession  tunnel.SessionID
 	namespace      string
 	stream         rpc.Manager_WatchWorkloadsServer
 	workloadEvents map[string]*rpc.WorkloadEvent
 	lastEvents     map[string]*rpc.WorkloadEvent
-	agentInfos     map[string]*rpc.AgentInfo
+	agentInfos     map[tunnel.SessionID]*AgentSession
 	interceptInfos map[string]*Intercept
 	start          time.Time
 	ticker         *time.Ticker
 }
 
-func (s *state) NewWorkloadInfoWatcher(clientSession, namespace string) WorkloadInfoWatcher {
+func (s *state) NewWorkloadInfoWatcher(clientSession tunnel.SessionID, namespace string) WorkloadInfoWatcher {
 	return &workloadInfoWatcher{
 		State:         s,
 		clientSession: clientSession,
@@ -68,7 +69,7 @@ func (wf *workloadInfoWatcher) Watch(ctx context.Context, stream rpc.Manager_Wat
 		return err
 	}
 
-	agentsCh := wf.WatchAgents(ctx, func(_ string, info *rpc.AgentInfo) bool {
+	agentsCh := wf.WatchAgents(ctx, func(_ tunnel.SessionID, info *AgentSession) bool {
 		return info.Namespace == wf.namespace
 	})
 
@@ -241,7 +242,7 @@ func (wf *workloadInfoWatcher) handleWorkloadsSnapshot(ctx context.Context, wes 
 	}
 }
 
-func (wf *workloadInfoWatcher) handleAgentSnapshot(ctx context.Context, ais map[string]*rpc.AgentInfo) {
+func (wf *workloadInfoWatcher) handleAgentSnapshot(ctx context.Context, ais map[tunnel.SessionID]*AgentSession) {
 	oldAgentInfos := wf.agentInfos
 	wf.agentInfos = ais
 	m := mutator.GetMap(ctx)

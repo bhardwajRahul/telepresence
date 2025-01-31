@@ -31,6 +31,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
+	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
 )
 
 // PrepareIntercept ensures that the given request can be matched against the intercept configuration of
@@ -243,9 +244,9 @@ func (s *state) preparePorts(ac *agentconfig.Sidecar, cn *agentconfig.Container,
 	return nil
 }
 
-func (s *state) AddIntercept(ctx context.Context, cir *rpc.CreateInterceptRequest) (*rpc.ClientInfo, *rpc.InterceptInfo, error) {
+func (s *state) AddIntercept(ctx context.Context, cir *rpc.CreateInterceptRequest) (*ClientSession, *rpc.InterceptInfo, error) {
 	clientSession := cir.Session
-	sessionID := clientSession.SessionId
+	sessionID := tunnel.SessionID(clientSession.SessionId)
 	client := s.GetClient(sessionID)
 	if client == nil {
 		return nil, nil, status.Errorf(codes.NotFound, "session %q not found", sessionID)
@@ -375,14 +376,14 @@ func (s *state) AddInterceptFinalizer(interceptID string, finalizer InterceptFin
 
 // getAgentsInterceptedByClient returns the session IDs for each agent that are currently
 // intercepted by the client with the given client session ID.
-func (s *state) getAgentsInterceptedByClient(clientSessionID string) map[string]*rpc.AgentInfo {
+func (s *state) getAgentsInterceptedByClient(clientSessionID tunnel.SessionID) map[tunnel.SessionID]*AgentSession {
 	intercepts := s.intercepts.LoadMatching(func(_ string, ii *Intercept) bool {
-		return ii.ClientSession.SessionId == clientSessionID
+		return ii.ClientSession.SessionId == string(clientSessionID)
 	})
 	if len(intercepts) == 0 {
 		return nil
 	}
-	return s.LoadMatchingAgents(func(_ string, ai *rpc.AgentInfo) bool {
+	return s.LoadMatchingAgents(func(_ tunnel.SessionID, ai *AgentSession) bool {
 		for _, ii := range intercepts {
 			if ai.Name == ii.Spec.Agent && ai.Namespace == ii.Spec.Namespace {
 				return true
@@ -392,7 +393,7 @@ func (s *state) getAgentsInterceptedByClient(clientSessionID string) map[string]
 	})
 }
 
-func (s *state) EnsureAgent(ctx context.Context, n, ns string) (as []*rpc.AgentInfo, err error) {
+func (s *state) EnsureAgent(ctx context.Context, n, ns string) (as []*AgentSession, err error) {
 	var wl k8sapi.Workload
 	wl, err = agentmap.GetWorkload(ctx, n, ns, "")
 	if err != nil {
@@ -410,14 +411,14 @@ func (s *state) ValidateCreateAgent(context.Context, k8sapi.Workload, agentconfi
 }
 
 // sortAgents will sort the given AgentInfo based on pod name.
-func sortAgents(as []*rpc.AgentInfo) {
+func sortAgents(as []*AgentSession) {
 	sort.Slice(as, func(i, j int) bool {
 		return as[i].PodName < as[j].PodName
 	})
 }
 
 func (s *state) ensureAgent(parentCtx context.Context, wl k8sapi.Workload, extended, dryRun bool, spec *rpc.InterceptSpec, rp agentconfig.ReplacePolicy) (
-	ac *agentconfig.Sidecar, as []*rpc.AgentInfo, err error,
+	ac *agentconfig.Sidecar, as []*AgentSession, err error,
 ) {
 	if agentmap.TrafficManagerSelector.Matches(labels.Set(wl.GetLabels())) {
 		msg := fmt.Sprintf("deployment %s.%s is the Telepresence Traffic Manager. It can not have a traffic-agent", wl.GetName(), wl.GetNamespace())
@@ -436,10 +437,10 @@ func (s *state) ensureAgent(parentCtx context.Context, wl k8sapi.Workload, exten
 			return nil, nil, err
 		}
 		ac = sce.AgentConfig()
-		am := s.LoadMatchingAgents(func(_ string, ai *rpc.AgentInfo) bool {
+		am := s.LoadMatchingAgents(func(_ tunnel.SessionID, ai *AgentSession) bool {
 			return ai.Name == ac.AgentName && ai.Namespace == ac.Namespace
 		})
-		as = make([]*rpc.AgentInfo, len(am))
+		as = make([]*AgentSession, len(am))
 		i := 0
 		for _, found := range am {
 			as[i] = found
@@ -716,11 +717,11 @@ func watchFailedInjectionEvents(ctx context.Context, name, namespace string) (<-
 	return ec, nil
 }
 
-func (s *state) waitForAgents(ctx context.Context, ac *agentconfig.Sidecar, failedCreateCh <-chan *events.Event) ([]*rpc.AgentInfo, error) {
+func (s *state) waitForAgents(ctx context.Context, ac *agentconfig.Sidecar, failedCreateCh <-chan *events.Event) ([]*AgentSession, error) {
 	name := ac.AgentName
 	namespace := ac.Namespace
 	dlog.Debugf(ctx, "Waiting for agent %s.%s", name, namespace)
-	snapshotCh := s.WatchAgents(ctx, func(sessionID string, agent *rpc.AgentInfo) bool {
+	snapshotCh := s.WatchAgents(ctx, func(_ tunnel.SessionID, agent *AgentSession) bool {
 		return agent.Name == name && agent.Namespace == namespace
 	})
 	failedContainerRx := regexp.MustCompile(`restarting failed container (\S+) in pod ([0-9A-Za-z_-]+)_` + namespace)
@@ -787,7 +788,7 @@ func (s *state) waitForAgents(ctx context.Context, ac *agentconfig.Sidecar, fail
 			if len(snapshot) == 0 {
 				continue
 			}
-			as := make([]*rpc.AgentInfo, 0, len(snapshot))
+			as := make([]*AgentSession, 0, len(snapshot))
 			for _, a := range snapshot {
 				if mm.IsInactive(types.UID(a.PodUid)) {
 					dlog.Debugf(ctx, "Agent %s(%s) is blacklisted", a.PodName, a.PodIp)

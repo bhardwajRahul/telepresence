@@ -161,7 +161,7 @@ func (s *service) GetAgentImageFQN(ctx context.Context, _ *empty.Empty) (*rpc.Ag
 func (s *service) GetAgentConfig(ctx context.Context, request *rpc.AgentConfigRequest) (*rpc.AgentConfigResponse, error) {
 	dlog.Debug(ctx, "GetAgentConfig called")
 	ctx = managerutil.WithSessionInfo(ctx, request.Session)
-	sessionID := request.GetSession().GetSessionId()
+	sessionID := tunnel.SessionID(request.GetSession().GetSessionId())
 	clientInfo := s.state.GetClient(sessionID)
 	if clientInfo == nil {
 		return nil, status.Errorf(codes.NotFound, "Client session %q not found", sessionID)
@@ -214,7 +214,7 @@ func (s *service) ArriveAsClient(ctx context.Context, client *rpc.ClientInfo) (*
 	SetGauge(s.state.GetConnectActiveStatus(), client.Name, client.InstallId, nil, 1)
 
 	return &rpc.SessionInfo{
-		SessionId:        s.state.AddClient(client, s.clock.Now()),
+		SessionId:        string(s.state.AddClient(client, s.clock.Now())),
 		ManagerInstallId: s.clusterInfo.ID(),
 		InstallId:        &installId,
 	}, nil
@@ -237,7 +237,7 @@ func (s *service) ArriveAsAgent(ctx context.Context, agent *rpc.AgentInfo) (*rpc
 	}
 
 	return &rpc.SessionInfo{
-		SessionId:        sessionID,
+		SessionId:        string(sessionID),
 		ManagerInstallId: s.clusterInfo.ID(),
 	}, nil
 }
@@ -259,7 +259,7 @@ func (s *service) GetClientConfig(ctx context.Context, _ *empty.Empty) (*rpc.CLI
 func (s *service) Remain(ctx context.Context, req *rpc.RemainRequest) (*empty.Empty, error) {
 	// ctx = WithSessionInfo(ctx, req.GetSession())
 	// dlog.Debug(ctx, "Remain called")
-	sessionID := req.GetSession().GetSessionId()
+	sessionID := tunnel.SessionID(req.GetSession().GetSessionId())
 	if ok := s.state.MarkSession(req, s.clock.Now()); !ok {
 		return nil, status.Errorf(codes.NotFound, "Session %q not found", sessionID)
 	}
@@ -272,7 +272,7 @@ func (s *service) Remain(ctx context.Context, req *rpc.RemainRequest) (*empty.Em
 // Depart terminates a session.
 func (s *service) Depart(ctx context.Context, session *rpc.SessionInfo) (*empty.Empty, error) {
 	ctx = managerutil.WithSessionInfo(ctx, session)
-	sessionID := session.GetSessionId()
+	sessionID := tunnel.SessionID(session.GetSessionId())
 	dlog.Debug(ctx, "Depart called")
 
 	// There's reason for the caller to wait for this removal to complete.
@@ -286,18 +286,18 @@ func (s *service) WatchAgentPods(session *rpc.SessionInfo, stream rpc.Manager_Wa
 	dlog.Debug(ctx, "WatchAgentPods called")
 	defer dlog.Debug(ctx, "WatchAgentPods ended")
 
-	clientSession := session.SessionId
+	clientSession := tunnel.SessionID(session.SessionId)
 	clientInfo := s.state.GetClient(clientSession)
 	if clientInfo == nil {
 		return status.Errorf(codes.NotFound, "Client session %q not found", clientSession)
 	}
 	ns := clientInfo.Namespace
 
-	agentsCh := s.state.WatchAgents(ctx, func(_ string, info *rpc.AgentInfo) bool {
+	agentsCh := s.state.WatchAgents(ctx, func(_ tunnel.SessionID, info *state.AgentSession) bool {
 		return info.Namespace == ns
 	})
 	interceptsCh := s.state.WatchIntercepts(ctx, func(_ string, info *state.Intercept) bool {
-		return info.ClientSession.SessionId == clientSession
+		return info.ClientSession.SessionId == string(clientSession)
 	})
 	sessionDone, err := s.state.SessionDone(clientSession)
 	if err != nil {
@@ -364,19 +364,21 @@ func (s *service) WatchAgentPods(session *rpc.SessionInfo, stream rpc.Manager_Wa
 func (s *service) WatchAgents(session *rpc.SessionInfo, stream rpc.Manager_WatchAgentsServer) error {
 	ctx := managerutil.WithSessionInfo(stream.Context(), session)
 	dlog.Debug(ctx, "WatchAgents called")
-	clientInfo := s.state.GetClient(session.SessionId)
+	clientInfo := s.state.GetClient(tunnel.SessionID(session.SessionId))
 	if clientInfo == nil {
 		return status.Errorf(codes.NotFound, "Client session %q not found", session.SessionId)
 	}
 	ns := clientInfo.Namespace
-	return s.watchAgents(ctx, func(_ string, a *rpc.AgentInfo) bool { return a.Namespace == ns }, stream)
+	return s.watchAgents(ctx, func(_ tunnel.SessionID, a *state.AgentSession) bool { return a.Namespace == ns }, stream)
 }
 
 // WatchAgentsNS notifies a client of the set of known Agents in the namespaces given in the request.
 func (s *service) WatchAgentsNS(request *rpc.AgentsRequest, stream rpc.Manager_WatchAgentsNSServer) error {
 	ctx := managerutil.WithSessionInfo(stream.Context(), request.Session)
 	dlog.Debug(ctx, "WatchAgentsNS called")
-	return s.watchAgents(ctx, func(_ string, a *rpc.AgentInfo) bool { return slices.Contains(request.Namespaces, a.Namespace) }, stream)
+	return s.watchAgents(ctx, func(_ tunnel.SessionID, a *state.AgentSession) bool {
+		return slices.Contains(request.Namespaces, a.Namespace)
+	}, stream)
 }
 
 func infosEqual(a, b *rpc.AgentInfo) bool {
@@ -409,7 +411,7 @@ func infosEqual(a, b *rpc.AgentInfo) bool {
 	})
 }
 
-func (s *service) watchAgents(ctx context.Context, includeAgent func(string, *rpc.AgentInfo) bool, stream rpc.Manager_WatchAgentsServer) error {
+func (s *service) watchAgents(ctx context.Context, includeAgent func(tunnel.SessionID, *state.AgentSession) bool, stream rpc.Manager_WatchAgentsServer) error {
 	snapshotCh := s.state.WatchAgents(ctx, includeAgent)
 	sessionDone, err := s.state.SessionDone(managerutil.GetSessionID(ctx))
 	if err != nil {
@@ -431,8 +433,8 @@ func (s *service) watchAgents(ctx context.Context, includeAgent func(string, *rp
 			agentSessionIDs := slices.Sorted(maps.Keys(snapshot))
 			agents := make([]*rpc.AgentInfo, 0, len(agentSessionIDs))
 			for _, agentSessionID := range agentSessionIDs {
-				if as := s.state.GetSession(agentSessionID); as != nil && as.Active() {
-					agents = append(agents, snapshot[agentSessionID])
+				if as := s.state.GetAgent(agentSessionID); as != nil {
+					agents = append(agents, snapshot[agentSessionID].AgentInfo)
 				}
 			}
 			if slices.EqualFunc(agents, lastSnap, infosEqual) {
@@ -466,7 +468,7 @@ func (s *service) watchAgents(ctx context.Context, includeAgent func(string, *rp
 // relevant to that client or agent.
 func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_WatchInterceptsServer) error {
 	ctx := managerutil.WithSessionInfo(stream.Context(), session)
-	sessionID := session.GetSessionId()
+	sessionID := tunnel.SessionID(session.GetSessionId())
 
 	dlog.Debug(ctx, "WatchIntercepts called")
 
@@ -488,11 +490,10 @@ func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_W
 					// Don't return intercepts for different agents.
 					return false
 				}
-				if as := s.state.GetSession(sessionID); as == nil || !as.Active() {
-					// Session is no longer active
+				if as := s.state.GetAgent(sessionID); as == nil {
+					dlog.Debugf(ctx, "WatchIntercepts session no longer active")
 					return false
 				}
-
 				// Don't return intercepts that aren't in a "agent-owned" state.
 				switch info.Disposition {
 				case rpc.InterceptDispositionType_WAITING,
@@ -510,7 +511,7 @@ func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_W
 		} else {
 			// sessionID refers to a client session.
 			filter = func(id string, info *state.Intercept) bool {
-				return info.ClientSession.SessionId == sessionID &&
+				return info.ClientSession.SessionId == string(sessionID) &&
 					info.Disposition != rpc.InterceptDispositionType_REMOVED &&
 					!state.IsChildIntercept(info.Spec)
 			}
@@ -523,10 +524,6 @@ func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_W
 		case snapshot, ok := <-snapshotCh:
 			if !ok {
 				dlog.Debugf(ctx, "WatchIntercepts request cancelled")
-				return nil
-			}
-			if as := s.state.GetSession(sessionID); as == nil || !as.Active() {
-				dlog.Debugf(ctx, "WatchIntercepts session no longer active")
 				return nil
 			}
 			dlog.Tracef(ctx, "WatchIntercepts sending update")
@@ -584,7 +581,7 @@ func (s *service) EnsureAgent(ctx context.Context, request *rpc.EnsureAgentReque
 	session := request.GetSession()
 	ctx = managerutil.WithSessionInfo(ctx, session)
 	dlog.Debugf(ctx, "EnsureAgent called")
-	sessionID := session.GetSessionId()
+	sessionID := tunnel.SessionID(session.GetSessionId())
 	client := s.state.GetClient(sessionID)
 	if client == nil {
 		return nil, status.Errorf(codes.NotFound, "Client session %q not found", sessionID)
@@ -596,7 +593,11 @@ func (s *service) EnsureAgent(ctx context.Context, request *rpc.EnsureAgentReque
 	if len(as) == 0 {
 		return nil, status.Errorf(codes.Internal, "failed to ensure agent for workload %s: no agents became active", request.Name)
 	}
-	return &rpc.AgentInfoSnapshot{Agents: as}, nil
+	rpcAs := make([]*rpc.AgentInfo, len(as))
+	for i, a := range as {
+		rpcAs[i] = a.AgentInfo
+	}
+	return &rpc.AgentInfoSnapshot{Agents: rpcAs}, nil
 }
 
 // CreateIntercept lets a client create an intercept.
@@ -632,7 +633,7 @@ func (s *service) MakeInterceptID(_ context.Context, sessionID string, name stri
 	if sessionID == "" {
 		return name, nil
 	} else {
-		if s.state.GetClient(sessionID) == nil {
+		if s.state.GetClient(tunnel.SessionID(sessionID)) == nil {
 			return "", status.Errorf(codes.NotFound, "Client session %q not found", sessionID)
 		}
 		return sessionID + ":" + name, nil
@@ -646,7 +647,7 @@ func (s *service) UpdateIntercept(context.Context, *rpc.UpdateInterceptRequest) 
 // RemoveIntercept lets a client remove an intercept.
 func (s *service) RemoveIntercept(ctx context.Context, riReq *rpc.RemoveInterceptRequest2) (*empty.Empty, error) {
 	ctx = managerutil.WithSessionInfo(ctx, riReq.GetSession())
-	sessionID := riReq.GetSession().GetSessionId()
+	sessionID := tunnel.SessionID(riReq.GetSession().GetSessionId())
 	name := riReq.Name
 
 	dlog.Debugf(ctx, "RemoveIntercept called: %s", name)
@@ -658,7 +659,7 @@ func (s *service) RemoveIntercept(ctx context.Context, riReq *rpc.RemoveIntercep
 
 	SetGauge(s.state.GetInterceptActiveStatus(), client.Name, client.InstallId, &name, 0)
 
-	s.state.RemoveIntercept(ctx, sessionID+":"+name)
+	s.state.RemoveIntercept(ctx, string(sessionID)+":"+name)
 	return &empty.Empty{}, nil
 }
 
@@ -678,7 +679,7 @@ func (s *service) GetIntercept(ctx context.Context, request *rpc.GetInterceptReq
 // ReviewIntercept lets an agent approve or reject an intercept.
 func (s *service) ReviewIntercept(ctx context.Context, rIReq *rpc.ReviewInterceptRequest) (*empty.Empty, error) {
 	ctx = managerutil.WithSessionInfo(ctx, rIReq.GetSession())
-	sessionID := rIReq.GetSession().GetSessionId()
+	sessionID := tunnel.SessionID(rIReq.GetSession().GetSessionId())
 	ceptID := rIReq.Id
 
 	agent := s.state.GetAgent(sessionID)
@@ -746,7 +747,7 @@ func (s *service) Tunnel(server rpc.Manager_TunnelServer) error {
 func (s *service) WatchDial(session *rpc.SessionInfo, stream rpc.Manager_WatchDialServer) error {
 	ctx := managerutil.WithSessionInfo(stream.Context(), session)
 	dlog.Debugf(ctx, "WatchDial called")
-	lrCh := s.state.WatchDial(session.SessionId)
+	lrCh := s.state.WatchDial(tunnel.SessionID(session.SessionId))
 	for {
 		select {
 		// connection broken
@@ -867,6 +868,7 @@ func (s *service) LookupDNS(ctx context.Context, request *rpc.DNSRequest) (respo
 		}
 	}
 
+	sessionID := tunnel.SessionID(request.GetSession().GetSessionId())
 	tmNamespace := managerutil.GetEnv(ctx).ManagerNamespace
 	noSearchDomain := s.dotClusterDomain
 	var rCode int
@@ -882,7 +884,7 @@ func (s *service) LookupDNS(ctx context.Context, request *rpc.DNSRequest) (respo
 		// It's enough to propagate this one to the traffic-manager
 		rCode = state.RcodeNoAgents
 	default:
-		rrs, rCode, err = s.state.AgentsLookupDNS(ctx, request.GetSession().GetSessionId(), request)
+		rrs, rCode, err = s.state.AgentsLookupDNS(ctx, sessionID, request)
 		if err != nil {
 			dlog.Errorf(ctx, "AgentsLookupDNS %s %s: %v", request.Name, qtn, err)
 		} else if rCode != state.RcodeNoAgents {
@@ -895,7 +897,7 @@ func (s *service) LookupDNS(ctx context.Context, request *rpc.DNSRequest) (respo
 	}
 
 	if rCode == state.RcodeNoAgents {
-		client := s.state.GetClient(request.GetSession().GetSessionId())
+		client := s.state.GetClient(sessionID)
 		name := request.Name
 		restoreName := false
 		nDots := 0
@@ -951,7 +953,7 @@ func (s *service) AgentLookupDNSResponse(ctx context.Context, response *rpc.DNSA
 func (s *service) WatchLookupDNS(session *rpc.SessionInfo, stream rpc.Manager_WatchLookupDNSServer) error {
 	ctx := managerutil.WithSessionInfo(stream.Context(), session)
 	dlog.Debugf(ctx, "WatchLookupDNS called")
-	rqCh := s.state.WatchLookupDNS(session.SessionId)
+	rqCh := s.state.WatchLookupDNS(tunnel.SessionID(session.SessionId))
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -1021,7 +1023,7 @@ func (s *service) WatchWorkloads(request *rpc.WorkloadEventsRequest, stream rpc.
 	if request.SessionInfo == nil {
 		return status.Error(codes.InvalidArgument, "SessionInfo is required")
 	}
-	clientSession := request.SessionInfo.SessionId
+	clientSession := tunnel.SessionID(request.SessionInfo.SessionId)
 	namespace := request.Namespace
 	if namespace == "" {
 		clientInfo := s.state.GetClient(clientSession)

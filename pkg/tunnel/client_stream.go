@@ -12,7 +12,7 @@ type GRPCClientStream interface {
 	CloseSend() error
 }
 
-func NewClientStream(ctx context.Context, grpcStream GRPCClientStream, id ConnID, sessionID string, callDelay, dialTimeout time.Duration) (Stream, error) {
+func NewClientStream(ctx context.Context, grpcStream GRPCClientStream, id ConnID, sessionID SessionID, callDelay, dialTimeout time.Duration) (Stream, error) {
 	s := &clientStream{stream: newStream("CLI", grpcStream)}
 	s.id = id
 	s.roundtripLatency = callDelay

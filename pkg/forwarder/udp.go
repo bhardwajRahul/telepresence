@@ -209,7 +209,7 @@ func (f *udp) interceptConn(ctx context.Context, conn *net.UDPConn, iCept *manag
 		f.mu.Lock()
 		sp := f.streamProvider
 		f.mu.Unlock()
-		return sp.CreateClientStream(ctx, iCept.ClientSession.SessionId, id, time.Duration(spec.RoundtripLatency), time.Duration(spec.DialTimeout))
+		return sp.CreateClientStream(ctx, tunnel.SessionID(iCept.ClientSession.SessionId), id, time.Duration(spec.RoundtripLatency), time.Duration(spec.DialTimeout))
 	})
 	d.Start(ctx)
 	<-d.Done()

@@ -9,29 +9,23 @@ import (
 	"github.com/telepresenceio/telepresence/rpc/v2/manager"
 )
 
-type StreamMetrics struct {
-	ClientSessionID string
-	IngressBytes    *CounterProbe
-	EgressBytes     *CounterProbe
-}
-
 type StreamProvider interface {
-	CreateClientStream(ctx context.Context, clientSessionID string, id ConnID, roundTripLatency, dialTimeout time.Duration) (Stream, error)
+	CreateClientStream(ctx context.Context, clientSessionID SessionID, id ConnID, roundTripLatency, dialTimeout time.Duration) (Stream, error)
 }
 
 type ClientStreamProvider interface {
-	CreateClientStream(ctx context.Context, clientSessionID string, id ConnID, roundTripLatency, dialTimeout time.Duration) (Stream, error)
+	CreateClientStream(ctx context.Context, clientSessionID SessionID, id ConnID, roundTripLatency, dialTimeout time.Duration) (Stream, error)
 	ReportMetrics(ctx context.Context, metrics *manager.TunnelMetrics)
 }
 
 type TrafficManagerStreamProvider struct {
 	Manager        manager.ManagerClient
-	AgentSessionID string
+	AgentSessionID SessionID
 }
 
 func (sp *TrafficManagerStreamProvider) CreateClientStream(
 	ctx context.Context,
-	clientSessionID string,
+	clientSessionID SessionID,
 	id ConnID,
 	roundTripLatency,
 	dialTimeout time.Duration,

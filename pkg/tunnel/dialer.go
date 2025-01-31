@@ -333,7 +333,7 @@ func DialWaitLoop(
 	ctx context.Context,
 	tunnelProvider Provider,
 	dialStream rpc.Manager_WatchDialClient,
-	sessionID string,
+	sessionID SessionID,
 ) error {
 	// create ctx to cleanup leftover dialRespond if waitloop dies
 	ctx, cancel := context.WithCancel(ctx)
@@ -359,7 +359,7 @@ func DialWaitLoop(
 	return nil
 }
 
-func dialRespond(ctx context.Context, tunnelProvider Provider, dr *rpc.DialRequest, sessionID string) {
+func dialRespond(ctx context.Context, tunnelProvider Provider, dr *rpc.DialRequest, sessionID SessionID) {
 	id := ConnID(dr.ConnId)
 	ctx, cancel := context.WithCancel(ctx)
 	mt, err := tunnelProvider.Tunnel(ctx)

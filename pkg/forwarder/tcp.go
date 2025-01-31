@@ -157,13 +157,13 @@ func (f *tcp) interceptConn(ctx context.Context, conn net.Conn, iCept *manager.I
 	return f.rerouteConn(
 		ctx,
 		conn,
-		iCept.ClientSession.SessionId,
+		tunnel.SessionID(iCept.ClientSession.SessionId),
 		netip.AddrPortFrom(iputil.Parse(spec.TargetHost), uint16(spec.TargetPort)),
 		time.Duration(spec.RoundtripLatency),
 		time.Duration(spec.DialTimeout))
 }
 
-func (f *tcp) rerouteConn(ctx context.Context, conn net.Conn, clientSession string, dst netip.AddrPort, latency, timeout time.Duration) error {
+func (f *tcp) rerouteConn(ctx context.Context, conn net.Conn, clientSession tunnel.SessionID, dst netip.AddrPort, latency, timeout time.Duration) error {
 	srcAddr := conn.RemoteAddr()
 	dlog.Debugf(ctx, "Accept got connection from %s", srcAddr)
 	defer dlog.Debugf(ctx, "Done serving connection from %s", srcAddr)
@@ -194,7 +194,7 @@ func (f *tcp) rerouteConn(ctx context.Context, conn net.Conn, clientSession stri
 	<-d.Done()
 
 	sp.ReportMetrics(ctx, &manager.TunnelMetrics{
-		ClientSessionId: clientSession,
+		ClientSessionId: string(clientSession),
 		IngressBytes:    ingressBytes.GetValue(),
 		EgressBytes:     egressBytes.GetValue(),
 	})

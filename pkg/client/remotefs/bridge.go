@@ -16,11 +16,11 @@ import (
 
 type bridgeMounter struct {
 	localPort     uint16
-	sessionID     string
+	sessionID     tunnel.SessionID
 	managerClient manager.ManagerClient
 }
 
-func NewBridgeMounter(sessionID string, managerClient manager.ManagerClient, localPort uint16) Mounter {
+func NewBridgeMounter(sessionID tunnel.SessionID, managerClient manager.ManagerClient, localPort uint16) Mounter {
 	return &bridgeMounter{
 		localPort:     localPort,
 		sessionID:     sessionID,
