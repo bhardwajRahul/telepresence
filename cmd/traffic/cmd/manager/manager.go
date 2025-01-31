@@ -280,14 +280,6 @@ func (s *service) serveHTTP(ctx context.Context) error {
 	if mz, ok := env.MaxReceiveSize.AsInt64(); ok {
 		opts = append(opts, grpc.MaxRecvMsgSize(int(mz)))
 	}
-
-	lg := dlog.StdLogger(ctx, dlog.MaxLogLevel(ctx))
-	addr := iputil.JoinHostPort(host, port)
-	if host == "" {
-		lg.SetPrefix(fmt.Sprintf("grpc-api:%d", port))
-	} else {
-		lg.SetPrefix(fmt.Sprintf("grpc-api %s", addr))
-	}
 	svc := server.New(ctx, opts...)
 	s.self.RegisterServers(svc)
 	return server.Serve(ctx, svc, l)

@@ -25,6 +25,12 @@ func (s *interceptMountSuite) Test_RestartInterceptedPod() {
 
 	// Scale down to zero pods
 	require.NoError(s.Kubectl(ctx, "scale", "deploy", s.ServiceName(), "--replicas", "0"))
+	scaleUp := true
+	defer func() {
+		if scaleUp {
+			assert.NoError(s.Kubectl(ctx, "scale", "deploy", s.ServiceName(), "--replicas", "1"))
+		}
+	}()
 
 	// Wait until the pods have terminated. This might take a long time (several minutes).
 	require.Eventually(func() bool { return len(s.runningPods(ctx)) == 0 }, 2*time.Minute, 6*time.Second)
@@ -49,6 +55,8 @@ func (s *interceptMountSuite) Test_RestartInterceptedPod() {
 
 	// Scale up again (start intercepted pod)
 	assert.NoError(s.Kubectl(ctx, "scale", "deploy", s.ServiceName(), "--replicas", "1"))
+	scaleUp = false
+
 	assert.Eventually(func() bool { return len(s.runningPods(ctx)) == 1 }, itest.PodCreateTimeout(ctx), 6*time.Second)
 	s.CapturePodLogs(ctx, s.ServiceName(), "traffic-agent", s.AppNamespace())
 

@@ -59,7 +59,6 @@ type service struct {
 	srv           *grpc.Server
 	managerProxy  *mgrProxy
 	timedLogLevel log.TimedLevel
-	ucn           int64
 	fuseFTPError  error
 
 	// The quit function that quits the server.

@@ -198,17 +198,14 @@ func NewState(ctx context.Context) State {
 // pruneSessions will remove all sessions that belong to namespaces that are no longer managed.
 func (s *state) pruneSessions(ctx context.Context) {
 	nss := namespaces.Get(ctx)
-	var sids []tunnel.SessionID
-	s.clients.Range(func(id tunnel.SessionID, c *ClientSession) bool {
-		if !slices.Contains(nss, c.Namespace) {
-			sids = append(sids, id)
+	s.clients.Range(func(id tunnel.SessionID, cs *ClientSession) bool {
+		if !slices.Contains(nss, cs.Namespace) {
+			s.clients.Delete(id)
+			s.removeClientSession(ctx, cs)
 		}
 		return true
 	})
-	for _, sid := range sids {
-		s.removeClientSession(ctx, sid)
-	}
-	clear(sids)
+	var sids []tunnel.SessionID
 	s.agents.Range(func(s tunnel.SessionID, c *AgentSession) bool {
 		if !slices.Contains(nss, c.Namespace) {
 			sids = append(sids, s)
@@ -306,8 +303,8 @@ func (s *state) MarkSession(req *rpc.RemainRequest, now time.Time) (ok bool) {
 
 // RemoveSession removes an AgentSession from the set of present session IDs.
 func (s *state) RemoveSession(ctx context.Context, id tunnel.SessionID) {
-	if _, ok := s.clients.Load(id); ok {
-		s.removeClientSession(ctx, id)
+	if cs, ok := s.clients.LoadAndDelete(id); ok {
+		s.removeClientSession(ctx, cs)
 	} else {
 		s.removeAgentSession(ctx, id)
 	}
@@ -315,41 +312,28 @@ func (s *state) RemoveSession(ctx context.Context, id tunnel.SessionID) {
 
 // removeAgentSession removes an AgentSession from the set of present session IDs.
 func (s *state) removeAgentSession(ctx context.Context, id tunnel.SessionID) {
-	s.agents.Compute(id, func(agent *AgentSession, loaded bool) (*AgentSession, bool) {
-		if !loaded {
-			return nil, true
-		}
+	if as, loaded := s.agents.LoadAndDelete(id); loaded {
 		dlog.Debugf(ctx, "AgentSession %s removed. Explicit removal", id)
-
-		// kill the session
-		defer agent.Cancel()
-		s.consolidateAgentSessionIntercepts(ctx, agent)
-		return nil, true
-	})
+		mutator.GetMap(s.backgroundCtx).Inactivate(types.UID(as.PodUid))
+		s.consolidateAgentSessionIntercepts(ctx, as)
+	}
 }
 
 // removeClientSession removes an AgentSession from the set of present session IDs.
-func (s *state) removeClientSession(ctx context.Context, id tunnel.SessionID) {
-	s.clients.Compute(id, func(client *ClientSession, loaded bool) (*ClientSession, bool) {
-		if !loaded {
-			return nil, true
-		}
-		dlog.Debugf(ctx, "ClientSession %s removed. Explicit removal", id)
+func (s *state) removeClientSession(ctx context.Context, cs *ClientSession) {
+	dlog.Debugf(ctx, "ClientSession %s removed. Explicit removal", cs.ID())
 
-		// kill the session
-		defer client.Cancel()
-		s.gcClientSessionIntercepts(ctx, id, client)
-		scm := client.consumptionMetrics
-		atomic.AddUint64(&s.tunnelIngressCounter, scm.FromClientBytes.GetValue())
-		atomic.AddUint64(&s.tunnelEgressCounter, scm.ToClientBytes.GetValue())
-		s.allClientSessionsFinalizerCall(client)
-		return nil, true
-	})
+	// kill the session
+	cs.Cancel()
+	s.gcClientSessionIntercepts(ctx, cs)
+	scm := cs.consumptionMetrics
+	atomic.AddUint64(&s.tunnelIngressCounter, scm.FromClientBytes.GetValue())
+	atomic.AddUint64(&s.tunnelEgressCounter, scm.ToClientBytes.GetValue())
+	s.allClientSessionsFinalizerCall(cs)
 }
 
 func (s *state) consolidateAgentSessionIntercepts(ctx context.Context, agent *AgentSession) {
 	dlog.Debugf(ctx, "Consolidating intercepts after removal of agent %s(%s)", agent.PodName, agent.PodIp)
-	mutator.GetMap(s.backgroundCtx).Inactivate(types.UID(agent.PodUid))
 	s.intercepts.Range(func(interceptID string, intercept *Intercept) bool {
 		if intercept.Disposition == rpc.InterceptDispositionType_REMOVED || agent.PodIp != intercept.PodIp {
 			// Not of interest. Continue iteration.
@@ -363,7 +347,7 @@ func (s *state) consolidateAgentSessionIntercepts(ctx context.Context, agent *Ag
 				intercept.Disposition = errCode
 				intercept.Message = errMsg
 			})
-		} else {
+		} else if agent.PodIp == intercept.PodIp {
 			// The agent is about to die, but apparently more agents are present. Let some other agent pick it up then.
 			dlog.Debugf(ctx, "Intercept %q lost its agent pod %s(%s). Setting it disposition to WAITING", interceptID, agent.PodName, agent.PodIp)
 			s.UpdateIntercept(interceptID, func(intercept *Intercept) {
@@ -372,18 +356,17 @@ func (s *state) consolidateAgentSessionIntercepts(ctx context.Context, agent *Ag
 				intercept.Disposition = rpc.InterceptDispositionType_WAITING
 			})
 		}
-		// Only one agent with this IP. Break iteration.
-		return false
+		return true
 	})
 }
 
-func (s *state) gcClientSessionIntercepts(ctx context.Context, id tunnel.SessionID, client *ClientSession) {
+func (s *state) gcClientSessionIntercepts(ctx context.Context, client *ClientSession) {
 	// GC all intercepts for the client session (intercept.ClientSession.SessionId)
 	s.intercepts.Range(func(interceptID string, intercept *Intercept) bool {
 		if intercept.Disposition == rpc.InterceptDispositionType_REMOVED {
 			return true
 		}
-		if tunnel.SessionID(intercept.ClientSession.SessionId) == id {
+		if tunnel.SessionID(intercept.ClientSession.SessionId) == client.ID() {
 			// Client went away:
 			// Delete it.
 			wl := strings.SplitN(interceptID, ":", 2)[1]
@@ -400,7 +383,8 @@ func (s *state) ExpireSessions(ctx context.Context, clientMoment, agentMoment ti
 	s.clients.Range(func(id tunnel.SessionID, client *ClientSession) bool {
 		moment := clientMoment
 		if client.LastMarked().Before(moment) {
-			s.removeClientSession(ctx, id)
+			s.clients.Delete(id)
+			s.removeClientSession(ctx, client)
 		}
 		return true
 	})

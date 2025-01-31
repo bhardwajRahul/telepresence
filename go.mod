@@ -20,6 +20,7 @@ require (
 	github.com/golang/mock v1.7.0-rc.1
 	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0
+	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.2.0
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/hectane/go-acl v0.0.0-20230122075934-ca0b05cb1adb
 	github.com/miekg/dns v1.1.63

@@ -73,6 +73,7 @@ following Free and Open Source software:
     github.com/gorilla/websocket                                   v1.5.3                                2-clause BSD license
     github.com/gosuri/uitable                                      v0.0.4                                MIT license
     github.com/gregjones/httpcache                                 v0.0.0-20190611155906-901d90724c79    MIT license
+    github.com/grpc-ecosystem/go-grpc-middleware/v2                v2.2.0                                Apache License 2.0
     github.com/hashicorp/errwrap                                   v1.1.0                                Mozilla Public License 2.0
     github.com/hashicorp/go-multierror                             v1.1.1                                Mozilla Public License 2.0
     github.com/hectane/go-acl                                      v0.0.0-20230122075934-ca0b05cb1adb    MIT license

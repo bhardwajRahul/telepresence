@@ -2,6 +2,7 @@ package mutator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -650,13 +651,19 @@ func podList(ctx context.Context, kind k8sapi.Kind, name, namespace string) ([]*
 		if !podIsRunning(pod) {
 			continue
 		}
+		if podKind, ok := pod.Labels[agentconfig.WorkloadKindLabel]; ok && !enabledWorkloads.Contains(k8sapi.Kind(podKind)) {
+			// Pod's label indicates a workload kind that has been disabled.
+			podsOfInterest = append(podsOfInterest, pod)
+			continue
+		}
 		wl, err := agentmap.FindOwnerWorkload(ctx, k8sapi.Pod(pod), enabledWorkloads)
-		if err == nil {
-			if (kind == "" || wl.GetKind() == kind) && (name == "" || wl.GetName() == name) {
-				podsOfInterest = append(podsOfInterest, pod)
+		if err != nil {
+			var ew agentmap.WorkloadNotFoundError
+			if !errors.As(err, &ew) {
+				return nil, err
 			}
-		} else {
-			dlog.Debugf(ctx, "error getting owner workload for pod %s.%s: %v", pod.Name, pod.Namespace, err)
+		} else if (kind == "" || wl.GetKind() == kind) && (name == "" || wl.GetName() == name) {
+			podsOfInterest = append(podsOfInterest, pod)
 		}
 	}
 	return podsOfInterest, nil

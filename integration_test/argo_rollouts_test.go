@@ -105,14 +105,7 @@ func (s *argoRolloutsSuite) Test_SuccessfullyInterceptsArgoRollout() {
 	itest.TelepresenceOk(ctx, "leave", svc)
 	stdout = itest.TelepresenceOk(ctx, "list", "--intercepts")
 	require.NotContains(stdout, svc+": intercepted")
-
-	itest.TelepresenceDisconnectOk(ctx)
-
-	dfltCtx := itest.WithUser(ctx, "default")
-	itest.TelepresenceOk(dfltCtx, "connect", "--namespace", s.AppNamespace(), "--manager-namespace", s.ManagerNamespace())
-	itest.TelepresenceOk(dfltCtx, "uninstall", svc)
-	itest.TelepresenceDisconnectOk(dfltCtx)
-	s.TelepresenceConnect(ctx)
+	itest.TelepresenceOk(ctx, "uninstall", svc)
 
 	require.Eventually(
 		func() bool {
