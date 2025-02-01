@@ -174,7 +174,7 @@ type configWatcher struct {
 	informers    *xsync.MapOf[string, *informersWithCancel]
 	inactivePods *xsync.MapOf[types.UID, inactivation]
 	startedAt    time.Time
-	terminating  atomic.Bool
+	running      atomic.Bool
 
 	self Map // For extension
 }
@@ -304,12 +304,9 @@ func (c *configWatcher) startWatchers(ctx context.Context, iwc *informersWithCan
 }
 
 func (c *configWatcher) StartWatchers(ctx context.Context) error {
+	defer c.running.Store(true)
 	c.startedAt = time.Now()
-	ctx, cancel := context.WithCancel(ctx)
-	c.cancel = func() {
-		c.terminating.Store(true)
-		cancel()
-	}
+	ctx, c.cancel = context.WithCancel(ctx)
 	var errs []error
 	c.informers.Range(func(ns string, iwc *informersWithCancel) bool {
 		if err := c.startWatchers(ctx, iwc); err != nil {
@@ -592,10 +589,7 @@ func (c *configWatcher) DeleteIfMismatch(ctx context.Context, pod *core.Pod, cfg
 			dlog.Debugf(ctx, "Skipping pod %s because it was deleted by another goroutine", pod.Name)
 			return v, false
 		}
-		dlog.Debugf(ctx, "Deleting pod %s because its config is no longer valid", pod.Name)
-		go func() {
-			deletePod(ctx, pod)
-		}()
+		deletePod(ctx, pod)
 		return inactivation{Time: time.Now(), deleted: true}, false
 	})
 	return err

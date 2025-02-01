@@ -3,12 +3,12 @@ package state
 import (
 	"context"
 	"math"
-	"strings"
 	"time"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/datawire/dlib/dlog"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/manager"
@@ -30,7 +30,7 @@ type workloadInfoWatcher struct {
 	workloadEvents map[string]*rpc.WorkloadEvent
 	lastEvents     map[string]*rpc.WorkloadEvent
 	agentInfos     map[string]*rpc.AgentInfo
-	interceptInfos map[string]*rpc.InterceptInfo
+	interceptInfos map[string]*Intercept
 	start          time.Time
 	ticker         *time.Ticker
 }
@@ -72,7 +72,7 @@ func (wf *workloadInfoWatcher) Watch(ctx context.Context, stream rpc.Manager_Wat
 		return info.Namespace == wf.namespace
 	})
 
-	interceptsCh := wf.WatchIntercepts(ctx, func(_ string, info *rpc.InterceptInfo) bool {
+	interceptsCh := wf.WatchIntercepts(ctx, func(_ string, info *Intercept) bool {
 		return info.Spec.Namespace == wf.namespace
 	})
 
@@ -304,7 +304,7 @@ func (wf *workloadInfoWatcher) handleAgentSnapshot(ctx context.Context, ais map[
 	}
 }
 
-func (wf *workloadInfoWatcher) handleInterceptSnapshot(ctx context.Context, iis map[string]*rpc.InterceptInfo) {
+func (wf *workloadInfoWatcher) handleInterceptSnapshot(ctx context.Context, iis map[string]*Intercept) {
 	oldInterceptInfos := wf.interceptInfos
 	wf.interceptInfos = iis
 	for k, ii := range oldInterceptInfos {
@@ -324,7 +324,7 @@ func (wf *workloadInfoWatcher) handleInterceptSnapshot(ctx context.Context, iis 
 			}
 		}
 	}
-	ipc := make(map[string][]*rpc.InterceptInfo)
+	ipc := make(map[string][]*Intercept)
 	for _, ii := range wf.interceptInfos {
 		name := ii.Spec.Agent
 		if ii.Disposition == rpc.InterceptDispositionType_ACTIVE {

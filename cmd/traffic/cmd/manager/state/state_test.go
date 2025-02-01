@@ -30,12 +30,11 @@ func (s *suiteState) SetupTest() {
 	s.ctx = dlog.NewTestContext(s.T(), false)
 	s.state = &state{
 		backgroundCtx:    s.ctx,
-		intercepts:       watchable.NewMap[string, *manager.InterceptInfo](interceptEqual, time.Millisecond),
+		intercepts:       watchable.NewMap[string, *Intercept](interceptEqual, time.Millisecond),
 		agents:           watchable.NewMap[string, *manager.AgentInfo](agentsEqual, time.Millisecond),
 		clients:          xsync.NewMapOf[string, *manager.ClientInfo](),
 		workloadWatchers: xsync.NewMapOf[string, workload.Watcher](),
 		sessions:         xsync.NewMapOf[string, SessionState](),
-		interceptStates:  xsync.NewMapOf[string, *interceptState](),
 		timedLogLevel:    log.NewTimedLevel("debug", log.SetLevel),
 		llSubs:           newLoglevelSubscribers(),
 	}

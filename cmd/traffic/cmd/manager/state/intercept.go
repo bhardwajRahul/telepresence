@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -211,7 +210,7 @@ func (s *state) preparePorts(ac *agentconfig.Sidecar, cn *agentconfig.Container,
 	}
 
 	// Validate that there's no port conflict with other intercepts using the same agent.
-	otherIcs := s.intercepts.LoadMatching(func(s string, info *rpc.InterceptInfo) bool {
+	otherIcs := s.intercepts.LoadMatching(func(s string, info *Intercept) bool {
 		return info.Disposition == rpc.InterceptDispositionType_ACTIVE && info.Spec.Agent == ac.AgentName && info.Spec.Namespace == ac.Namespace
 	})
 
@@ -273,7 +272,7 @@ func (s *state) AddIntercept(ctx context.Context, cir *rpc.CreateInterceptReques
 		return nil, nil, err
 	}
 
-	ret, is, err := s.addIntercept(interceptID, cir)
+	is, err := s.addIntercept(interceptID, cir)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -306,16 +305,14 @@ func (s *state) AddIntercept(ctx context.Context, cir *rpc.CreateInterceptReques
 		pmSpec.Client = fmt.Sprintf("child %s %s %s", pm, spec.Name, spec.Client)
 
 		pmInterceptID := fmt.Sprintf("%s:%s", sessionID, pmSpec.Name)
-		_, _, err = s.addIntercept(pmInterceptID, pmCir)
+		_, err = s.addIntercept(pmInterceptID, pmCir)
 		if err != nil {
 			return nil, nil, err
 		}
 
 		// Add finalizer to the interceptState of the parent intercept.
 		is.addFinalizer(func(_ context.Context, _ *rpc.InterceptInfo) error {
-			if _, loaded := s.intercepts.LoadAndDelete(pmInterceptID); loaded {
-				s.interceptStates.Delete(pmInterceptID)
-			}
+			s.intercepts.LoadAndDelete(pmInterceptID)
 			return nil
 		})
 	}
@@ -323,53 +320,52 @@ func (s *state) AddIntercept(ctx context.Context, cir *rpc.CreateInterceptReques
 	if err != nil {
 		dlog.Errorf(ctx, "Failed to add finalizer for %s: %v", interceptID, err)
 	}
-	return client, ret, nil
+	return client, is.InterceptInfo, nil
 }
 
 func IsChildIntercept(spec *rpc.InterceptSpec) bool {
 	return strings.HasPrefix(spec.Client, "child ")
 }
 
-func (s *state) addIntercept(id string, cir *rpc.CreateInterceptRequest) (*rpc.InterceptInfo, *interceptState, error) {
-	cept := s.self.NewInterceptInfo(id, cir)
+func (s *state) addIntercept(id string, cir *rpc.CreateInterceptRequest) (*Intercept, error) {
+	is := s.self.NewInterceptInfo(id, cir)
 
 	// Wrap each potential-state-change in a
 	//
 	//     if cept.Disposition == rpc.InterceptDispositionType_WAITING { … }
 	//
 	// so that we don't need to worry about different state-changes stomping on each-other.
-	if cept.Disposition == rpc.InterceptDispositionType_WAITING {
-		if errCode, errMsg := s.checkAgentsForIntercept(cept); errCode != 0 {
-			cept.Disposition = errCode
-			cept.Message = errMsg
+	if is.Disposition == rpc.InterceptDispositionType_WAITING {
+		if errCode, errMsg := s.checkAgentsForIntercept(is); errCode != 0 {
+			is.Disposition = errCode
+			is.Message = errMsg
 		}
 	}
 
-	if existingValue, hasConflict := s.intercepts.LoadOrStore(id, cept); hasConflict {
+	if existingValue, hasConflict := s.intercepts.LoadOrStore(id, is); hasConflict {
 		if existingValue.Disposition != rpc.InterceptDispositionType_REMOVED {
-			return nil, nil, status.Errorf(codes.AlreadyExists, "Intercept named %q already exists", cept.Spec.Name)
+			return nil, status.Errorf(codes.AlreadyExists, "Intercept named %q already exists", is.Spec.Name)
 		}
-		s.intercepts.Store(id, cept)
+		s.intercepts.Store(id, is)
 	}
-
-	is := newInterceptState(id)
-	s.interceptStates.Store(id, is)
-	return cept, is, nil
+	return is, nil
 }
 
-func (s *state) NewInterceptInfo(interceptID string, ciReq *rpc.CreateInterceptRequest) *rpc.InterceptInfo {
-	return &rpc.InterceptInfo{
-		Spec:          ciReq.InterceptSpec,
-		Disposition:   rpc.InterceptDispositionType_WAITING,
-		Message:       "Waiting for Agent approval",
-		Id:            interceptID,
-		ClientSession: ciReq.Session,
-		ModifiedAt:    timestamppb.Now(),
+func (s *state) NewInterceptInfo(interceptID string, ciReq *rpc.CreateInterceptRequest) *Intercept {
+	return &Intercept{
+		InterceptInfo: &rpc.InterceptInfo{
+			Spec:          ciReq.InterceptSpec,
+			Disposition:   rpc.InterceptDispositionType_WAITING,
+			Message:       "Waiting for Agent approval",
+			Id:            interceptID,
+			ClientSession: ciReq.Session,
+			ModifiedAt:    timestamppb.Now(),
+		},
 	}
 }
 
 func (s *state) AddInterceptFinalizer(interceptID string, finalizer InterceptFinalizer) error {
-	is, ok := s.interceptStates.Load(interceptID)
+	is, ok := s.intercepts.Load(interceptID)
 	if !ok {
 		return status.Errorf(codes.NotFound, "no such intercept %s", interceptID)
 	}
@@ -380,7 +376,7 @@ func (s *state) AddInterceptFinalizer(interceptID string, finalizer InterceptFin
 // getAgentsInterceptedByClient returns the session IDs for each agent that are currently
 // intercepted by the client with the given client session ID.
 func (s *state) getAgentsInterceptedByClient(clientSessionID string) map[string]*rpc.AgentInfo {
-	intercepts := s.intercepts.LoadMatching(func(_ string, ii *rpc.InterceptInfo) bool {
+	intercepts := s.intercepts.LoadMatching(func(_ string, ii *Intercept) bool {
 		return ii.ClientSession.SessionId == clientSessionID
 	})
 	if len(intercepts) == 0 {
@@ -955,38 +951,4 @@ func findContainerIntercept(ac *agentconfig.Sidecar, cn *agentconfig.Container, 
 		}
 	}
 	return nil, errcat.User.Newf("%s %s.%s has no container port matching %s", ac.WorkloadKind, ac.WorkloadName, ac.Namespace, pi)
-}
-
-type InterceptFinalizer func(ctx context.Context, interceptInfo *rpc.InterceptInfo) error
-
-type interceptState struct {
-	sync.Mutex
-	lastInfoCh  chan *rpc.InterceptInfo
-	finalizers  []InterceptFinalizer
-	interceptID string
-}
-
-func newInterceptState(interceptID string) *interceptState {
-	is := &interceptState{
-		lastInfoCh:  make(chan *rpc.InterceptInfo),
-		interceptID: interceptID,
-	}
-	return is
-}
-
-func (is *interceptState) addFinalizer(finalizer InterceptFinalizer) {
-	is.Lock()
-	defer is.Unlock()
-	is.finalizers = append(is.finalizers, finalizer)
-}
-
-func (is *interceptState) terminate(ctx context.Context, interceptInfo *rpc.InterceptInfo) {
-	is.Lock()
-	defer is.Unlock()
-	for i := len(is.finalizers) - 1; i >= 0; i-- {
-		f := is.finalizers[i]
-		if err := f(ctx, interceptInfo); err != nil {
-			dlog.Errorf(ctx, "finalizer for intercept %s failed: %v", interceptInfo.Id, err)
-		}
-	}
 }

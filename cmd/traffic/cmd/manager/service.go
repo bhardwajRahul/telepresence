@@ -296,7 +296,7 @@ func (s *service) WatchAgentPods(session *rpc.SessionInfo, stream rpc.Manager_Wa
 	agentsCh := s.state.WatchAgents(ctx, func(_ string, info *rpc.AgentInfo) bool {
 		return info.Namespace == ns
 	})
-	interceptsCh := s.state.WatchIntercepts(ctx, func(_ string, info *rpc.InterceptInfo) bool {
+	interceptsCh := s.state.WatchIntercepts(ctx, func(_ string, info *state.Intercept) bool {
 		return info.ClientSession.SessionId == clientSession
 	})
 	sessionDone, err := s.state.SessionDone(clientSession)
@@ -304,7 +304,7 @@ func (s *service) WatchAgentPods(session *rpc.SessionInfo, stream rpc.Manager_Wa
 		return err
 	}
 
-	var interceptInfos map[string]*rpc.InterceptInfo
+	var interceptInfos map[string]*state.Intercept
 	isIntercepted := func(name, namespace string) bool {
 		for _, ii := range interceptInfos {
 			if name == ii.Spec.Agent && namespace == ii.Spec.Namespace {
@@ -471,9 +471,9 @@ func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_W
 	dlog.Debug(ctx, "WatchIntercepts called")
 
 	var sessionDone <-chan struct{}
-	var filter func(id string, info *rpc.InterceptInfo) bool
+	var filter func(id string, info *state.Intercept) bool
 	if sessionID == "" {
-		filter = func(id string, info *rpc.InterceptInfo) bool {
+		filter = func(id string, info *state.Intercept) bool {
 			return info.Disposition != rpc.InterceptDispositionType_REMOVED && !state.IsChildIntercept(info.Spec)
 		}
 	} else {
@@ -483,7 +483,7 @@ func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_W
 		}
 
 		if agent := s.state.GetAgent(sessionID); agent != nil {
-			filter = func(id string, info *rpc.InterceptInfo) bool {
+			filter = func(id string, info *state.Intercept) bool {
 				if info.Spec.Namespace != agent.Namespace || info.Spec.Agent != agent.Name {
 					// Don't return intercepts for different agents.
 					return false
@@ -509,7 +509,7 @@ func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_W
 			}
 		} else {
 			// sessionID refers to a client session.
-			filter = func(id string, info *rpc.InterceptInfo) bool {
+			filter = func(id string, info *state.Intercept) bool {
 				return info.ClientSession.SessionId == sessionID &&
 					info.Disposition != rpc.InterceptDispositionType_REMOVED &&
 					!state.IsChildIntercept(info.Spec)
@@ -532,7 +532,7 @@ func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_W
 			dlog.Tracef(ctx, "WatchIntercepts sending update")
 			intercepts := make([]*rpc.InterceptInfo, 0, len(snapshot))
 			for _, intercept := range snapshot {
-				intercepts = append(intercepts, intercept)
+				intercepts = append(intercepts, intercept.InterceptInfo)
 			}
 			resp := &rpc.InterceptInfoSnapshot{
 				Intercepts: intercepts,
@@ -669,7 +669,7 @@ func (s *service) GetIntercept(ctx context.Context, request *rpc.GetInterceptReq
 		return nil, err
 	}
 	if intercept, ok := s.state.GetIntercept(interceptID); ok {
-		return intercept, nil
+		return intercept.InterceptInfo, nil
 	} else {
 		return nil, status.Errorf(codes.NotFound, "Intercept named %q not found", request.Name)
 	}
@@ -694,7 +694,7 @@ func (s *service) ReviewIntercept(ctx context.Context, rIReq *rpc.ReviewIntercep
 
 	s.removeExcludedEnvVars(rIReq.Environment)
 
-	intercept := s.state.UpdateIntercept(ceptID, func(intercept *rpc.InterceptInfo) {
+	intercept := s.state.UpdateIntercept(ceptID, func(intercept *state.Intercept) {
 		// Sanity check: The reviewing agent must be an agent for the intercept.
 		if intercept.Spec.Namespace != agent.Namespace || intercept.Spec.Agent != agent.Name {
 			return

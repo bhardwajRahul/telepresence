@@ -19,6 +19,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/datawire/dlib/dlog"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/manager"
@@ -33,6 +34,33 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
 	"github.com/telepresenceio/telepresence/v2/pkg/workload"
 )
+
+type InterceptFinalizer func(ctx context.Context, interceptInfo *rpc.InterceptInfo) error
+
+type Intercept struct {
+	*rpc.InterceptInfo
+	finalizers []InterceptFinalizer
+}
+
+func (is *Intercept) Clone() *Intercept {
+	return &Intercept{
+		InterceptInfo: proto.Clone(is.InterceptInfo).(*rpc.InterceptInfo),
+		finalizers:    slices.Clone(is.finalizers),
+	}
+}
+
+func (is *Intercept) addFinalizer(finalizer InterceptFinalizer) {
+	is.finalizers = append(is.finalizers, finalizer)
+}
+
+func (is *Intercept) terminate(ctx context.Context) {
+	for i := len(is.finalizers) - 1; i >= 0; i-- {
+		f := is.finalizers[i]
+		if err := f(ctx, is.InterceptInfo); err != nil {
+			dlog.Errorf(ctx, "finalizer for intercept %s failed: %v", is.Id, err)
+		}
+	}
+}
 
 type State interface {
 	AddAgent(context.Context, *rpc.AgentInfo, time.Time) (string, error)
@@ -56,21 +84,18 @@ type State interface {
 	GetSession(string) SessionState
 	GetSessionConsumptionMetrics(string) *SessionConsumptionMetrics
 	GetAllSessionConsumptionMetrics() map[string]*SessionConsumptionMetrics
-	GetIntercept(string) (*rpc.InterceptInfo, bool)
+	GetIntercept(string) (*Intercept, bool)
 	GetConnectCounter() *prometheus.CounterVec
 	GetConnectActiveStatus() *prometheus.GaugeVec
 	GetInterceptCounter() *prometheus.CounterVec
 	GetInterceptActiveStatus() *prometheus.GaugeVec
 	HasAgent(name, namespace string) bool
 	MarkSession(*rpc.RemainRequest, time.Time) bool
-	NewInterceptInfo(string, *rpc.CreateInterceptRequest) *rpc.InterceptInfo
+	NewInterceptInfo(string, *rpc.CreateInterceptRequest) *Intercept
 	PostLookupDNSResponse(context.Context, *rpc.DNSAgentResponse)
 	EnsureAgent(context.Context, string, string) ([]*rpc.AgentInfo, error)
 	PrepareIntercept(context.Context, *rpc.CreateInterceptRequest) (*rpc.PreparedIntercept, error)
 	RemoveIntercept(context.Context, string)
-	DropIntercept(string)
-	FinalizeIntercept(ctx context.Context, intercept *rpc.InterceptInfo)
-	LoadMatchingIntercepts(filter func(string, *rpc.InterceptInfo) bool) map[string]*rpc.InterceptInfo
 	RemoveSession(context.Context, string)
 	SessionDone(string) (<-chan struct{}, error)
 	SetTempLogLevel(context.Context, *rpc.LogLevelRequest)
@@ -81,13 +106,13 @@ type State interface {
 		interceptCounterVec *prometheus.CounterVec,
 		interceptStatusGaugeVec *prometheus.GaugeVec)
 	Tunnel(context.Context, tunnel.Stream) error
-	UpdateIntercept(string, func(*rpc.InterceptInfo)) *rpc.InterceptInfo
+	UpdateIntercept(string, func(*Intercept)) *Intercept
 	RefreshSessionConsumptionMetrics(sessionID string)
 	ValidateAgentImage(string, bool) error
 	WaitForTempLogLevel(rpc.Manager_WatchLogLevelServer) error
 	WatchAgents(context.Context, func(sessionID string, agent *rpc.AgentInfo) bool) <-chan map[string]*rpc.AgentInfo
 	WatchDial(sessionID string) <-chan *rpc.DialRequest
-	WatchIntercepts(context.Context, func(sessionID string, intercept *rpc.InterceptInfo) bool) <-chan map[string]*rpc.InterceptInfo
+	WatchIntercepts(context.Context, func(sessionID string, intercept *Intercept) bool) <-chan map[string]*Intercept
 	WatchWorkloads(ctx context.Context, namespace string) (ch <-chan []workload.Event, err error)
 	WatchLookupDNS(string) <-chan *rpc.DNSRequest
 	ValidateCreateAgent(context.Context, k8sapi.Workload, agentconfig.SidecarExt) error
@@ -124,11 +149,10 @@ type state struct {
 	//  7. `cfgMapLocks` access must be concurrency protected
 	//  8. `cachedAgentImage` access must be concurrency protected
 	//  9. `interceptState` must be concurrency protected and updated/deleted in sync with intercepts
-	intercepts                 *watchable.Map[string, *rpc.InterceptInfo] // info for intercepts, keyed by intercept id
-	agents                     *watchable.Map[string, *rpc.AgentInfo]     // info for agent sessions, keyed by session id
-	clients                    *xsync.MapOf[string, *rpc.ClientInfo]      // info for client sessions, keyed by session id
-	sessions                   *xsync.MapOf[string, SessionState]         // info for all sessions, keyed by session id
-	interceptStates            *xsync.MapOf[string, *interceptState]
+	intercepts                 *watchable.Map[string, *Intercept]     // info for intercepts, keyed by intercept id
+	agents                     *watchable.Map[string, *rpc.AgentInfo] // info for agent sessions, keyed by session id
+	clients                    *xsync.MapOf[string, *rpc.ClientInfo]  // info for client sessions, keyed by session id
+	sessions                   *xsync.MapOf[string, SessionState]     // info for all sessions, keyed by session id
 	timedLogLevel              log.TimedLevel
 	llSubs                     *loglevelSubscribers
 	workloadWatchers           *xsync.MapOf[string, workload.Watcher] // workload watchers, created on demand and keyed by namespace
@@ -150,8 +174,8 @@ func (s *state) ManagesNamespace(ctx context.Context, ns string) bool {
 
 var NewStateFunc = NewState //nolint:gochecknoglobals // extension point
 
-func interceptEqual(a, b *rpc.InterceptInfo) bool {
-	return proto.Equal(a, b)
+func interceptEqual(a, b *Intercept) bool {
+	return proto.Equal(a.InterceptInfo, b.InterceptInfo)
 }
 
 func agentsEqual(a, b *rpc.AgentInfo) bool {
@@ -162,11 +186,10 @@ func NewState(ctx context.Context) State {
 	loglevel := os.Getenv("LOG_LEVEL")
 	s := &state{
 		backgroundCtx:    ctx,
-		intercepts:       watchable.NewMap[string, *rpc.InterceptInfo](interceptEqual, time.Millisecond),
+		intercepts:       watchable.NewMap[string, *Intercept](interceptEqual, time.Millisecond),
 		agents:           watchable.NewMap[string, *rpc.AgentInfo](agentsEqual, time.Millisecond),
 		clients:          xsync.NewMapOf[string, *rpc.ClientInfo](),
 		sessions:         xsync.NewMapOf[string, SessionState](),
-		interceptStates:  xsync.NewMapOf[string, *interceptState](),
 		workloadWatchers: xsync.NewMapOf[string, workload.Watcher](),
 		timedLogLevel:    log.NewTimedLevel(loglevel, log.SetLevel),
 		llSubs:           newLoglevelSubscribers(),
@@ -213,7 +236,7 @@ func (s *state) SetSelf(self State) {
 // status of all agents that would be relevant to the given intercept spec, and returns whether the
 // state of those agents would require transitioning to an error state.  If everything looks good,
 // it returns the zero error code (InterceptDispositionType_UNSPECIFIED).
-func (s *state) checkAgentsForIntercept(intercept *rpc.InterceptInfo) (errCode rpc.InterceptDispositionType, errMsg string) {
+func (s *state) checkAgentsForIntercept(intercept *Intercept) (errCode rpc.InterceptDispositionType, errMsg string) {
 	// Don't overwrite an existing error state
 	switch intercept.Disposition {
 	// non-error states ////////////////////////////////////////////////////
@@ -316,7 +339,7 @@ func (s *state) RemoveSession(ctx context.Context, sessionID string) {
 func (s *state) consolidateAgentSessionIntercepts(ctx context.Context, agent *rpc.AgentInfo) {
 	dlog.Debugf(ctx, "Consolidating intercepts after removal of agent %s(%s)", agent.PodName, agent.PodIp)
 	mutator.GetMap(s.backgroundCtx).Inactivate(types.UID(agent.PodUid))
-	s.intercepts.Range(func(interceptID string, intercept *rpc.InterceptInfo) bool {
+	s.intercepts.Range(func(interceptID string, intercept *Intercept) bool {
 		if intercept.Disposition == rpc.InterceptDispositionType_REMOVED || agent.PodIp != intercept.PodIp {
 			// Not of interest. Continue iteration.
 			return true
@@ -325,14 +348,14 @@ func (s *state) consolidateAgentSessionIntercepts(ctx context.Context, agent *rp
 		if errCode, errMsg := s.checkAgentsForIntercept(intercept); errCode != rpc.InterceptDispositionType_UNSPECIFIED {
 			// No agents matching this intercept are available, so the intercept is now dormant or in error.
 			dlog.Debugf(ctx, "Intercept %q no longer has available agents. Setting it disposition to %s", interceptID, errCode)
-			s.UpdateIntercept(interceptID, func(intercept *rpc.InterceptInfo) {
+			s.UpdateIntercept(interceptID, func(intercept *Intercept) {
 				intercept.Disposition = errCode
 				intercept.Message = errMsg
 			})
 		} else {
 			// The agent is about to die, but apparently more agents are present. Let some other agent pick it up then.
 			dlog.Debugf(ctx, "Intercept %q lost its agent pod %s(%s). Setting it disposition to WAITING", interceptID, agent.PodName, agent.PodIp)
-			s.UpdateIntercept(interceptID, func(intercept *rpc.InterceptInfo) {
+			s.UpdateIntercept(interceptID, func(intercept *Intercept) {
 				intercept.PodIp = ""
 				intercept.PodName = ""
 				intercept.Disposition = rpc.InterceptDispositionType_WAITING
@@ -345,7 +368,7 @@ func (s *state) consolidateAgentSessionIntercepts(ctx context.Context, agent *rp
 
 func (s *state) gcClientSessionIntercepts(ctx context.Context, sessionID string, client *rpc.ClientInfo) {
 	// GC all intercepts for the client session (intercept.ClientSession.SessionId)
-	s.intercepts.Range(func(interceptID string, intercept *rpc.InterceptInfo) bool {
+	s.intercepts.Range(func(interceptID string, intercept *Intercept) bool {
 		if intercept.Disposition == rpc.InterceptDispositionType_REMOVED {
 			return true
 		}
@@ -456,7 +479,7 @@ func (s *state) AddAgent(ctx context.Context, agent *rpc.AgentInfo, now time.Tim
 	}
 
 	s.sessions.Store(sessionID, newAgentSessionState(s.backgroundCtx, now))
-	s.intercepts.Range(func(interceptID string, intercept *rpc.InterceptInfo) bool {
+	s.intercepts.Range(func(interceptID string, intercept *Intercept) bool {
 		if intercept.Disposition == rpc.InterceptDispositionType_REMOVED {
 			return true
 		}
@@ -464,12 +487,12 @@ func (s *state) AddAgent(ctx context.Context, agent *rpc.AgentInfo, now time.Tim
 		// because this agent made things inconsistent, or (2) be moved out of a NO_AGENT
 		// state because it just gained an agent.
 		if errCode, errMsg := s.checkAgentsForIntercept(intercept); errCode != 0 {
-			s.UpdateIntercept(interceptID, func(intercept *rpc.InterceptInfo) {
+			s.UpdateIntercept(interceptID, func(intercept *Intercept) {
 				intercept.Disposition = errCode
 				intercept.Message = errMsg
 			})
 		} else if intercept.Disposition == rpc.InterceptDispositionType_NO_AGENT {
-			s.UpdateIntercept(interceptID, func(intercept *rpc.InterceptInfo) {
+			s.UpdateIntercept(interceptID, func(intercept *Intercept) {
 				intercept.Disposition = rpc.InterceptDispositionType_WAITING
 				intercept.Message = ""
 			})
@@ -553,15 +576,15 @@ func (s *state) getAgentsInNamespace(namespace string) map[string]*rpc.AgentInfo
 // This does not lock; but instead uses CAS and may therefore call the mutator function multiple
 // times.  So: it is safe to perform blocking operations in your mutator function, but you must take
 // care that it is safe to call your mutator function multiple times.
-func (s *state) UpdateIntercept(interceptID string, apply func(*rpc.InterceptInfo)) *rpc.InterceptInfo {
+func (s *state) UpdateIntercept(interceptID string, apply func(*Intercept)) *Intercept {
 	for {
 		cur, ok := s.intercepts.Load(interceptID)
-		if !ok || cur == nil {
+		if !ok {
 			// Doesn't exist (possibly was deleted while this loop was running).
 			return nil
 		}
 
-		newInfo := proto.Clone(cur).(*rpc.InterceptInfo)
+		newInfo := cur.Clone()
 		apply(newInfo)
 		newInfo.ModifiedAt = timestamppb.Now()
 
@@ -574,23 +597,9 @@ func (s *state) UpdateIntercept(interceptID string, apply func(*rpc.InterceptInf
 }
 
 func (s *state) RemoveIntercept(ctx context.Context, interceptID string) {
-	if intercept, ok := s.intercepts.LoadAndDelete(interceptID); ok {
-		s.FinalizeIntercept(ctx, intercept)
+	if is, ok := s.intercepts.LoadAndDelete(interceptID); ok {
+		is.terminate(s.backgroundCtx)
 	}
-}
-
-// FinalizeIntercept calls all the finalizers for the intercept and removes its state. The intercept
-// is not removed from the subscription list.
-func (s *state) FinalizeIntercept(_ context.Context, intercept *rpc.InterceptInfo) {
-	if is, ok := s.interceptStates.LoadAndDelete(intercept.Id); ok {
-		is.terminate(s.backgroundCtx, intercept)
-	}
-}
-
-// DropIntercept stops tracking intercept with the given ID. It's assume that has been finalized prior to
-// this call.
-func (s *state) DropIntercept(interceptID string) {
-	s.intercepts.Delete(interceptID)
 }
 
 func (s *state) UninstallAgents(ctx context.Context, ur *rpc.UninstallAgentsRequest) error {
@@ -627,18 +636,14 @@ func (s *state) UninstallAgents(ctx context.Context, ur *rpc.UninstallAgentsRequ
 	return nil
 }
 
-func (s *state) LoadMatchingIntercepts(filter func(string, *rpc.InterceptInfo) bool) map[string]*rpc.InterceptInfo {
-	return s.intercepts.LoadMatching(filter)
-}
-
-func (s *state) GetIntercept(interceptID string) (*rpc.InterceptInfo, bool) {
+func (s *state) GetIntercept(interceptID string) (*Intercept, bool) {
 	return s.intercepts.Load(interceptID)
 }
 
 func (s *state) WatchIntercepts(
 	ctx context.Context,
-	filter func(sessionID string, intercept *rpc.InterceptInfo) bool,
-) <-chan map[string]*rpc.InterceptInfo {
+	filter func(sessionID string, intercept *Intercept) bool,
+) <-chan map[string]*Intercept {
 	return s.intercepts.Subscribe(ctx.Done(), filter)
 }
 
