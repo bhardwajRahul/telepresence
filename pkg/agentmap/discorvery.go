@@ -23,10 +23,8 @@ import (
 
 var ReplicaSetNameRx = regexp.MustCompile(`\A(.+)-[a-f0-9]+\z`)
 
-type WorkloadNotFoundError string
-
-func (e WorkloadNotFoundError) Error() string {
-	return string(e)
+type WorkloadOwnerNotFoundError struct {
+	*k8sErrors.StatusError
 }
 
 func FindOwnerWorkload(ctx context.Context, obj k8sapi.Object, supportedWorkloadKinds k8sapi.Kinds) (k8sapi.Workload, error) {
@@ -69,7 +67,8 @@ func FindOwnerWorkload(ctx context.Context, obj k8sapi.Object, supportedWorkload
 	if wl, ok := obj.(k8sapi.Workload); ok {
 		return wl, nil
 	}
-	return nil, WorkloadNotFoundError(fmt.Sprintf("unable to find workload owner for %s.%s", obj.GetName(), obj.GetNamespace()))
+	return nil, &WorkloadOwnerNotFoundError{StatusError: k8sErrors.NewNotFound(
+		obj.GetGroupResource(), fmt.Sprintf("%s.%s", obj.GetName(), obj.GetNamespace()))}
 }
 
 func GetWorkload(ctx context.Context, name, namespace string, workloadKind k8sapi.Kind) (obj k8sapi.Workload, err error) {

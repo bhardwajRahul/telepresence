@@ -7,6 +7,7 @@ import (
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	typedCore "k8s.io/client-go/kubernetes/typed/core/v1"
 )
@@ -21,6 +22,7 @@ type Object interface {
 	Selector() (labels.Selector, error)
 	Update(context.Context) error
 	Patch(context.Context, types.PatchType, []byte, ...string) error
+	GetGroupResource() schema.GroupResource
 }
 
 func GetService(c context.Context, name, namespace string) (Object, error) {
@@ -105,6 +107,13 @@ func (o *service) ki(c context.Context) typedCore.ServiceInterface {
 	return services(c, o.Namespace)
 }
 
+func (o *service) GetGroupResource() schema.GroupResource {
+	return schema.GroupResource{
+		Group:    o.TypeMeta.GroupVersionKind().Group,
+		Resource: "services",
+	}
+}
+
 func (o *service) GetKind() Kind {
 	return ServiceKind
 }
@@ -154,6 +163,13 @@ func pods(c context.Context, namespace string) typedCore.PodInterface {
 
 func (o *pod) ki(c context.Context) typedCore.PodInterface {
 	return pods(c, o.Namespace)
+}
+
+func (o *pod) GetGroupResource() schema.GroupResource {
+	return schema.GroupResource{
+		Group:    o.TypeMeta.GroupVersionKind().Group,
+		Resource: "pods",
+	}
 }
 
 func (o *pod) GetKind() Kind {

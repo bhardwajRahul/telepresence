@@ -2,7 +2,6 @@ package mutator
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -14,6 +13,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 	core "k8s.io/api/core/v1"
 	v1 "k8s.io/api/policy/v1"
+	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
@@ -658,8 +658,7 @@ func podList(ctx context.Context, kind k8sapi.Kind, name, namespace string) ([]*
 		}
 		wl, err := agentmap.FindOwnerWorkload(ctx, k8sapi.Pod(pod), enabledWorkloads)
 		if err != nil {
-			var ew agentmap.WorkloadNotFoundError
-			if !errors.As(err, &ew) {
+			if !k8sErrors.IsNotFound(err) {
 				return nil, err
 			}
 		} else if (kind == "" || wl.GetKind() == kind) && (name == "" || wl.GetName() == name) {

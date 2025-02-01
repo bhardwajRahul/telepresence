@@ -11,6 +11,7 @@ import (
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	typedApps "k8s.io/client-go/kubernetes/typed/apps/v1"
 
@@ -243,6 +244,13 @@ func (o *deployment) ki(c context.Context) typedApps.DeploymentInterface {
 	return deployments(c, o.Namespace)
 }
 
+func (o *deployment) GetGroupResource() schema.GroupResource {
+	return schema.GroupResource{
+		Group:    o.TypeMeta.GroupVersionKind().Group,
+		Resource: "deployments",
+	}
+}
+
 func (o *deployment) GetKind() Kind {
 	return DeploymentKind
 }
@@ -312,6 +320,13 @@ func (o *rollout) ki(c context.Context) typedArgoRollouts.RolloutInterface {
 	return rollouts(c, o.Namespace)
 }
 
+func (o *rollout) GetGroupResource() schema.GroupResource {
+	return schema.GroupResource{
+		Group:    o.TypeMeta.GroupVersionKind().Group,
+		Resource: "rollouts",
+	}
+}
+
 func (o *rollout) GetKind() Kind {
 	return RolloutKind
 }
@@ -377,6 +392,13 @@ func (o *replicaSet) ki(c context.Context) typedApps.ReplicaSetInterface {
 	return replicaSets(c, o.Namespace)
 }
 
+func (o *replicaSet) GetGroupResource() schema.GroupResource {
+	return schema.GroupResource{
+		Group:    o.TypeMeta.GroupVersionKind().Group,
+		Resource: "replicasets",
+	}
+}
+
 func (o *replicaSet) GetKind() Kind {
 	return ReplicaSetKind
 }
@@ -440,6 +462,13 @@ func statefulSets(c context.Context, namespace string) typedApps.StatefulSetInte
 
 func (o *statefulSet) ki(c context.Context) typedApps.StatefulSetInterface {
 	return statefulSets(c, o.Namespace)
+}
+
+func (o *statefulSet) GetGroupResource() schema.GroupResource {
+	return schema.GroupResource{
+		Group:    o.TypeMeta.GroupVersionKind().Group,
+		Resource: "statefulsets",
+	}
 }
 
 func (o *statefulSet) GetKind() Kind {
