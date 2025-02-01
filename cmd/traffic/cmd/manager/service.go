@@ -574,16 +574,7 @@ func (s *service) GetKnownWorkloadKinds(ctx context.Context, request *rpc.Sessio
 	enabledWorkloadKinds := managerutil.GetEnv(ctx).EnabledWorkloadKinds
 	kinds := make([]rpc.WorkloadInfo_Kind, len(enabledWorkloadKinds))
 	for i, wlKind := range enabledWorkloadKinds {
-		switch wlKind {
-		case workload.DeploymentKind:
-			kinds[i] = rpc.WorkloadInfo_DEPLOYMENT
-		case workload.ReplicaSetKind:
-			kinds[i] = rpc.WorkloadInfo_REPLICASET
-		case workload.StatefulSetKind:
-			kinds[i] = rpc.WorkloadInfo_STATEFULSET
-		case workload.RolloutKind:
-			kinds[i] = rpc.WorkloadInfo_ROLLOUT
-		}
+		kinds[i] = workload.RpcKind(wlKind)
 	}
 	return &rpc.KnownWorkloadKinds{Kinds: kinds}, nil
 }

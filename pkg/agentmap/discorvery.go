@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"slices"
 	"sort"
 
 	core "k8s.io/api/core/v1"
@@ -24,28 +23,34 @@ import (
 
 var ReplicaSetNameRx = regexp.MustCompile(`\A(.+)-[a-f0-9]+\z`)
 
-func FindOwnerWorkload(ctx context.Context, obj k8sapi.Object, supportedWorkloadKinds []string) (k8sapi.Workload, error) {
+func FindOwnerWorkload(ctx context.Context, obj k8sapi.Object, supportedWorkloadKinds k8sapi.Kinds) (k8sapi.Workload, error) {
 	dlog.Tracef(ctx, "FindOwnerWorkload(%s,%s,%s)", obj.GetName(), obj.GetNamespace(), obj.GetKind())
 	lbs := obj.GetLabels()
 	if wlName, ok := lbs[agentconfig.WorkloadNameLabel]; ok {
-		return GetWorkload(ctx, wlName, obj.GetNamespace(), lbs[agentconfig.WorkloadKindLabel])
+		kind, ok := lbs[agentconfig.WorkloadKindLabel]
+		if ok && !supportedWorkloadKinds.Contains(k8sapi.Kind(kind)) {
+			return nil, fmt.Errorf("unable to find %s owner for %s.%s (annotation controlled)",
+				kind, obj.GetName(), obj.GetNamespace())
+		}
+		return GetWorkload(ctx, wlName, obj.GetNamespace(), k8sapi.Kind(kind))
 	}
 	refs := obj.GetOwnerReferences()
 	ns := obj.GetNamespace()
 	for i := range refs {
 		if or := &refs[i]; or.Controller != nil && *or.Controller {
-			if or.Kind == "ReplicaSet" {
+			kind := k8sapi.Kind(or.Kind)
+			if kind == k8sapi.ReplicaSetKind && supportedWorkloadKinds.Contains(k8sapi.DeploymentKind) {
 				// Try the common case first. Strip replicaset's generated hash and try to
 				// get the deployment. If this succeeds, we have saved us a replicaset
 				// lookup.
 				if m := ReplicaSetNameRx.FindStringSubmatch(or.Name); m != nil {
-					if wl, err := GetWorkload(ctx, m[1], ns, "Deployment"); err == nil {
+					if wl, err := GetWorkload(ctx, m[1], ns, k8sapi.DeploymentKind); err == nil {
 						return wl, nil
 					}
 				}
 			}
-			if slices.Contains(supportedWorkloadKinds, or.Kind) {
-				wl, err := GetWorkload(ctx, or.Name, ns, or.Kind)
+			if supportedWorkloadKinds.Contains(kind) {
+				wl, err := GetWorkload(ctx, or.Name, ns, kind)
 				if err != nil {
 					return nil, err
 				}
@@ -61,7 +66,7 @@ func FindOwnerWorkload(ctx context.Context, obj k8sapi.Object, supportedWorkload
 	return nil, fmt.Errorf("unable to find workload owner for %s.%s", obj.GetName(), obj.GetNamespace())
 }
 
-func GetWorkload(ctx context.Context, name, namespace, workloadKind string) (obj k8sapi.Workload, err error) {
+func GetWorkload(ctx context.Context, name, namespace string, workloadKind k8sapi.Kind) (obj k8sapi.Workload, err error) {
 	dlog.Tracef(ctx, "GetWorkload(%s,%s,%s)", name, namespace, workloadKind)
 	i := informer.GetFactory(ctx, namespace)
 	if i == nil {
@@ -72,18 +77,18 @@ func GetWorkload(ctx context.Context, name, namespace, workloadKind string) (obj
 	return getWorkload(ai, ri, name, namespace, workloadKind)
 }
 
-func getWorkload(ai apps.Interface, ri argorollouts.RolloutInformer, name, namespace, workloadKind string) (obj k8sapi.Workload, err error) {
-	switch workloadKind {
-	case "Deployment":
+func getWorkload(ai apps.Interface, ri argorollouts.RolloutInformer, name, namespace string, kind k8sapi.Kind) (obj k8sapi.Workload, err error) {
+	switch kind {
+	case k8sapi.DeploymentKind:
 		return getDeployment(ai, name, namespace)
-	case "ReplicaSet":
+	case k8sapi.ReplicaSetKind:
 		return getReplicaSet(ai, name, namespace)
-	case "StatefulSet":
+	case k8sapi.StatefulSetKind:
 		return getStatefulSet(ai, name, namespace)
-	case "Rollout":
+	case k8sapi.RolloutKind:
 		return getRollout(ri, name, namespace)
 	case "":
-		for _, wk := range []string{"Deployment", "ReplicaSet", "StatefulSet", "Rollout"} {
+		for _, wk := range k8sapi.KnownWorkloadKinds {
 			if obj, err = getWorkload(ai, ri, name, namespace, wk); err == nil {
 				return obj, nil
 			}
@@ -93,7 +98,7 @@ func getWorkload(ai apps.Interface, ri argorollouts.RolloutInformer, name, names
 		}
 		return nil, k8sErrors.NewNotFound(core.Resource("workload"), name+"."+namespace)
 	default:
-		return nil, k8sapi.UnsupportedWorkloadKindError(workloadKind)
+		return nil, k8sapi.UnsupportedWorkloadKindError(kind)
 	}
 }
 

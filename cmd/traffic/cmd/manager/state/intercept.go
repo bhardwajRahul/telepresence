@@ -65,13 +65,37 @@ func (s *state) PrepareIntercept(
 	}
 
 	spec := cr.InterceptSpec
-	wl, err := agentmap.GetWorkload(ctx, spec.Agent, spec.Namespace, spec.WorkloadKind)
-	if err != nil {
-		if k8sErrors.IsNotFound(err) {
-			err = errcat.User.New(err)
+	kind := k8sapi.Kind(spec.WorkloadKind)
+	enabledWorkloadKinds := managerutil.GetEnv(ctx).EnabledWorkloadKinds
+	var wl k8sapi.Workload
+	if kind == "" {
+		for _, ek := range enabledWorkloadKinds {
+			wl, err = agentmap.GetWorkload(ctx, spec.Agent, spec.Namespace, ek)
+			if err == nil {
+				break
+			}
+			if k8sErrors.IsNotFound(err) {
+				continue
+			}
+			dlog.Error(ctx, err)
+			return interceptError(err)
 		}
-		dlog.Error(ctx, err)
-		return interceptError(err)
+		if wl == nil {
+			// unless there are zero enabled workload kinds, err must be set to a not-found error at this point
+			return interceptError(errcat.User.New(k8sErrors.NewNotFound(core.Resource("workload"), spec.Agent+"."+spec.Namespace)))
+		}
+	} else {
+		if !enabledWorkloadKinds.Contains(kind) {
+			return interceptError(errcat.User.Newf("The %s kind is an not enabled workload kind", kind))
+		}
+		wl, err = agentmap.GetWorkload(ctx, spec.Agent, spec.Namespace, kind)
+		if err != nil {
+			if k8sErrors.IsNotFound(err) {
+				err = errcat.User.New(err)
+			}
+			dlog.Error(ctx, err)
+			return interceptError(err)
+		}
 	}
 
 	var rp agentconfig.ReplacePolicy
@@ -89,7 +113,7 @@ func (s *state) PrepareIntercept(
 	pi = &rpc.PreparedIntercept{
 		Namespace:     ac.Namespace,
 		AgentImage:    ac.AgentImage,
-		WorkloadKind:  ac.WorkloadKind,
+		WorkloadKind:  string(ac.WorkloadKind),
 		ContainerName: spec.ContainerName,
 		ServiceName:   spec.ServiceName,
 	}
@@ -230,7 +254,7 @@ func (s *state) AddIntercept(ctx context.Context, cir *rpc.CreateInterceptReques
 	spec := cir.InterceptSpec
 	interceptID := fmt.Sprintf("%s:%s", sessionID, spec.Name)
 
-	wl, err := agentmap.GetWorkload(ctx, spec.Agent, spec.Namespace, spec.WorkloadKind)
+	wl, err := agentmap.GetWorkload(ctx, spec.Agent, spec.Namespace, k8sapi.Kind(spec.WorkloadKind))
 	if err != nil {
 		code := codes.Internal
 		if k8sErrors.IsNotFound(err) {

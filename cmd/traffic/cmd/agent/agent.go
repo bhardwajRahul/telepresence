@@ -327,7 +327,7 @@ func StartServices(ctx context.Context, g *dgroup.Group, config Config, srv Stat
 	return &rpc.AgentInfo{
 		Name:      ac.AgentName,
 		Namespace: ac.Namespace,
-		Kind:      ac.WorkloadKind,
+		Kind:      string(ac.WorkloadKind),
 		PodName:   config.PodName(),
 		PodIp:     config.PodIP(),
 		ApiPort:   int32(grpcPort),

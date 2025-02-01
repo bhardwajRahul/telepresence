@@ -27,7 +27,6 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/v2/pkg/maps"
-	"github.com/telepresenceio/telepresence/v2/pkg/workload"
 )
 
 var podResource = meta.GroupVersionResource{Version: "v1", Group: "", Resource: "pods"} //nolint:gochecknoglobals // constant
@@ -138,21 +137,7 @@ func (a *agentInjector) Inject(ctx context.Context, req *admission.AdmissionRequ
 			return nil, nil
 		}
 
-		enabledWorkloads := managerutil.GetEnv(ctx).EnabledWorkloadKinds
-		supportedKinds := make([]string, len(enabledWorkloads))
-		for i, wlKind := range enabledWorkloads {
-			switch wlKind {
-			case workload.DeploymentKind:
-				supportedKinds[i] = "Deployment"
-			case workload.ReplicaSetKind:
-				supportedKinds[i] = "ReplicaSet"
-			case workload.StatefulSetKind:
-				supportedKinds[i] = "StatefulSet"
-			case workload.RolloutKind:
-				supportedKinds[i] = "Rollout"
-			}
-		}
-		wl, err := agentmap.FindOwnerWorkload(ctx, k8sapi.Pod(pod), supportedKinds)
+		wl, err := agentmap.FindOwnerWorkload(ctx, k8sapi.Pod(pod), env.EnabledWorkloadKinds)
 		if err != nil {
 			uwkError := k8sapi.UnsupportedWorkloadKindError("")
 			switch {
@@ -639,7 +624,7 @@ func addPodLabels(_ context.Context, pod *core.Pod, config agentconfig.SidecarEx
 	}
 	if _, ok := pod.Labels[agentconfig.WorkloadKindLabel]; !ok {
 		changed = true
-		lm[agentconfig.WorkloadKindLabel] = config.AgentConfig().WorkloadKind
+		lm[agentconfig.WorkloadKindLabel] = string(config.AgentConfig().WorkloadKind)
 	}
 	if _, ok := pod.Labels[agentconfig.WorkloadEnabledLabel]; !ok {
 		changed = true

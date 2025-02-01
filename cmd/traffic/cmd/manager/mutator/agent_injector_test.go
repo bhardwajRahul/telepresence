@@ -34,7 +34,6 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/informer"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/v2/pkg/labels"
-	"github.com/telepresenceio/telepresence/v2/pkg/workload"
 )
 
 const serviceAccountMountPath = "/var/run/secrets/kubernetes.io/serviceaccount"
@@ -844,7 +843,7 @@ matchExpressions:
 			AgentPort:                9900,
 			AgentAppProtocolStrategy: appProtoStrategy,
 
-			EnabledWorkloadKinds: []workload.Kind{workload.DeploymentKind, workload.StatefulSetKind, workload.ReplicaSetKind},
+			EnabledWorkloadKinds: k8sapi.Kinds{k8sapi.DeploymentKind, k8sapi.StatefulSetKind, k8sapi.ReplicaSetKind},
 		}
 		ctx = managerutil.WithEnv(ctx, env)
 		ctx = setupAgentInjector(t, ctx, clientset)
@@ -1986,7 +1985,7 @@ matchExpressions:
 				AgentPort:         9900,
 				AgentInjectPolicy: agentconfig.WhenEnabled,
 
-				EnabledWorkloadKinds: []workload.Kind{workload.DeploymentKind, workload.StatefulSetKind, workload.ReplicaSetKind},
+				EnabledWorkloadKinds: k8sapi.Kinds{k8sapi.DeploymentKind, k8sapi.StatefulSetKind, k8sapi.ReplicaSetKind},
 			}
 			ctx = managerutil.WithEnv(ctx, env)
 			if test.envAdditions != nil {
@@ -2064,20 +2063,7 @@ func toAdmissionRequest(resource meta.GroupVersionResource, object any) *admissi
 }
 
 func generateForPod(t *testing.T, ctx context.Context, pod *core.Pod, gc agentmap.GeneratorConfig) (agentconfig.SidecarExt, error) {
-	supportedKinds := make([]string, 0, 4)
-	for _, wlKind := range managerutil.GetEnv(ctx).EnabledWorkloadKinds {
-		switch wlKind {
-		case workload.DeploymentKind:
-			supportedKinds = append(supportedKinds, "Deployment")
-		case workload.ReplicaSetKind:
-			supportedKinds = append(supportedKinds, "ReplicaSet")
-		case workload.StatefulSetKind:
-			supportedKinds = append(supportedKinds, "StatefulSet")
-		case workload.RolloutKind:
-			supportedKinds = append(supportedKinds, "Rollout")
-		}
-	}
-	wl, err := agentmap.FindOwnerWorkload(ctx, k8sapi.Pod(pod), supportedKinds)
+	wl, err := agentmap.FindOwnerWorkload(ctx, k8sapi.Pod(pod), managerutil.GetEnv(ctx).EnabledWorkloadKinds)
 	if err != nil {
 		return nil, err
 	}

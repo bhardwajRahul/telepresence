@@ -65,6 +65,9 @@ func (c *configWatcher) updateWorkload(ctx context.Context, wl, oldWl k8sapi.Wor
 
 	switch ia {
 	case "enabled":
+		if !managerutil.GetEnv(ctx).EnabledWorkloadKinds.Contains(wl.GetKind()) {
+			return
+		}
 		img := managerutil.GetAgentImage(ctx)
 		if img == "" {
 			return

@@ -408,6 +408,7 @@ func (oi *info) ID() string {
 func (oi *info) ServiceIP() net.IP {
 	return oi.InjectorSvcIp
 }
+
 func (oi *info) ClusterDomain() string {
 	return oi.Dns.ClusterDomain
 }

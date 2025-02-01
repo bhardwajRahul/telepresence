@@ -1103,21 +1103,6 @@ func (s *session) eachWorkload(namespaces []string, do func(kind manager.Workloa
 	s.workloadsLock.Unlock()
 }
 
-func rpcKind(s string) manager.WorkloadInfo_Kind {
-	switch strings.ToLower(s) {
-	case "deployment":
-		return manager.WorkloadInfo_DEPLOYMENT
-	case "replicaset":
-		return manager.WorkloadInfo_REPLICASET
-	case "statefulset":
-		return manager.WorkloadInfo_STATEFULSET
-	case "rollout":
-		return manager.WorkloadInfo_ROLLOUT
-	default:
-		return manager.WorkloadInfo_UNSPECIFIED
-	}
-}
-
 func (s *session) localWorkloadsWatcher(ctx context.Context, namespace string, synced *sync.WaitGroup) error {
 	defer func() {
 		if synced != nil {
@@ -1146,20 +1131,20 @@ func (s *session) localWorkloadsWatcher(ctx context.Context, namespace string, s
 		fc = informer.GetFactory(ctx, namespace)
 	}
 
-	enabledWorkloadKinds := make([]workload.Kind, len(knownWorkloadKinds.Kinds))
+	enabledWorkloadKinds := make(k8sapi.Kinds, len(knownWorkloadKinds.Kinds))
 	for i, kind := range knownWorkloadKinds.Kinds {
 		switch kind {
 		case manager.WorkloadInfo_DEPLOYMENT:
-			enabledWorkloadKinds[i] = workload.DeploymentKind
+			enabledWorkloadKinds[i] = k8sapi.DeploymentKind
 			workload.StartDeployments(ctx, namespace)
 		case manager.WorkloadInfo_REPLICASET:
-			enabledWorkloadKinds[i] = workload.ReplicaSetKind
+			enabledWorkloadKinds[i] = k8sapi.ReplicaSetKind
 			workload.StartReplicaSets(ctx, namespace)
 		case manager.WorkloadInfo_STATEFULSET:
-			enabledWorkloadKinds[i] = workload.StatefulSetKind
+			enabledWorkloadKinds[i] = k8sapi.StatefulSetKind
 			workload.StartStatefulSets(ctx, namespace)
 		case manager.WorkloadInfo_ROLLOUT:
-			enabledWorkloadKinds[i] = workload.RolloutKind
+			enabledWorkloadKinds[i] = k8sapi.RolloutKind
 			workload.StartRollouts(ctx, namespace)
 			af := fc.GetArgoRolloutsInformerFactory()
 			af.Start(ctx.Done())
@@ -1192,7 +1177,7 @@ func (s *session) localWorkloadsWatcher(ctx context.Context, namespace string, s
 			}
 			for _, we := range wls {
 				w := we.Workload
-				key := workloadInfoKey{kind: rpcKind(w.GetKind()), name: w.GetName()}
+				key := workloadInfoKey{kind: workload.RpcKind(w.GetKind()), name: w.GetName()}
 				if we.Type == workload.EventTypeDelete {
 					delete(workloads, key)
 				} else {

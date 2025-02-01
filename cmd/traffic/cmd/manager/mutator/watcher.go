@@ -117,7 +117,7 @@ func (c *configWatcher) regenerateAgentMaps(ctx context.Context, ns string, gc a
 			kind:      ac.WorkloadKind,
 		}
 		newSce, ok := wls[key]
-		if !ok {
+		if !ok && managerutil.GetEnv(ctx).EnabledWorkloadKinds.Contains(ac.WorkloadKind) {
 			wl, err := agentmap.GetWorkload(ctx, ac.WorkloadName, ac.Namespace, ac.WorkloadKind)
 			if err != nil {
 				dlog.Errorf(ctx, "unable to load %s %s.%s", ac.WorkloadKind, ac.WorkloadName, ac.Namespace)
@@ -131,7 +131,7 @@ func (c *configWatcher) regenerateAgentMaps(ctx context.Context, ns string, gc a
 			wls[key] = newSce
 			c.Store(newSce)
 		}
-		if !cmp.Equal(newSce, sce, dbpCmp) {
+		if newSce == nil || !cmp.Equal(newSce, sce, dbpCmp) {
 			go func() {
 				deletePod(ctx, pod)
 			}()
@@ -143,7 +143,7 @@ func (c *configWatcher) regenerateAgentMaps(ctx context.Context, ns string, gc a
 type workloadKey struct {
 	name      string
 	namespace string
-	kind      string
+	kind      k8sapi.Kind
 }
 
 const (
@@ -259,13 +259,13 @@ func (c *configWatcher) startInformers(ctx context.Context, ns string) (iwc *inf
 	ifns[serviceWatcher] = c.startServices(ctx, ns)
 	for _, wlKind := range managerutil.GetEnv(ctx).EnabledWorkloadKinds {
 		switch wlKind {
-		case workload.DeploymentKind:
+		case k8sapi.DeploymentKind:
 			ifns[deploymentWatcher] = workload.StartDeployments(ctx, ns)
-		case workload.ReplicaSetKind:
+		case k8sapi.ReplicaSetKind:
 			ifns[replicaSetWatcher] = workload.StartReplicaSets(ctx, ns)
-		case workload.StatefulSetKind:
+		case k8sapi.StatefulSetKind:
 			ifns[statefulSetWatcher] = workload.StartStatefulSets(ctx, ns)
-		case workload.RolloutKind:
+		case k8sapi.RolloutKind:
 			ifns[rolloutWatcher] = workload.StartRollouts(ctx, ns)
 		}
 	}
@@ -634,7 +634,7 @@ func podIsRunning(pod *core.Pod) bool {
 	}
 }
 
-func podList(ctx context.Context, kind, name, namespace string) ([]*core.Pod, error) {
+func podList(ctx context.Context, kind k8sapi.Kind, name, namespace string) ([]*core.Pod, error) {
 	var lister interface {
 		List(selector labels.Selector) (ret []*core.Pod, err error)
 	}
@@ -649,25 +649,12 @@ func podList(ctx context.Context, kind, name, namespace string) ([]*core.Pod, er
 		return nil, fmt.Errorf("error listing pods in namespace %s: %v", namespace, err)
 	}
 	enabledWorkloads := managerutil.GetEnv(ctx).EnabledWorkloadKinds
-	supportedKinds := make([]string, len(enabledWorkloads))
-	for i, wlKind := range enabledWorkloads {
-		switch wlKind {
-		case workload.DeploymentKind:
-			supportedKinds[i] = "Deployment"
-		case workload.ReplicaSetKind:
-			supportedKinds[i] = "ReplicaSet"
-		case workload.StatefulSetKind:
-			supportedKinds[i] = "StatefulSet"
-		case workload.RolloutKind:
-			supportedKinds[i] = "Rollout"
-		}
-	}
 	var podsOfInterest []*core.Pod
 	for _, pod := range pods {
 		if !podIsRunning(pod) {
 			continue
 		}
-		wl, err := agentmap.FindOwnerWorkload(ctx, k8sapi.Pod(pod), supportedKinds)
+		wl, err := agentmap.FindOwnerWorkload(ctx, k8sapi.Pod(pod), enabledWorkloads)
 		if err == nil {
 			if (kind == "" || wl.GetKind() == kind) && (name == "" || wl.GetName() == name) {
 				podsOfInterest = append(podsOfInterest, pod)

@@ -7,6 +7,8 @@ import (
 	core "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/yaml"
+
+	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 )
 
 const (
@@ -167,7 +169,7 @@ type Sidecar struct {
 	WorkloadName string `json:"workloadName,omitzero"`
 
 	// The kind of workload that the pod originates from
-	WorkloadKind string `json:"workloadKind,omitzero"`
+	WorkloadKind k8sapi.Kind `json:"workloadKind,omitzero"`
 
 	// The host used when connecting to the traffic-manager
 	ManagerHost string `json:"managerHost,omitzero"`

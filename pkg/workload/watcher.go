@@ -36,19 +36,6 @@ type Event struct {
 	Workload k8sapi.Workload
 }
 
-type Kind string
-
-const (
-	DeploymentKind  Kind = "Deployment"
-	StatefulSetKind Kind = "StatefulSet"
-	ReplicaSetKind  Kind = "ReplicaSet"
-	RolloutKind     Kind = "Rollout"
-)
-
-func (w *Kind) IsValid() bool {
-	return w != nil && slices.Contains([]Kind{DeploymentKind, StatefulSetKind, ReplicaSetKind, RolloutKind}, *w)
-}
-
 func (e EventType) String() string {
 	switch e {
 	case EventTypeAdd:
@@ -72,10 +59,10 @@ type watcher struct {
 	subscriptions        map[uuid.UUID]chan<- []Event
 	timer                *time.Timer
 	events               []Event
-	enabledWorkloadKinds []Kind
+	enabledWorkloadKinds k8sapi.Kinds
 }
 
-func NewWatcher(ctx context.Context, ns string, enabledWorkloadKinds []Kind) (Watcher, error) {
+func NewWatcher(ctx context.Context, ns string, enabledWorkloadKinds k8sapi.Kinds) (Watcher, error) {
 	w := new(watcher)
 	w.namespace = ns
 	w.enabledWorkloadKinds = enabledWorkloadKinds
@@ -107,19 +94,13 @@ func NewWatcher(ctx context.Context, ns string, enabledWorkloadKinds []Kind) (Wa
 	return w, nil
 }
 
-func hasValidReplicasetOwner(wl k8sapi.Workload, enabledKinds []Kind) bool {
+func hasValidReplicasetOwner(wl k8sapi.Workload, enabledKinds k8sapi.Kinds) bool {
 	for _, ref := range wl.GetOwnerReferences() {
 		if ref.Controller != nil && *ref.Controller {
-			switch ref.Kind {
-			case "Deployment":
-				if slices.Contains(enabledKinds, DeploymentKind) {
-					return true
-				}
-
-			case "Rollout":
-				if slices.Contains(enabledKinds, RolloutKind) {
-					return true
-				}
+			kind := k8sapi.Kind(ref.Kind)
+			switch kind {
+			case k8sapi.DeploymentKind, k8sapi.RolloutKind:
+				return enabledKinds.Contains(kind)
 			}
 		}
 	}
@@ -133,7 +114,7 @@ func (w *watcher) Subscribe(ctx context.Context) <-chan []Event {
 	kf := informer.GetFactory(ctx, w.namespace)
 	ai := kf.GetK8sInformerFactory().Apps().V1()
 	dlog.Debugf(ctx, "workload.Watcher producing initial events for namespace %s", w.namespace)
-	if slices.Contains(w.enabledWorkloadKinds, DeploymentKind) {
+	if w.enabledWorkloadKinds.Contains(k8sapi.DeploymentKind) {
 		if dps, err := ai.Deployments().Lister().Deployments(w.namespace).List(labels.Everything()); err == nil {
 			for _, obj := range dps {
 				if wl, ok := FromAny(obj); ok && !hasValidReplicasetOwner(wl, w.enabledWorkloadKinds) && !agentmap.TrafficManagerSelector.Matches(labels.Set(obj.Labels)) {
@@ -145,7 +126,7 @@ func (w *watcher) Subscribe(ctx context.Context) <-chan []Event {
 			}
 		}
 	}
-	if slices.Contains(w.enabledWorkloadKinds, ReplicaSetKind) {
+	if w.enabledWorkloadKinds.Contains(k8sapi.ReplicaSetKind) {
 		if rps, err := ai.ReplicaSets().Lister().ReplicaSets(w.namespace).List(labels.Everything()); err == nil {
 			for _, obj := range rps {
 				if wl, ok := FromAny(obj); ok && !hasValidReplicasetOwner(wl, w.enabledWorkloadKinds) {
@@ -157,7 +138,7 @@ func (w *watcher) Subscribe(ctx context.Context) <-chan []Event {
 			}
 		}
 	}
-	if slices.Contains(w.enabledWorkloadKinds, StatefulSetKind) {
+	if w.enabledWorkloadKinds.Contains(k8sapi.StatefulSetKind) {
 		if sps, err := ai.StatefulSets().Lister().StatefulSets(w.namespace).List(labels.Everything()); err == nil {
 			for _, obj := range sps {
 				if wl, ok := FromAny(obj); ok && !hasValidReplicasetOwner(wl, w.enabledWorkloadKinds) {
@@ -169,7 +150,7 @@ func (w *watcher) Subscribe(ctx context.Context) <-chan []Event {
 			}
 		}
 	}
-	if slices.Contains(w.enabledWorkloadKinds, RolloutKind) {
+	if w.enabledWorkloadKinds.Contains(k8sapi.RolloutKind) {
 		ri := kf.GetArgoRolloutsInformerFactory().Argoproj().V1alpha1()
 		if sps, err := ri.Rollouts().Lister().Rollouts(w.namespace).List(labels.Everything()); err == nil {
 			for _, obj := range sps {
@@ -270,13 +251,13 @@ func (w *watcher) addEventHandler(ctx context.Context, ns string) error {
 	for _, wlKind := range w.enabledWorkloadKinds {
 		var ssi cache.SharedIndexInformer
 		switch wlKind {
-		case DeploymentKind:
+		case k8sapi.DeploymentKind:
 			ssi = ai.Deployments().Informer()
-		case ReplicaSetKind:
+		case k8sapi.ReplicaSetKind:
 			ssi = ai.ReplicaSets().Informer()
-		case StatefulSetKind:
+		case k8sapi.StatefulSetKind:
 			ssi = ai.StatefulSets().Informer()
-		case RolloutKind:
+		case k8sapi.RolloutKind:
 			ri := kf.GetArgoRolloutsInformerFactory().Argoproj().V1alpha1()
 			ssi = ri.Rollouts().Informer()
 		default:

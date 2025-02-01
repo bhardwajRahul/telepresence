@@ -15,7 +15,7 @@ type Object interface {
 	runtime.Object
 	meta.Object
 	GetAnnotations() map[string]string
-	GetKind() string
+	GetKind() Kind
 	Delete(context.Context) error
 	Refresh(context.Context) error
 	Selector() (labels.Selector, error)
@@ -105,8 +105,8 @@ func (o *service) ki(c context.Context) typedCore.ServiceInterface {
 	return services(c, o.Namespace)
 }
 
-func (o *service) GetKind() string {
-	return "Service"
+func (o *service) GetKind() Kind {
+	return ServiceKind
 }
 
 func (o *service) Delete(c context.Context) error {
@@ -156,8 +156,8 @@ func (o *pod) ki(c context.Context) typedCore.PodInterface {
 	return pods(c, o.Namespace)
 }
 
-func (o *pod) GetKind() string {
-	return "Pod"
+func (o *pod) GetKind() Kind {
+	return PodKind
 }
 
 func (o *pod) Delete(c context.Context) error {

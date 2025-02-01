@@ -156,21 +156,6 @@ func (wf *workloadInfoWatcher) resetTicker() {
 	wf.ticker.Reset(5 * time.Millisecond)
 }
 
-func rpcKind(s string) rpc.WorkloadInfo_Kind {
-	switch strings.ToLower(s) {
-	case "deployment":
-		return rpc.WorkloadInfo_DEPLOYMENT
-	case "replicaset":
-		return rpc.WorkloadInfo_REPLICASET
-	case "statefulset":
-		return rpc.WorkloadInfo_STATEFULSET
-	case "rollout":
-		return rpc.WorkloadInfo_ROLLOUT
-	default:
-		return rpc.WorkloadInfo_UNSPECIFIED
-	}
-}
-
 func rpcWorkloadState(s workload.State) (state rpc.WorkloadInfo_State) {
 	switch s {
 	case workload.StateFailure:
@@ -187,7 +172,7 @@ func rpcWorkloadState(s workload.State) (state rpc.WorkloadInfo_State) {
 
 func rpcWorkload(wl k8sapi.Workload, as rpc.WorkloadInfo_AgentState, iClients []*rpc.WorkloadInfo_Intercept) *rpc.WorkloadInfo {
 	return &rpc.WorkloadInfo{
-		Kind:             rpcKind(wl.GetKind()),
+		Kind:             workload.RpcKind(wl.GetKind()),
 		Name:             wl.GetName(),
 		Namespace:        wl.GetNamespace(),
 		Uid:              string(wl.GetUID()),
