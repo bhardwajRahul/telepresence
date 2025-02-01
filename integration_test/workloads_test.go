@@ -24,6 +24,7 @@ func (s *connectedSuite) successfulIntercept(tp, wl, port string) {
 		2*time.Second, // polling interval
 	)
 
+	itest.TelepresenceOk(ctx, "loglevel", "trace")
 	stdout := itest.TelepresenceOk(ctx, "intercept", "--mount", "false", "--port", port, wl)
 	require.Contains(stdout, "Using "+tp+" "+wl)
 	stdout = itest.TelepresenceOk(ctx, "list", "--intercepts")

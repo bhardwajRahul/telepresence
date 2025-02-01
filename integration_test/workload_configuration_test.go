@@ -97,7 +97,7 @@ func (s *workloadConfigurationSuite) Test_InterceptsReplicaSetWithDisabledDeploy
 
 	interceptableWl := s.KubectlOk(ctx, "get", "replicasets", "-l", fmt.Sprintf("app=%s", wl), "-o", "jsonpath={.items[*].metadata.name}")
 
-	s.TelepresenceHelmInstallOK(ctx, true, "--set", "workloads.deployments.enabled=false")
+	s.TelepresenceHelmInstallOK(ctx, true, "--set", "logLevel=trace", "--set", "workloads.deployments.enabled=false")
 	defer s.TelepresenceHelmInstallOK(ctx, true, "--set", "workloads.deployments.enabled=true")
 
 	s.TelepresenceConnect(ctx)

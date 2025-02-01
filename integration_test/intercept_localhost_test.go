@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/datawire/dlib/dlog"
@@ -40,17 +39,10 @@ func (s *interceptLocalhostSuite) SetupSuite() {
 	s.Require().NoError(err)
 	dlog.Infof(ctx, "ip: %s: route: %s", s.defaultRoute.LocalIP, s.defaultRoute)
 	s.port, s.cancelLocal = itest.StartLocalHttpEchoServerWithAddr(ctx, s.ServiceName(), net.JoinHostPort(s.defaultRoute.LocalIP.String(), "0"))
-	s.CapturePodLogs(ctx, "echo", "traffic-agent", s.AppNamespace())
 }
 
 func (s *interceptLocalhostSuite) TearDownSuite() {
-	ctx := s.Context()
-	itest.TelepresenceOk(ctx, "leave", s.ServiceName())
 	s.cancelLocal()
-	s.Eventually(func() bool {
-		stdout := itest.TelepresenceOk(ctx, "list", "--intercepts")
-		return !strings.Contains(stdout, s.ServiceName()+": intercepted")
-	}, 10*time.Second, time.Second)
 }
 
 func (s *interceptLocalhostSuite) TestIntercept_WithCustomLocalhost() {
@@ -78,6 +70,8 @@ func (s *interceptLocalhostSuite) TestIntercept_WithCustomLocalhost() {
 
 	// Run the intercept
 	stdout := itest.TelepresenceOk(ctx, "intercept", s.ServiceName(), "--port", strconv.Itoa(s.port), "--address", s.defaultRoute.LocalIP.String())
+	defer itest.TelepresenceOk(ctx, "leave", s.ServiceName())
+
 	s.Require().Contains(stdout, "Using Deployment "+s.ServiceName())
 	itest.PingInterceptedEchoServer(ctx, s.ServiceName(), "80")
 }
