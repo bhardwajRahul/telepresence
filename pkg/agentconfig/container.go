@@ -71,6 +71,15 @@ func AgentContainer(
 			},
 		},
 		core.EnvVar{
+			Name: EnvPrefixAgent + "POD_UID",
+			ValueFrom: &core.EnvVarSource{
+				FieldRef: &core.ObjectFieldSelector{
+					APIVersion: "v1",
+					FieldPath:  "metadata.uid",
+				},
+			},
+		},
+		core.EnvVar{
 			Name: EnvPrefixAgent + "NAME",
 			ValueFrom: &core.EnvVarSource{
 				FieldRef: &core.ObjectFieldSelector{

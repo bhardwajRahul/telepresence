@@ -315,7 +315,7 @@ func (s *state) RemoveSession(ctx context.Context, sessionID string) {
 
 func (s *state) consolidateAgentSessionIntercepts(ctx context.Context, agent *rpc.AgentInfo) {
 	dlog.Debugf(ctx, "Consolidating intercepts after removal of agent %s(%s)", agent.PodName, agent.PodIp)
-	mutator.GetMap(s.backgroundCtx).Inactivate(agent.PodIp)
+	mutator.GetMap(s.backgroundCtx).Inactivate(types.UID(agent.PodUid))
 	s.intercepts.Range(func(interceptID string, intercept *rpc.InterceptInfo) bool {
 		if intercept.Disposition == rpc.InterceptDispositionType_REMOVED || agent.PodIp != intercept.PodIp {
 			// Not of interest. Continue iteration.
@@ -447,10 +447,10 @@ func (s *state) CountTunnelEgress() uint64 {
 // Sessions: Agents ////////////////////////////////////////////////////////////////////////////////
 
 func (s *state) AddAgent(ctx context.Context, agent *rpc.AgentInfo, now time.Time) (string, error) {
-	if mutator.GetMap(ctx).IsInactive(agent.PodIp) {
+	if mutator.GetMap(ctx).IsInactive(types.UID(agent.PodUid)) {
 		return "", status.Error(codes.Aborted, "inactivated pod")
 	}
-	sessionID := AgentSessionIDPrefix + agent.PodIp + "." + agent.Namespace
+	sessionID := AgentSessionIDPrefix + agent.PodUid
 	if oldAgent, hasConflict := s.agents.LoadOrStore(sessionID, agent); hasConflict {
 		return "", status.Error(codes.AlreadyExists, fmt.Sprintf("duplicate id %q, existing %+v, new %+v", sessionID, oldAgent, agent))
 	}
@@ -481,7 +481,7 @@ func (s *state) AddAgent(ctx context.Context, agent *rpc.AgentInfo, now time.Tim
 
 func (s *state) GetAgent(sessionID string) *rpc.AgentInfo {
 	if ret, ok := s.agents.Load(sessionID); ok {
-		if !mutator.GetMap(s.backgroundCtx).IsInactive(ret.PodIp) {
+		if !mutator.GetMap(s.backgroundCtx).IsInactive(types.UID(ret.PodUid)) {
 			return ret
 		}
 	}
@@ -491,7 +491,7 @@ func (s *state) GetAgent(sessionID string) *rpc.AgentInfo {
 func (s *state) EachAgent(f func(string, *rpc.AgentInfo) bool) {
 	m := mutator.GetMap(s.backgroundCtx)
 	s.agents.Range(func(si string, ag *rpc.AgentInfo) bool {
-		if !m.IsInactive(ag.PodIp) {
+		if !m.IsInactive(types.UID(ag.PodUid)) {
 			return f(si, ag)
 		}
 		return true
@@ -501,7 +501,7 @@ func (s *state) EachAgent(f func(string, *rpc.AgentInfo) bool) {
 func (s *state) LoadMatchingAgents(f func(string, *rpc.AgentInfo) bool) map[string]*rpc.AgentInfo {
 	m := mutator.GetMap(s.backgroundCtx)
 	return s.agents.LoadMatching(func(s string, ai *rpc.AgentInfo) bool {
-		return !m.IsInactive(ai.PodIp) && f(s, ai)
+		return !m.IsInactive(types.UID(ai.PodUid)) && f(s, ai)
 	})
 }
 

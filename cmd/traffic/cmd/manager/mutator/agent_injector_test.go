@@ -951,6 +951,7 @@ matchExpressions:
 			Annotations:     map[string]string{InjectAnnotation: "enabled"},
 			Labels:          map[string]string{"service": name},
 			OwnerReferences: podOwner(name),
+			UID:             types.UID(uuid.New().String()),
 		}
 	}
 
@@ -1172,6 +1173,11 @@ matchExpressions:
         fieldRef:
           apiVersion: v1
           fieldPath: status.podIP
+    - name: _TEL_AGENT_POD_UID
+      valueFrom:
+        fieldRef:
+          apiVersion: v1
+          fieldPath: metadata.uid
     - name: _TEL_AGENT_NAME
       valueFrom:
         fieldRef:
@@ -1266,6 +1272,11 @@ matchExpressions:
         fieldRef:
           apiVersion: v1
           fieldPath: status.podIP
+    - name: _TEL_AGENT_POD_UID
+      valueFrom:
+        fieldRef:
+          apiVersion: v1
+          fieldPath: metadata.uid
     - name: _TEL_AGENT_NAME
       valueFrom:
         fieldRef:
@@ -1409,6 +1420,11 @@ matchExpressions:
         fieldRef:
           apiVersion: v1
           fieldPath: status.podIP
+    - name: _TEL_AGENT_POD_UID
+      valueFrom:
+        fieldRef:
+          apiVersion: v1
+          fieldPath: metadata.uid
     - name: _TEL_AGENT_NAME
       valueFrom:
         fieldRef:
@@ -1522,6 +1538,11 @@ matchExpressions:
         fieldRef:
           apiVersion: v1
           fieldPath: status.podIP
+    - name: _TEL_AGENT_POD_UID
+      valueFrom:
+        fieldRef:
+          apiVersion: v1
+          fieldPath: metadata.uid
     - name: _TEL_AGENT_NAME
       valueFrom:
         fieldRef:
@@ -1634,6 +1655,11 @@ matchExpressions:
         fieldRef:
           apiVersion: v1
           fieldPath: status.podIP
+    - name: _TEL_AGENT_POD_UID
+      valueFrom:
+        fieldRef:
+          apiVersion: v1
+          fieldPath: metadata.uid
     - name: _TEL_AGENT_NAME
       valueFrom:
         fieldRef:
@@ -1789,6 +1815,15 @@ matchExpressions:
 									},
 								},
 								{
+									Name: "_TEL_AGENT_POD_UID",
+									ValueFrom: &core.EnvVarSource{
+										FieldRef: &core.ObjectFieldSelector{
+											APIVersion: "v1",
+											FieldPath:  "metadata.uid",
+										},
+									},
+								},
+								{
 									Name: "_TEL_AGENT_NAME",
 									ValueFrom: &core.EnvVarSource{
 										FieldRef: &core.ObjectFieldSelector{
@@ -1901,6 +1936,11 @@ matchExpressions:
         fieldRef:
           apiVersion: v1
           fieldPath: status.podIP
+    - name: _TEL_AGENT_POD_UID
+      valueFrom:
+        fieldRef:
+          apiVersion: v1
+          fieldPath: metadata.uid
     - name: _TEL_AGENT_NAME
       valueFrom:
         fieldRef:

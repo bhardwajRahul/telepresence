@@ -21,6 +21,7 @@ import (
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dlog"
@@ -792,10 +793,10 @@ func (s *state) waitForAgents(ctx context.Context, ac *agentconfig.Sidecar, fail
 			}
 			as := make([]*rpc.AgentInfo, 0, len(snapshot))
 			for _, a := range snapshot {
-				if mm.IsInactive(a.PodIp) {
+				if mm.IsInactive(types.UID(a.PodUid)) {
 					dlog.Debugf(ctx, "Agent %s(%s) is blacklisted", a.PodName, a.PodIp)
 				} else {
-					dlog.Debugf(ctx, "Agent %s(%s) is ready", a.Name, a.PodIp)
+					dlog.Debugf(ctx, "Agent %s(%s) is ready", a.PodName, a.PodIp)
 					as = append(as, a)
 					break
 				}

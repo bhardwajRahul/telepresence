@@ -247,7 +247,7 @@ func (wf *workloadInfoWatcher) handleAgentSnapshot(ctx context.Context, ais map[
 	m := mutator.GetMap(ctx)
 	for k, a := range oldAgentInfos {
 		ai, ok := ais[k]
-		if !ok || m.IsInactive(ai.PodIp) {
+		if !ok || m.IsInactive(types.UID(ai.PodUid)) {
 			name := a.Name
 			as := rpc.WorkloadInfo_NO_AGENT_UNSPECIFIED
 			if w, ok := wf.workloadEvents[name]; ok && w.Type != rpc.WorkloadEvent_DELETED {
@@ -277,7 +277,7 @@ func (wf *workloadInfoWatcher) handleAgentSnapshot(ctx context.Context, ais map[
 		}
 	}
 	for _, a := range ais {
-		if m.IsInactive(a.PodIp) {
+		if m.IsInactive(types.UID(a.PodUid)) {
 			continue
 		}
 		name := a.Name

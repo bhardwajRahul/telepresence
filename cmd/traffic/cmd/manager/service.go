@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	empty "google.golang.org/protobuf/types/known/emptypb"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dgroup"
@@ -698,7 +699,7 @@ func (s *service) ReviewIntercept(ctx context.Context, rIReq *rpc.ReviewIntercep
 		if intercept.Spec.Namespace != agent.Namespace || intercept.Spec.Agent != agent.Name {
 			return
 		}
-		if mutator.GetMap(ctx).IsInactive(agent.PodIp) {
+		if mutator.GetMap(ctx).IsInactive(types.UID(agent.PodUid)) {
 			dlog.Debugf(ctx, "Pod %s(%s) is blacklisted", agent.PodName, agent.PodIp)
 			return
 		}

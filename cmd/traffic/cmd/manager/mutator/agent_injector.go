@@ -109,7 +109,7 @@ func (a *agentInjector) Inject(ctx context.Context, req *admission.AdmissionRequ
 	}
 
 	if isDelete {
-		a.agentConfigs.Inactivate(pod.Status.PodIP)
+		a.agentConfigs.Inactivate(pod.UID)
 		return nil, nil
 	}
 

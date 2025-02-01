@@ -31,6 +31,7 @@ message AgentInfo {
   string namespace = 7; // namespace of the Workload
   string pod_name = 8;  // Pod name (from metadata.name)
   string pod_ip = 2;    // Pod IP (from status.podIP)
+  string pod_uid = 14;  // Pod UID
   int32 api_port = 9;   // Port number for the agent gRPC API
   int32 sftp_port = 10; // Port number for the agent SFTP server
   int32 ftp_port = 11;  // Port number for the agent FTP server

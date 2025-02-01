@@ -15,6 +15,7 @@ import (
 	v1 "k8s.io/api/policy/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 
 	"github.com/datawire/dlib/derror"
@@ -37,8 +38,8 @@ type Map interface {
 	OnAdd(context.Context, k8sapi.Workload, agentconfig.SidecarExt) error
 	OnDelete(context.Context, string, string) error
 	DeleteMapsAndRolloutAll(context.Context)
-	IsInactive(podIP string) bool
-	Inactivate(podIP string)
+	IsInactive(podID types.UID) bool
+	Inactivate(podID types.UID)
 	DeletePodsWithConfig(ctx context.Context, wl k8sapi.Workload) error
 	DeletePodsWithConfigMismatch(ctx context.Context, scx agentconfig.SidecarExt) error
 	DeleteAllPodsWithConfig(ctx context.Context, namespace string) error
@@ -171,7 +172,7 @@ type configWatcher struct {
 	agentConfigs *xsync.MapOf[string, map[string]agentconfig.SidecarExt]
 	nsLocks      *xsync.MapOf[string, *sync.RWMutex]
 	informers    *xsync.MapOf[string, *informersWithCancel]
-	inactivePods *xsync.MapOf[string, inactivation]
+	inactivePods *xsync.MapOf[types.UID, inactivation]
 	startedAt    time.Time
 	terminating  atomic.Bool
 
@@ -235,7 +236,7 @@ func NewWatcher() Map {
 	w := &configWatcher{
 		nsLocks:      xsync.NewMapOf[string, *sync.RWMutex](),
 		informers:    xsync.NewMapOf[string, *informersWithCancel](),
-		inactivePods: xsync.NewMapOf[string, inactivation](),
+		inactivePods: xsync.NewMapOf[types.UID, inactivation](),
 		agentConfigs: xsync.NewMapOf[string, map[string]agentconfig.SidecarExt](),
 	}
 	w.self = w
@@ -405,7 +406,7 @@ func (c *configWatcher) startPods(ctx context.Context, ns string) cache.SharedIn
 }
 
 func (c *configWatcher) gcInactivated(now time.Time) {
-	c.inactivePods.Range(func(key string, value inactivation) bool {
+	c.inactivePods.Range(func(key types.UID, value inactivation) bool {
 		if now.Sub(value.Time) > time.Minute {
 			c.inactivePods.Delete(key)
 		}
@@ -571,8 +572,9 @@ func (c *configWatcher) DeleteAllPodsWithConfig(ctx context.Context, namespace s
 }
 
 func (c *configWatcher) DeleteIfMismatch(ctx context.Context, pod *core.Pod, cfgJSON string) error {
-	if c.IsDeleted(pod.Name) {
-		dlog.Tracef(ctx, "Skipping pod %s because it is already deleted", pod.Name)
+	podID := pod.UID
+	if c.IsDeleted(podID) {
+		dlog.Debugf(ctx, "Skipping pod %s because it is already deleted", pod.Name)
 		return nil
 	}
 	a := pod.ObjectMeta.Annotations
@@ -585,9 +587,9 @@ func (c *configWatcher) DeleteIfMismatch(ctx context.Context, pod *core.Pod, cfg
 		return nil
 	}
 	var err error
-	c.inactivePods.Compute(pod.Name, func(v inactivation, loaded bool) (inactivation, bool) {
+	c.inactivePods.Compute(podID, func(v inactivation, loaded bool) (inactivation, bool) {
 		if loaded && v.deleted {
-			dlog.Tracef(ctx, "Skipping pod %s because it was deleted by another thread", pod.Name)
+			dlog.Debugf(ctx, "Skipping pod %s because it was deleted by another goroutine", pod.Name)
 			return v, false
 		}
 		dlog.Debugf(ctx, "Deleting pod %s because its config is no longer valid", pod.Name)
@@ -609,19 +611,19 @@ func deletePod(ctx context.Context, pod *core.Pod) {
 	}
 }
 
-func (c *configWatcher) Inactivate(podName string) {
-	c.inactivePods.LoadOrCompute(podName, func() inactivation {
+func (c *configWatcher) Inactivate(podID types.UID) {
+	c.inactivePods.LoadOrCompute(podID, func() inactivation {
 		return inactivation{Time: time.Now()}
 	})
 }
 
-func (c *configWatcher) IsDeleted(podName string) bool {
-	v, ok := c.inactivePods.Load(podName)
+func (c *configWatcher) IsDeleted(podID types.UID) bool {
+	v, ok := c.inactivePods.Load(podID)
 	return ok && v.deleted
 }
 
-func (c *configWatcher) IsInactive(podName string) bool {
-	_, ok := c.inactivePods.Load(podName)
+func (c *configWatcher) IsInactive(podID types.UID) bool {
+	_, ok := c.inactivePods.Load(podID)
 	return ok
 }
 

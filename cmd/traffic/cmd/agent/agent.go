@@ -330,6 +330,7 @@ func StartServices(ctx context.Context, g *dgroup.Group, config Config, srv Stat
 		Kind:      string(ac.WorkloadKind),
 		PodName:   config.PodName(),
 		PodIp:     config.PodIP(),
+		PodUid:    string(config.PodUID()),
 		ApiPort:   int32(grpcPort),
 		FtpPort:   int32(ftpPort),
 		SftpPort:  int32(sftpPort),
