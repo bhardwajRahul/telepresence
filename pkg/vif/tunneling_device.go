@@ -2,6 +2,7 @@ package vif
 
 import (
 	"context"
+	"time"
 
 	"github.com/hashicorp/go-multierror"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -65,6 +66,18 @@ func (vif *TunnelingDevice) Run(ctx context.Context) (err error) {
 		dlog.Debug(ctx, "vif ended")
 	}()
 
-	vif.stack.Wait()
+	// The stack.Wait gets stuck at times, even though the stack is closed, so we ensure that the
+	// Run terminates anyway here.
+	// See https://github.com/google/gvisor/issues/11456
+	stackDoneCh := make(chan struct{})
+	go func() {
+		vif.stack.Wait()
+		close(stackDoneCh)
+	}()
+	<-ctx.Done()
+	select {
+	case <-stackDoneCh:
+	case <-time.After(2 * time.Second):
+	}
 	return nil
 }

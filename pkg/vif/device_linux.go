@@ -19,6 +19,7 @@ const devicePath = "/dev/net/tun"
 type device struct {
 	fd             int
 	name           string
+	endPoint       stack.LinkEndpoint
 	interfaceIndex uint32
 }
 
@@ -117,14 +118,20 @@ func (d *device) createLinkEndpoint() (stack.LinkEndpoint, error) {
 	if err != nil {
 		return nil, err
 	}
-	return fdbased.New(&fdbased.Options{
+	ep, err := fdbased.New(&fdbased.Options{
 		FDs:                []int{d.fd},
 		MTU:                mtu,
 		PacketDispatchMode: fdbased.RecvMMsg,
 	})
+	if err != nil {
+		return nil, err
+	}
+	d.endPoint = ep
+	return ep, nil
 }
 
 func (d *device) Close() {
+	d.endPoint.Close()
 	_ = unix.Close(d.fd)
 }
 

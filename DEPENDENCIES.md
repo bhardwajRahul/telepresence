@@ -25,7 +25,7 @@ following Free and Open Source software:
     github.com/containerd/log                                      v0.1.0                                Apache License 2.0
     github.com/containerd/platforms                                v0.2.1                                Apache License 2.0
     github.com/coreos/go-iptables                                  v0.8.0                                Apache License 2.0
-    github.com/cyphar/filepath-securejoin                          v0.4.0                                3-clause BSD license
+    github.com/cyphar/filepath-securejoin                          v0.4.1                                3-clause BSD license
     github.com/datawire/argo-rollouts-go-client                    v0.0.0-20241216133646-cb1073556c99    Apache License 2.0
     github.com/datawire/dlib                                       v1.3.1                                Apache License 2.0
     github.com/datawire/dtest                                      v0.0.0-20210928162311-722b199c4c2f    Apache License 2.0
@@ -41,7 +41,7 @@ following Free and Open Source software:
     github.com/docker/go-metrics                                   v0.0.1                                Apache License 2.0
     github.com/docker/go-units                                     v0.5.0                                Apache License 2.0
     github.com/emicklei/go-restful/v3                              v3.12.1                               MIT license
-    github.com/evanphx/json-patch                                  v5.9.0+incompatible                   3-clause BSD license
+    github.com/evanphx/json-patch                                  v5.9.11+incompatible                  3-clause BSD license
     github.com/exponent-io/jsonpath                                v0.0.0-20210407135951-1de76d718b3f    MIT license
     github.com/fatih/camelcase                                     v1.0.0                                MIT license
     github.com/fatih/color                                         v1.18.0                               MIT license
@@ -52,7 +52,7 @@ following Free and Open Source software:
     github.com/fxamacker/cbor/v2                                   v2.7.0                                MIT license
     github.com/go-errors/errors                                    v1.5.1                                MIT license
     github.com/go-gorp/gorp/v3                                     v3.1.0                                MIT license
-    github.com/go-json-experiment/json                             v0.0.0-20250124004741-3d76ae074650    3-clause BSD license
+    github.com/go-json-experiment/json                             v0.0.0-20250129011340-4e0381018ad6    3-clause BSD license
     github.com/go-logr/logr                                        v1.4.2                                Apache License 2.0
     github.com/go-logr/stdr                                        v1.2.2                                Apache License 2.0
     github.com/go-openapi/jsonpointer                              v0.21.0                               Apache License 2.0
@@ -126,9 +126,9 @@ following Free and Open Source software:
     github.com/spf13/afero                                         v1.12.0                               Apache License 2.0
     github.com/spf13/cast                                          v1.7.1                                MIT license
     github.com/spf13/cobra                                         v1.8.1                                Apache License 2.0
-    github.com/spf13/pflag                                         v1.0.5                                3-clause BSD license
+    github.com/spf13/pflag                                         v1.0.6                                3-clause BSD license
     github.com/stretchr/testify                                    v1.10.0                               MIT license
-    github.com/telepresenceio/go-fuseftp/rpc                       v0.5.0                                Apache License 2.0
+    github.com/telepresenceio/go-fuseftp/rpc                       v0.6.1                                Apache License 2.0
     github.com/telepresenceio/telepresence/rpc/v2                  (modified)                            Apache License 2.0
     github.com/vishvananda/netlink                                 v1.3.0                                Apache License 2.0
     github.com/vishvananda/netns                                   v0.0.5                                Apache License 2.0
@@ -155,13 +155,13 @@ following Free and Open Source software:
     golang.zx2c4.com/wintun                                        v0.0.0-20230126152724-0fa3db229ce2    MIT license
     golang.zx2c4.com/wireguard                                     v0.0.0-20231211153847-12269c276173    MIT license
     golang.zx2c4.com/wireguard/windows                             v0.5.3                                MIT license
-    google.golang.org/genproto/googleapis/rpc                      v0.0.0-20250124145028-65684f501c47    Apache License 2.0
+    google.golang.org/genproto/googleapis/rpc                      v0.0.0-20250127172529-29210b9bc287    Apache License 2.0
     google.golang.org/grpc                                         v1.70.0                               Apache License 2.0
     google.golang.org/protobuf                                     v1.36.4                               3-clause BSD license
     gopkg.in/evanphx/json-patch.v4                                 v4.12.0                               3-clause BSD license
     gopkg.in/inf.v0                                                v0.9.1                                3-clause BSD license
     gopkg.in/yaml.v3                                               v3.0.1                                Apache License 2.0, MIT license
-    gvisor.dev/gvisor                                              v0.0.0-20250115195935-26653e7d8816    Apache License 2.0, MIT license
+    gvisor.dev/gvisor                                              v0.0.0-20250131185017-b744a1bd640b    Apache License 2.0, MIT license
     helm.sh/helm/v3                                                v3.17.0                               Apache License 2.0
     k8s.io/api                                                     v0.32.1                               Apache License 2.0
     k8s.io/apiextensions-apiserver                                 v0.32.1                               Apache License 2.0
