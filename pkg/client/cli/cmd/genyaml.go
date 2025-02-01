@@ -44,15 +44,12 @@ func genYAML() *cobra.Command {
 		Short: "Generate YAML for use in kubernetes manifests.",
 		Long: `Generate traffic-agent yaml for use in kubernetes manifests.
 This allows the traffic agent to be injected by hand into existing kubernetes manifests.
-For your modified workload to be valid, you'll have to manually inject a container and a
-volume into the workload, and a corresponding configmap entry into the "telelepresence-agents"
-configmap; you can do this by running "genyaml config", "genyaml container", and "genyaml volume".
+For your modified workload to be valid, you'll have to manually inject annotations, a
+container, and a volume into the workload; you can do this by running "genyaml config",
+"genyaml container", "genyaml initcontainer", "genyaml annotations", and "genyaml volume".
 
 NOTE: It is recommended that you not do this unless strictly necessary. Instead, we suggest letting
 telepresence's webhook injector configure the traffic agents on demand.`,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return errcat.User.New("please run genyaml as \"genyaml config\", \"genyaml container\", \"genyaml initcontainer\", or \"genyaml volume\"")
-		},
 		ValidArgsFunction: cobra.NoFileCompletions,
 	}
 	flags := cmd.PersistentFlags()
@@ -62,6 +59,7 @@ telepresence's webhook injector configure the traffic agents on demand.`,
 		genConfigMapSubCommand(&info),
 		genContainerSubCommand(&info),
 		genInitContainerSubCommand(&info),
+		genVAnnotationsSubCommand(&info),
 		genVolumeSubCommand(&info),
 	)
 	return cmd
@@ -419,6 +417,55 @@ func (g *genInitContainerInfo) run(cmd *cobra.Command, kubeFlags map[string]stri
 		}
 	}
 	return errcat.User.New("deployment does not need an init container")
+}
+
+type genAnnotationsInfo struct {
+	*genYAMLCommand
+}
+
+func genVAnnotationsSubCommand(yamlInfo *genYAMLCommand) *cobra.Command {
+	info := genAnnotationsInfo{genYAMLCommand: yamlInfo}
+	kubeFlags := allKubeFlags()
+	cmd := &cobra.Command{
+		Use:   "annotations",
+		Args:  cobra.NoArgs,
+		Short: "Generate YAML for the pod template metadata annotations.",
+		Long:  "Generate YAML for the pod template metadata annotations. See genyaml for more info on what this means",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return info.run(cmd, flags.Map(kubeFlags))
+		},
+	}
+	flags := cmd.Flags()
+	flags.StringVarP(&info.workloadName, "workload", "w", "",
+		"Name of the workload. If given, the configmap entry will be retrieved telepresence-agents configmap, mutually exclusive to --config")
+	flags.StringVarP(&info.configFile, "config", "c", "", "Path to the yaml containing the generated configmap entry, mutually exclusive to --workload")
+	flags.AddFlagSet(kubeFlags)
+	return cmd
+}
+
+func (g *genAnnotationsInfo) run(cmd *cobra.Command, kubeFlags map[string]string) error {
+	ctx := cmd.Context()
+	if g.configFile == "" {
+		var err error
+		ctx, err = g.WithJoinedClientSetInterface(ctx, kubeFlags)
+		if err != nil {
+			return err
+		}
+	}
+	cm, err := g.loadConfigMapEntry(ctx)
+	if err != nil {
+		return err
+	}
+	cmJSON, err := agentconfig.MarshalTight(cm)
+	if err != nil {
+		return err
+	}
+	annotations := map[string]string{
+		agentconfig.InjectAnnotation:       "enabled",
+		agentconfig.ManualInjectAnnotation: "true",
+		agentconfig.ConfigAnnotation:       cmJSON,
+	}
+	return g.writeObjToOutput(annotations)
 }
 
 type genVolumeInfo struct {

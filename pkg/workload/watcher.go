@@ -17,6 +17,7 @@ import (
 	"k8s.io/kubectl/pkg/util/deployment"
 
 	"github.com/datawire/dlib/dlog"
+	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/informer"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
@@ -214,7 +215,7 @@ func compareOptions() []cmp.Option {
 
 		// Ignore frequently changing annotations of no interest.
 		cmpopts.IgnoreMapEntries(func(k, _ string) bool {
-			return k == AnnRestartedAt || k == deployment.RevisionAnnotation
+			return k == agentconfig.RestartedAtAnnotation || k == deployment.RevisionAnnotation
 		}),
 	}
 }

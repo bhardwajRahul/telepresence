@@ -2,6 +2,7 @@ package agentconfig
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -24,10 +25,10 @@ func AgentContainer(
 	confCns := ConfiguredContainers(ctx, pod, config)
 
 	eachConfiguredContainer(confCns, config, func(app *core.Container, cc *Container) {
-		if cc.Replace {
+		if cc.Replace == ReplacePolicyContainer {
 			// Simply inherit the ports of the replaced container
 			ports = append(ports, app.Ports...)
-		} else {
+		} else if cc.Replace == ReplacePolicyIntercept {
 			for _, ic := range PortUniqueIntercepts(cc) {
 				ports = append(ports, core.ContainerPort{
 					Name:          ic.ContainerPortName,
@@ -51,6 +52,15 @@ func AgentContainer(
 		})
 	}
 	evs = append(evs,
+		core.EnvVar{
+			Name: "AGENT_CONFIG",
+			ValueFrom: &core.EnvVarSource{
+				FieldRef: &core.ObjectFieldSelector{
+					APIVersion: "v1",
+					FieldPath:  fmt.Sprintf("metadata.annotations['%s']", ConfigAnnotation),
+				},
+			},
+		},
 		core.EnvVar{
 			Name: EnvPrefixAgent + "POD_IP",
 			ValueFrom: &core.EnvVarSource{
@@ -95,10 +105,6 @@ func AgentContainer(
 			MountPath: AnnotationMountPoint,
 		},
 		core.VolumeMount{
-			Name:      ConfigVolumeName,
-			MountPath: ConfigMountPoint,
-		},
-		core.VolumeMount{
 			Name:      ExportsVolumeName,
 			MountPath: ExportsMountPoint,
 		},
@@ -137,17 +143,19 @@ func AgentContainer(
 		efs = nil
 	}
 
-	replaceAnnotations := make(map[string]string)
+	annotations := make(map[string]string)
 	eachConfiguredContainer(confCns, config, func(app *core.Container, cc *Container) {
-		if cc.Replace {
+		if cc.Replace == ReplacePolicyContainer {
 			cnJson, err := json.Marshal(app)
 			if err != nil {
 				dlog.Errorf(ctx, "unable to marshal container %s.%s/%s to json: %v", config.WorkloadName, config.Namespace, app.Name, err)
 			} else {
-				replaceAnnotations[ReplacedContainerAnnotationPrefix+cc.Name] = string(cnJson)
+				annotations[ReplaceAnnotationKey(cc.Name)] = string(cnJson)
 			}
 		}
 	})
+	cfg, _ := MarshalTight(config)
+	annotations[ConfigAnnotation] = cfg
 
 	if len(ports) == 0 {
 		ports = nil
@@ -185,7 +193,11 @@ func AgentContainer(
 	}
 	ac.SecurityContext = appSc
 
-	return ac, replaceAnnotations
+	return ac, annotations
+}
+
+func ReplaceAnnotationKey(cn string) string {
+	return ReplacedContainerAnnotationPrefix + cn
 }
 
 // Find the security context of the first container (with both intercepts and a set security context) and ensure
@@ -229,6 +241,15 @@ func InitContainer(config *Sidecar) *core.Container {
 				Value: config.LogLevel,
 			},
 			{
+				Name: "AGENT_CONFIG",
+				ValueFrom: &core.EnvVarSource{
+					FieldRef: &core.ObjectFieldSelector{
+						APIVersion: "v1",
+						FieldPath:  fmt.Sprintf("metadata.annotations['%s']", ConfigAnnotation),
+					},
+				},
+			},
+			{
 				Name: "POD_IP",
 				ValueFrom: &core.EnvVarSource{
 					FieldRef: &core.ObjectFieldSelector{
@@ -238,10 +259,6 @@ func InitContainer(config *Sidecar) *core.Container {
 				},
 			},
 		},
-		VolumeMounts: []core.VolumeMount{{
-			Name:      ConfigVolumeName,
-			MountPath: ConfigMountPoint,
-		}},
 		SecurityContext: &core.SecurityContext{
 			Capabilities: &core.Capabilities{
 				Add: []core.Capability{"NET_ADMIN"},
@@ -255,13 +272,6 @@ func InitContainer(config *Sidecar) *core.Container {
 }
 
 func AgentVolumes(agentName string, pod *core.Pod) []core.Volume {
-	var items []core.KeyToPath
-	if agentName != "" {
-		items = []core.KeyToPath{{
-			Key:  agentName,
-			Path: ConfigFile,
-		}}
-	}
 	volumes := []core.Volume{
 		{
 			Name: AnnotationVolumeName,
@@ -276,15 +286,6 @@ func AgentVolumes(agentName string, pod *core.Pod) []core.Volume {
 							Path: "annotations",
 						},
 					},
-				},
-			},
-		},
-		{
-			Name: ConfigVolumeName,
-			VolumeSource: core.VolumeSource{
-				ConfigMap: &core.ConfigMapVolumeSource{
-					LocalObjectReference: core.LocalObjectReference{Name: ConfigMap},
-					Items:                items,
 				},
 			},
 		},

@@ -5,11 +5,11 @@ package agentinit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -19,7 +19,6 @@ import (
 	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
-	"github.com/telepresenceio/telepresence/v2/pkg/dos"
 	"github.com/telepresenceio/telepresence/v2/pkg/version"
 )
 
@@ -31,14 +30,15 @@ type config struct {
 	agentconfig.SidecarExt
 }
 
-func loadConfig(ctx context.Context) (*config, error) {
-	bs, err := dos.ReadFile(ctx, filepath.Join(agentconfig.ConfigMountPoint, agentconfig.ConfigFile))
-	if err != nil {
-		return nil, fmt.Errorf("unable to open agent ConfigMap: %w", err)
+func loadConfig() (*config, error) {
+	cfgTight, ok := os.LookupEnv(agentconfig.EnvAgentConfig)
+	if !ok {
+		return nil, errors.New("unable to retrieve agent ConfigMap entry")
 	}
 
 	c := config{}
-	c.SidecarExt, err = agentconfig.UnmarshalYAML(bs)
+	var err error
+	c.SidecarExt, err = agentconfig.UnmarshalJSON(cfgTight)
 	if err != nil {
 		return nil, fmt.Errorf("unable to decode agent ConfigMap: %w", err)
 	}
@@ -201,7 +201,7 @@ func Main(ctx context.Context, args ...string) error {
 			dlog.Error(ctx, derror.PanicToError(r))
 		}
 	}()
-	cfg, err := loadConfig(ctx)
+	cfg, err := loadConfig()
 	if err != nil {
 		dlog.Error(ctx, err)
 		return err

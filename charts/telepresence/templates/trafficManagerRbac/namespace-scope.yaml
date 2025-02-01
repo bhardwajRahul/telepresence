@@ -31,44 +31,37 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - pods
   - services
+  - pods
   verbs:
   - list
   - get
   - watch
-- apiGroups:
-  - ""
-  resources:
-  - pods/log
-  verbs:
-  - get
 {{- if $interceptEnabled }}
 - apiGroups:
   - ""
   resources:
-  - configmaps
+  - pods/eviction
   verbs:
   - create
 {{- end }}
 - apiGroups:
   - ""
   resources:
+  - pods/log
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
   - configmaps
   verbs:
   - list
   - get
   - watch
-{{- if $interceptEnabled }}
-  - update
-  - delete
-{{- end }}
   resourceNames:
 {{- if eq . $managerNamespace }}
   - {{ include "traffic-manager.name" $ }}
-{{- end }}
-{{- if has . $namespaces }}
-  - telepresence-agents
 {{- end }}
 - apiGroups:
   - "apps"
@@ -80,9 +73,6 @@ rules:
   - get
   - list
   - watch
-{{- if $interceptEnabled }}
-  - patch
-{{- end }}
 {{- if $argoRolloutsEnabled }}
 - apiGroups:
   - "argoproj.io"

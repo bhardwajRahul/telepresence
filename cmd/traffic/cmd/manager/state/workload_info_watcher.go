@@ -12,6 +12,7 @@ import (
 
 	"github.com/datawire/dlib/dlog"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/manager"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/mutator"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/v2/pkg/workload"
@@ -99,14 +100,14 @@ func (wf *workloadInfoWatcher) Watch(ctx context.Context, stream rpc.Manager_Wat
 				dlog.Debug(ctx, "Agents channel closed")
 				return nil
 			}
-			wf.handleAgentSnapshot(ctx, ais.State)
+			wf.handleAgentSnapshot(ctx, ais)
 		// Events that arrive at the intercept channel should be counted as modifications.
 		case is, ok := <-interceptsCh:
 			if !ok {
 				dlog.Debug(ctx, "Intercepts channel closed")
 				return nil
 			}
-			wf.handleInterceptSnapshot(ctx, is.State)
+			wf.handleInterceptSnapshot(ctx, is)
 		}
 	}
 }
@@ -258,8 +259,10 @@ func (wf *workloadInfoWatcher) handleWorkloadsSnapshot(ctx context.Context, wes 
 func (wf *workloadInfoWatcher) handleAgentSnapshot(ctx context.Context, ais map[string]*rpc.AgentInfo) {
 	oldAgentInfos := wf.agentInfos
 	wf.agentInfos = ais
+	m := mutator.GetMap(ctx)
 	for k, a := range oldAgentInfos {
-		if _, ok := ais[k]; !ok {
+		ai, ok := ais[k]
+		if !ok || m.IsInactive(ai.PodName) {
 			name := a.Name
 			as := rpc.WorkloadInfo_NO_AGENT_UNSPECIFIED
 			if w, ok := wf.workloadEvents[name]; ok && w.Type != rpc.WorkloadEvent_DELETED {
@@ -289,6 +292,9 @@ func (wf *workloadInfoWatcher) handleAgentSnapshot(ctx context.Context, ais map[
 		}
 	}
 	for _, a := range ais {
+		if m.IsInactive(a.PodName) {
+			continue
+		}
 		name := a.Name
 		var iClients []*rpc.WorkloadInfo_Intercept
 		as := rpc.WorkloadInfo_INSTALLED

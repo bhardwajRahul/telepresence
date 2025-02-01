@@ -72,6 +72,18 @@ namespaceSelector:
 The output of the `telepresence list` command will now include the workload kind (deployment, replicaset, statefulset, or rollout) in all entries.
 </div>
 
+## <div style="display:flex;"><img src="images/change.png" alt="change" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">Trigger the mutating webhook with Kubernetes eviction objects instead of patching workloads.</div></div>
+<div style="margin-left: 15px">
+
+Instead of patching workloads, or scaling the workloads down to zero and up again, Telepresence will now create policy/v1 Eviction objects to trigger the mutating webhook. This causes a slight change in the traffic-manager RBAC. The `patch` permissions are no longer needed. Instead, the traffic-manager must be able to create "pod/eviction" objects.
+</div>
+
+## <div style="display:flex;"><img src="images/change.png" alt="change" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">The telepresence-agents configmap is no longer used.</div></div>
+<div style="margin-left: 15px">
+
+The traffic-agent configuration was moved into a pod-annotation. This avoids sync problems between the telepresence-agents (which is no no longer present) and the pods.
+</div>
+
 ## <div style="display:flex;"><img src="images/change.png" alt="change" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">Drop deprecated current-cluster-id command.</div></div>
 <div style="margin-left: 15px">
 

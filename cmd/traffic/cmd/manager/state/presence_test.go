@@ -52,9 +52,10 @@ func TestPresence(t *testing.T) {
 	a.False(isPresent("d"))
 
 	collected := make([]string, 0, 3)
-	for id, item := range p.GetAllClients() {
+	p.EachClient(func(id string, item *rpc.ClientInfo) bool {
 		collected = append(collected, fmt.Sprintf("%s/%v", id, item.Name))
-	}
+		return true
+	})
 	a.Contains(collected, fmt.Sprintf("%s/item-a", sa))
 	a.Contains(collected, fmt.Sprintf("%s/item-b", sb))
 	a.Contains(collected, fmt.Sprintf("%s/item-c", sc))

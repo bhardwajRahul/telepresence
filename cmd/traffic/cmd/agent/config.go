@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,13 +32,14 @@ type config struct {
 }
 
 func LoadConfig(ctx context.Context) (Config, error) {
-	bs, err := dos.ReadFile(ctx, filepath.Join(agentconfig.ConfigMountPoint, agentconfig.ConfigFile))
-	if err != nil {
-		return nil, fmt.Errorf("unable to open agent ConfigMap: %w", err)
+	cfgTight, ok := dos.LookupEnv(ctx, agentconfig.EnvAgentConfig)
+	if !ok {
+		return nil, errors.New("unable to retrieve agent ConfigMap entry")
 	}
 
+	var err error
 	c := config{}
-	c.sidecarExt, err = agentconfig.UnmarshalYAML(bs)
+	c.sidecarExt, err = agentconfig.UnmarshalJSON(cfgTight)
 	if err != nil {
 		return nil, fmt.Errorf("unable to decode agent ConfigMap: %w", err)
 	}

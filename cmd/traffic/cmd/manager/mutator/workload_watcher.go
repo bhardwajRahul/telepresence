@@ -28,11 +28,11 @@ func (c *configWatcher) watchWorkloads(ctx context.Context, ix cache.SharedIndex
 			DeleteFunc: func(obj any) {
 				if wl, ok := workload.FromAny(obj); ok {
 					if len(wl.GetOwnerReferences()) == 0 {
-						c.deleteWorkload(ctx, wl)
+						c.Delete(wl.GetName(), wl.GetNamespace())
 					}
 				} else if dfsu, ok := obj.(*cache.DeletedFinalStateUnknown); ok {
 					if wl, ok = workload.FromAny(dfsu.Obj); ok && len(wl.GetOwnerReferences()) == 0 {
-						c.deleteWorkload(ctx, wl)
+						c.Delete(wl.GetName(), wl.GetNamespace())
 					}
 				}
 			},
@@ -46,31 +46,19 @@ func (c *configWatcher) watchWorkloads(ctx context.Context, ix cache.SharedIndex
 		})
 }
 
-func (c *configWatcher) deleteWorkload(ctx context.Context, wl k8sapi.Workload) {
-	scx, err := c.Get(ctx, wl.GetName(), wl.GetNamespace())
-	if err != nil {
-		dlog.Errorf(ctx, "Failed to get sidecar config: %v", err)
-	} else if scx != nil {
-		err = c.Delete(ctx, wl.GetName(), wl.GetNamespace())
-		if err != nil {
-			dlog.Errorf(ctx, "Failed to delete sidecar config: %v", err)
-		}
-	}
-}
-
 func (c *configWatcher) updateWorkload(ctx context.Context, wl, oldWl k8sapi.Workload, state workload.State) {
 	if state == workload.StateFailure {
 		return
 	}
 	tpl := wl.GetPodTemplate()
-	ia, ok := tpl.Annotations[workload.InjectAnnotation]
+	ia, ok := tpl.Annotations[agentconfig.InjectAnnotation]
 	if !ok {
 		return
 	}
 	if oldWl != nil && cmp.Equal(oldWl.GetPodTemplate(), tpl,
 		cmpopts.IgnoreFields(meta.ObjectMeta{}, "Namespace", "UID", "ResourceVersion", "CreationTimestamp", "DeletionTimestamp"),
 		cmpopts.IgnoreMapEntries(func(k, _ string) bool {
-			return k == workload.AnnRestartedAt
+			return k == agentconfig.RestartedAtAnnotation
 		})) {
 		return
 	}
@@ -88,11 +76,7 @@ func (c *configWatcher) updateWorkload(ctx context.Context, wl, oldWl k8sapi.Wor
 		}
 		var scx agentconfig.SidecarExt
 		if oldWl != nil {
-			scx, err = c.Get(ctx, wl.GetName(), wl.GetNamespace())
-			if err != nil {
-				dlog.Errorf(ctx, "Failed to get sidecar config: %v", err)
-				return
-			}
+			scx = c.Get(wl.GetName(), wl.GetNamespace())
 		}
 		action := "Generating"
 		if scx == nil {
@@ -103,17 +87,25 @@ func (c *configWatcher) updateWorkload(ctx context.Context, wl, oldWl k8sapi.Wor
 		scx, err = cfg.Generate(ctx, wl, scx)
 		if err != nil {
 			if strings.Contains(err.Error(), "unable to find") {
-				if err = c.remove(ctx, wl.GetName(), wl.GetNamespace()); err != nil {
-					dlog.Error(ctx, err)
-				}
+				c.Delete(wl.GetName(), wl.GetNamespace())
 			} else {
 				dlog.Error(ctx, err)
 			}
+			return
 		}
-		if err = c.store(ctx, scx); err != nil {
+
+		c.Store(scx)
+		ac := scx.AgentConfig()
+		dlog.Debugf(ctx, "deleting pods with config mismatch for %s %s.%s", ac.WorkloadKind, ac.WorkloadName, ac.Namespace)
+		err = c.DeletePodsWithConfigMismatch(ctx, scx)
+		if err != nil {
 			dlog.Error(ctx, err)
 		}
 	case "false", "disabled":
-		c.deleteWorkload(ctx, wl)
+		c.Delete(wl.GetName(), wl.GetNamespace())
+		err := c.DeletePodsWithConfig(ctx, wl)
+		if err != nil {
+			dlog.Error(ctx, err)
+		}
 	}
 }

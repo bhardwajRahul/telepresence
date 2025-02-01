@@ -8,11 +8,8 @@ import (
 	"strings"
 	"time"
 
-	core "k8s.io/api/core/v1"
-	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
-	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/mutator"
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 )
@@ -67,6 +64,10 @@ func testManualAgent(s *itest.Suite, nsp itest.NamespacePair) {
 	var volumes []map[string]any
 	require.NoError(yaml.Unmarshal([]byte(stdout), &volumes))
 
+	stdout = itest.TelepresenceOk(ctx, "genyaml", "annotations", "--config", configFile)
+	var anns map[string]string
+	require.NoError(yaml.Unmarshal([]byte(stdout), &anns))
+
 	b, err := os.ReadFile(filepath.Join(k8sDir, "echo-manual-inject-deploy.yaml"))
 	require.NoError(err)
 	var deploy map[string]any
@@ -92,45 +93,7 @@ func testManualAgent(s *itest.Suite, nsp itest.NamespacePair) {
 	podSpec["containers"] = append(cons, container)
 	podSpec["initContainers"] = []map[string]any{initContainer}
 	podSpec["volumes"] = volumes
-	podTemplate["metadata"].(map[string]any)["annotations"] = map[string]string{mutator.ManualInjectAnnotation: "true"}
-
-	// Add the configmap entry by first retrieving the current config map
-	var cfgMap *core.ConfigMap
-	origCfgYaml, err := nsp.KubectlOut(ctx, "get", "configmap", agentconfig.ConfigMap, "-o", "yaml")
-	if err != nil {
-		cfgMap = &core.ConfigMap{
-			TypeMeta: meta.TypeMeta{
-				Kind:       "ConfigMap",
-				APIVersion: "v1",
-			},
-			ObjectMeta: meta.ObjectMeta{
-				Name:      agentconfig.ConfigMap,
-				Namespace: nsp.AppNamespace(),
-			},
-		}
-		origCfgYaml = ""
-	} else {
-		require.NoError(yaml.Unmarshal([]byte(origCfgYaml), &cfgMap))
-	}
-	if cfgMap.Data == nil {
-		cfgMap.Data = make(map[string]string)
-	}
-	cfgMap.Data[ac.WorkloadName] = cfgEntry
-
-	cfgYaml := writeYaml(agentconfig.ConfigMap+".yaml", cfgMap)
-	require.NoError(nsp.Kubectl(ctx, "apply", "-f", cfgYaml))
-	defer func() {
-		if origCfgYaml == "" {
-			require.NoError(nsp.Kubectl(ctx, "delete", "configmap", agentconfig.ConfigMap))
-		} else {
-			// Restore original configmap
-			cfgMap.ObjectMeta = meta.ObjectMeta{
-				Name:      agentconfig.ConfigMap,
-				Namespace: nsp.AppNamespace(),
-			}
-			writeYaml(agentconfig.ConfigMap+".yaml", cfgMap)
-		}
-	}()
+	podTemplate["metadata"].(map[string]any)["annotations"] = anns
 
 	dplYaml := writeYaml("deployment.yaml", deploy)
 	require.NoError(nsp.Kubectl(ctx, "apply", "-f", dplYaml))

@@ -900,6 +900,19 @@ func (s *session) status(c context.Context, initial bool) *rpc.ConnectInfo {
 //
 // Uninstalling all or specific agents require that the client can get and update the agents ConfigMap.
 func (s *session) Uninstall(ctx context.Context, ur *rpc.UninstallRequest) (*common.Result, error) {
+	_, err := s.managerClient.UninstallAgents(ctx, &manager.UninstallAgentsRequest{
+		SessionInfo: s.sessionInfo,
+		Agents:      ur.Agents,
+	})
+	if err != nil {
+		if status.Code(err) == codes.Unimplemented {
+			return s.legacyUninstall(ctx, ur)
+		}
+	}
+	return errcat.ToResult(err), nil
+}
+
+func (s *session) legacyUninstall(ctx context.Context, ur *rpc.UninstallRequest) (*common.Result, error) {
 	api := k8sapi.GetK8sInterface(ctx).CoreV1()
 	loadAgentConfigMap := func(ns string) (*core.ConfigMap, error) {
 		cm, err := api.ConfigMaps(ns).Get(ctx, agentconfig.ConfigMap, meta.GetOptions{})
@@ -1250,10 +1263,11 @@ func (s *session) workloadsWatcher(ctx context.Context, namespace string, synced
 						clients[i] = ic.Client
 					}
 				}
-				dlog.Debugf(ctx, "Adding workload %s/%s.%s", key.kind, key.name, namespace)
+				state := workload.StateFromRPC(w.State)
+				dlog.Debugf(ctx, "Adding workload %s/%s.%s %s %s %s", key.kind, key.name, namespace, state, w.AgentState, clients)
 				workloads[key] = workloadInfo{
 					uid:              types.UID(w.Uid),
-					state:            workload.StateFromRPC(w.State),
+					state:            state,
 					agentState:       w.AgentState,
 					interceptClients: clients,
 				}

@@ -13,6 +13,8 @@ import (
 
 	"github.com/pkg/sftp"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/datawire/dlib/dgroup"
 	"github.com/datawire/dlib/dhttp"
@@ -41,9 +43,10 @@ func AppEnvironment(ctx context.Context, ag *agentconfig.Container) (map[string]
 
 	// Keys that aren't useful when running on the local machine.
 	skipKeys := map[string]bool{
-		"HOME":     true,
-		"PATH":     true,
-		"HOSTNAME": true,
+		"HOME":                     true,
+		"PATH":                     true,
+		"HOSTNAME":                 true,
+		agentconfig.EnvAgentConfig: true,
 	}
 
 	// Add prefixed variables separately last, so that we can
@@ -131,7 +134,7 @@ func Main(ctx context.Context, _ ...string) error {
 	// Handle configuration
 	config, err := LoadConfig(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("unable to load config: %w", err)
 	}
 
 	g := dgroup.NewGroup(ctx, dgroup.GroupConfig{
@@ -164,7 +167,7 @@ func sidecar(ctx context.Context, s State, info *rpc.AgentInfo) error {
 		icStates := make(map[agentconfig.PortAndProto][]*agentconfig.Intercept, len(cn.Intercepts))
 		for _, ic := range cn.Intercepts {
 			ap := ic.AgentPort
-			if cn.Replace {
+			if cn.Replace == agentconfig.ReplacePolicyContainer {
 				// Listen to replaced container's original port.
 				ap = ic.ContainerPort
 			}
@@ -176,7 +179,7 @@ func sidecar(ctx context.Context, s State, info *rpc.AgentInfo) error {
 			ic := ics[0] // They all have the same protocol container port, so the first one will do.
 			var fwd forwarder.Interceptor
 			var cp uint16
-			if !cn.Replace {
+			if cn.Replace == agentconfig.ReplacePolicyIntercept {
 				if ic.TargetPortNumeric {
 					// We must differentiate between connections originating from the agent's forwarder to the container
 					// port and those from other sources. The former should not be routed back, while the latter should
@@ -215,7 +218,12 @@ func TalkToManagerLoop(ctx context.Context, s State, info *rpc.AgentInfo) {
 
 	for {
 		if err := TalkToManager(ctx, gRPCAddress, info, s); err != nil {
-			dlog.Info(ctx, err)
+			switch status.Code(err) {
+			case codes.AlreadyExists, codes.Aborted:
+				// This won't change, so abort here.
+				return
+			}
+			dlog.Error(ctx, err)
 		}
 
 		select {

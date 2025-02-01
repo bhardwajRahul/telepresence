@@ -7,12 +7,16 @@ import (
 
 	"github.com/puzpuzpuz/xsync/v3"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/rpc/v2/manager"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/mutator"
 	testdata "github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/test"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/watchable"
 	"github.com/telepresenceio/telepresence/v2/pkg/log"
+	"github.com/telepresenceio/telepresence/v2/pkg/workload"
 )
 
 type suiteState struct {
@@ -25,12 +29,15 @@ type suiteState struct {
 func (s *suiteState) SetupTest() {
 	s.ctx = dlog.NewTestContext(s.T(), false)
 	s.state = &state{
-		backgroundCtx:   s.ctx,
-		sessions:        xsync.NewMapOf[string, SessionState](),
-		agentsByName:    xsync.NewMapOf[string, *xsync.MapOf[string, *manager.AgentInfo]](),
-		interceptStates: xsync.NewMapOf[string, *interceptState](),
-		timedLogLevel:   log.NewTimedLevel("debug", log.SetLevel),
-		llSubs:          newLoglevelSubscribers(),
+		backgroundCtx:    s.ctx,
+		intercepts:       watchable.NewMap[string, *manager.InterceptInfo](interceptEqual, time.Millisecond),
+		agents:           watchable.NewMap[string, *manager.AgentInfo](agentsEqual, time.Millisecond),
+		clients:          xsync.NewMapOf[string, *manager.ClientInfo](),
+		workloadWatchers: xsync.NewMapOf[string, workload.Watcher](),
+		sessions:         xsync.NewMapOf[string, SessionState](),
+		interceptStates:  xsync.NewMapOf[string, *interceptState](),
+		timedLogLevel:    log.NewTimedLevel("debug", log.SetLevel),
+		llSubs:           newLoglevelSubscribers(),
 	}
 }
 
@@ -42,6 +49,25 @@ func (fc *FakeClock) Now() time.Time {
 	base := time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
 	offset := time.Duration(fc.When) * time.Second
 	return base.Add(offset)
+}
+
+func getAllAgents(st *state) []*manager.AgentInfo {
+	agents := make([]*manager.AgentInfo, 0, st.agents.Size())
+	st.agents.Range(func(_ string, a *manager.AgentInfo) bool {
+		agents = append(agents, a)
+		return true
+	})
+	return agents
+}
+
+func getAgentsByName(st *state, name, namespace string) (agents []*manager.AgentInfo) {
+	st.agents.Range(func(_ string, a *manager.AgentInfo) bool {
+		if a.Name == name && a.Namespace == namespace {
+			agents = append(agents, a)
+		}
+		return true
+	})
+	return agents
 }
 
 func (s *suiteState) TestStateInternal() {
@@ -59,42 +85,48 @@ func (s *suiteState) TestStateInternal() {
 		demoAgent2 := testAgents["demo2"]
 
 		clock := &FakeClock{}
-		s := NewState(ctx).(*state)
+		m := mutator.NewWatcher()
+		ctx = mutator.WithMap(ctx, m)
+		st := NewState(ctx).(*state)
 
-		h := s.AddAgent(helloAgent, clock.Now())
-		hp := s.AddAgent(helloProAgent, clock.Now())
-		d1 := s.AddAgent(demoAgent1, clock.Now())
-		d2 := s.AddAgent(demoAgent2, clock.Now())
+		h, err := st.AddAgent(ctx, helloAgent, clock.Now())
+		require.NoError(t, err)
+		hp, err := st.AddAgent(ctx, helloProAgent, clock.Now())
+		require.NoError(t, err)
+		d1, err := st.AddAgent(ctx, demoAgent1, clock.Now())
+		require.NoError(t, err)
+		d2, err := st.AddAgent(ctx, demoAgent2, clock.Now())
+		require.NoError(t, err)
 
-		a.Equal(helloAgent, s.GetAgent(h))
-		a.Equal(helloProAgent, s.GetAgent(hp))
-		a.Equal(demoAgent1, s.GetAgent(d1))
-		a.Equal(demoAgent2, s.GetAgent(d2))
+		a.Equal(helloAgent, st.GetAgent(h))
+		a.Equal(helloProAgent, st.GetAgent(hp))
+		a.Equal(demoAgent1, st.GetAgent(d1))
+		a.Equal(demoAgent2, st.GetAgent(d2))
 
-		agents := s.getAllAgents()
+		agents := getAllAgents(st)
 		a.Len(agents, 4)
 		a.Contains(agents, helloAgent)
 		a.Contains(agents, helloProAgent)
 		a.Contains(agents, demoAgent1)
 		a.Contains(agents, demoAgent2)
 
-		agents = s.getAgentsByName("hello", "default")
+		agents = getAgentsByName(st, "hello", "default")
 		a.Len(agents, 1)
 		a.Contains(agents, helloAgent)
 
-		agents = s.getAgentsByName("hello-pro", "default")
+		agents = getAgentsByName(st, "hello-pro", "default")
 		a.Len(agents, 1)
 		a.Contains(agents, helloProAgent)
 
-		agents = s.getAgentsByName("demo", "default")
+		agents = getAgentsByName(st, "demo", "default")
 		a.Len(agents, 2)
 		a.Contains(agents, demoAgent1)
 		a.Contains(agents, demoAgent2)
 
-		agents = s.getAgentsByName("does-not-exist", "default")
+		agents = getAgentsByName(st, "does-not-exist", "default")
 		a.Len(agents, 0)
 
-		agents = s.getAgentsByName("hello", "does-not-exist")
+		agents = getAgentsByName(st, "hello", "does-not-exist")
 		a.Len(agents, 0)
 	})
 

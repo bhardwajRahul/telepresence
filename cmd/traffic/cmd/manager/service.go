@@ -210,16 +210,18 @@ func (s *service) ArriveAsClient(ctx context.Context, client *rpc.ClientInfo) (*
 // ArriveAsAgent establishes a session between an agent and the Manager.
 func (s *service) ArriveAsAgent(ctx context.Context, agent *rpc.AgentInfo) (*rpc.SessionInfo, error) {
 	dlog.Debugf(ctx, "ArriveAsAgent %s called", agent.PodName)
-
 	if val := validateAgent(agent); val != "" {
 		return nil, status.Error(codes.InvalidArgument, val)
 	}
-	mutator.GetMap(ctx).Whitelist(agent.PodName, agent.Namespace)
 
 	for _, cn := range agent.Containers {
 		s.removeExcludedEnvVars(cn.Environment)
 	}
-	sessionID := s.state.AddAgent(agent, s.clock.Now())
+
+	sessionID, err := s.state.AddAgent(ctx, agent, s.clock.Now())
+	if err != nil {
+		return nil, err
+	}
 
 	return &rpc.SessionInfo{
 		SessionId:        sessionID,
@@ -305,11 +307,10 @@ func (s *service) WatchAgentPods(session *rpc.SessionInfo, stream rpc.Manager_Wa
 		case <-sessionDone:
 			// Manager believes this session has ended.
 			return nil
-		case as, ok := <-agentsCh:
+		case agm, ok := <-agentsCh:
 			if !ok {
 				return nil
 			}
-			agm := as.State
 			agents = make([]*rpc.AgentPodInfo, len(agm))
 			agentNames = make([]string, len(agm))
 			i := 0
@@ -333,7 +334,7 @@ func (s *service) WatchAgentPods(session *rpc.SessionInfo, stream rpc.Manager_Wa
 			if !ok {
 				return nil
 			}
-			interceptInfos = is.State
+			interceptInfos = is
 			for i, a := range agents {
 				a.Intercepted = isIntercepted(agentNames[i], a.Namespace)
 			}
@@ -414,11 +415,11 @@ func (s *service) watchAgents(ctx context.Context, includeAgent func(string, *rp
 				dlog.Debug(ctx, "WatchAgentsNS request cancelled")
 				return nil
 			}
-			agentSessionIDs := slices.Sorted(maps.Keys(snapshot.State))
+			agentSessionIDs := slices.Sorted(maps.Keys(snapshot))
 			agents := make([]*rpc.AgentInfo, 0, len(agentSessionIDs))
 			for _, agentSessionID := range agentSessionIDs {
 				if as := s.state.GetSession(agentSessionID); as != nil && as.Active() {
-					agents = append(agents, snapshot.State[agentSessionID])
+					agents = append(agents, snapshot[agentSessionID])
 				}
 			}
 			if slices.EqualFunc(agents, lastSnap, infosEqual) {
@@ -429,7 +430,7 @@ func (s *service) watchAgents(ctx context.Context, includeAgent func(string, *rp
 				names := make([]string, len(agents))
 				i := 0
 				for _, a := range agents {
-					names[i] = a.Name + "." + a.Namespace
+					names[i] = a.PodName + "." + a.Namespace
 					i++
 				}
 				dlog.Debugf(ctx, "WatchAgentsNS sending update %v", names)
@@ -519,8 +520,8 @@ func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_W
 				return nil
 			}
 			dlog.Debugf(ctx, "WatchIntercepts sending update")
-			intercepts := make([]*rpc.InterceptInfo, 0, len(snapshot.State))
-			for _, intercept := range snapshot.State {
+			intercepts := make([]*rpc.InterceptInfo, 0, len(snapshot))
+			for _, intercept := range snapshot {
 				intercepts = append(intercepts, intercept)
 			}
 			resp := &rpc.InterceptInfoSnapshot{
@@ -612,14 +613,6 @@ func (s *service) CreateIntercept(ctx context.Context, ciReq *rpc.CreateIntercep
 		return nil, err
 	}
 
-	if ciReq.InterceptSpec.Replace {
-		err = s.state.AddInterceptFinalizer(interceptInfo.Id, s.state.RestoreAppContainer)
-		if err != nil {
-			// The intercept's been created but we can't finalize it...
-			dlog.Errorf(ctx, "Failed to add finalizer for %s: %v", interceptInfo.Id, err)
-		}
-	}
-
 	SetGauge(s.state.GetInterceptActiveStatus(), client.Name, client.InstallId, &spec.Name, 1)
 
 	IncrementInterceptCounterFunc(s.state.GetInterceptCounter(), client.Name, client.InstallId, spec)
@@ -687,7 +680,7 @@ func (s *service) ReviewIntercept(ctx context.Context, rIReq *rpc.ReviewIntercep
 	sessionID := rIReq.GetSession().GetSessionId()
 	ceptID := rIReq.Id
 
-	agent := s.state.GetActiveAgent(sessionID)
+	agent := s.state.GetAgent(sessionID)
 	if agent == nil {
 		return &empty.Empty{}, nil
 	}
@@ -705,7 +698,7 @@ func (s *service) ReviewIntercept(ctx context.Context, rIReq *rpc.ReviewIntercep
 		if intercept.Spec.Namespace != agent.Namespace || intercept.Spec.Agent != agent.Name {
 			return
 		}
-		if mutator.GetMap(ctx).IsBlacklisted(agent.PodName, agent.Namespace) {
+		if mutator.GetMap(ctx).IsInactive(agent.PodName) {
 			dlog.Debugf(ctx, "Pod %s.%s is blacklisted", agent.PodName, agent.Namespace)
 			return
 		}
@@ -912,6 +905,12 @@ func (s *service) GetLogs(_ context.Context, _ *rpc.GetLogsRequest) (*rpc.LogsRe
 func (s *service) SetLogLevel(ctx context.Context, request *rpc.LogLevelRequest) (*empty.Empty, error) {
 	s.state.SetTempLogLevel(ctx, request)
 	return &empty.Empty{}, nil
+}
+
+func (s *service) UninstallAgents(ctx context.Context, request *rpc.UninstallAgentsRequest) (*empty.Empty, error) {
+	ctx = managerutil.WithSessionInfo(ctx, request.GetSessionInfo())
+	dlog.Debugf(ctx, "UninstallAgents called %s", request.Agents)
+	return &empty.Empty{}, s.state.UninstallAgents(ctx, request)
 }
 
 func (s *service) WatchLogLevel(_ *empty.Empty, stream rpc.Manager_WatchLogLevelServer) error {

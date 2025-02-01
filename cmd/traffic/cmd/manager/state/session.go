@@ -177,7 +177,6 @@ type agentSessionState struct {
 	sessionState
 	dnsRequests  chan *rpc.DNSRequest
 	dnsResponses map[string]chan *rpc.DNSResponse
-	active       atomic.Bool
 }
 
 func newAgentSessionState(ctx context.Context, ts time.Time) *agentSessionState {
@@ -186,16 +185,10 @@ func newAgentSessionState(ctx context.Context, ts time.Time) *agentSessionState 
 		dnsRequests:  make(chan *rpc.DNSRequest),
 		dnsResponses: make(map[string]chan *rpc.DNSResponse),
 	}
-	as.active.Store(true)
 	return as
 }
 
-func (ss *agentSessionState) Active() bool {
-	return ss.active.Load()
-}
-
 func (ss *agentSessionState) Cancel() {
-	ss.active.Store(false)
 	close(ss.dnsRequests)
 	for k, lr := range ss.dnsResponses {
 		delete(ss.dnsResponses, k)

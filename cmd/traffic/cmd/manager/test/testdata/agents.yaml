@@ -2,6 +2,7 @@
 hello:
   name: hello
   namespace: default
+  pod_name: hello-3487fcx0-uxhgh
   hostname: hello-abcdef-123
   product: telepresence-agent
   version: "1"
@@ -12,6 +13,7 @@ hello:
 helloPro:
   name: hello-pro
   namespace: default
+  pod_name: hello-pro-f4784865-wgzxg
   hostname: hello-pro-abcdef-123
   product: telepresence-agent
   version: "1"
@@ -28,6 +30,7 @@ helloPro:
 demo1:
   name: demo
   namespace: default
+  pod_name: demo-e2784865-xgamd
   hostname: demo-abcdef-123
   product: telepresence-agent
   version: "1"
@@ -44,6 +47,7 @@ demo1:
 demo2:
   name: demo
   namespace: default
+  pod_name: demo-33fce865-bgdxf
   hostname: demo-abcdef-456
   product: telepresence-agent
   version: "1"

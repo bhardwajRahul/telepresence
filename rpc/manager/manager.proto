@@ -714,6 +714,15 @@ message WorkloadEventsRequest {
   string namespace = 3;
 }
 
+message UninstallAgentsRequest {
+  // The session_info identifies the client connection, and hence the
+  // namespace for the resulting watcher.
+  SessionInfo session_info = 1;
+
+  // The agents to install. Empty means all agents in the connected namespace.
+  repeated string agents = 2;
+}
+
 service Manager {
   // Version returns the version information of the Manager.
   rpc Version(google.protobuf.Empty) returns (VersionInfo2);
@@ -861,4 +870,8 @@ service Manager {
   // connection and responds with a Tunnel. The manager then connects the
   // two tunnels.
   rpc WatchDial(SessionInfo) returns (stream DialRequest);
+
+  // UninstallAgents will uninstall the traffic-agent from the given workloads (or all
+  // workloads if the list is empty).
+  rpc UninstallAgents(UninstallAgentsRequest) returns (google.protobuf.Empty);
 }

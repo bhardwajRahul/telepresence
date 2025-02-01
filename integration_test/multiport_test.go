@@ -192,7 +192,9 @@ func (s *connectedSuite) Test_SameContainerPort() {
 	ctx := s.Context()
 	dep := "echo-stp"
 	s.ApplyApp(ctx, "echo-same-target-port", "deploy/"+dep)
-	defer s.KubectlOk(ctx, "delete", "deploy", dep)
+	defer func() {
+		s.KubectlOk(ctx, "delete", "deploy", dep)
+	}()
 
 	portTest := func(svcPort string) {
 		ctx := s.Context()

@@ -23,6 +23,7 @@ import (
 	"github.com/datawire/dlib/dlog"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/manager"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/mutator"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/namespaces"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/watchable"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
@@ -34,7 +35,7 @@ import (
 )
 
 type State interface {
-	AddAgent(*rpc.AgentInfo, time.Time) string
+	AddAgent(context.Context, *rpc.AgentInfo, time.Time) (string, error)
 	AddClient(*rpc.ClientInfo, time.Time) string
 	AddIntercept(context.Context, *rpc.CreateInterceptRequest) (*rpc.ClientInfo, *rpc.InterceptInfo, error)
 	AddInterceptFinalizer(string, InterceptFinalizer) error
@@ -50,8 +51,7 @@ type State interface {
 	ExpireSessions(context.Context, time.Time, time.Time)
 	GetAgent(sessionID string) *rpc.AgentInfo
 	GetOrGenerateAgentConfig(ctx context.Context, name, namespace string) (agentconfig.SidecarExt, error)
-	GetActiveAgent(sessionID string) *rpc.AgentInfo
-	GetAllClients() map[string]*rpc.ClientInfo
+	EachClient(f func(string, *rpc.ClientInfo) bool)
 	GetClient(sessionID string) *rpc.ClientInfo
 	GetSession(string) SessionState
 	GetSessionConsumptionMetrics(string) *SessionConsumptionMetrics
@@ -69,7 +69,6 @@ type State interface {
 	PrepareIntercept(context.Context, *rpc.CreateInterceptRequest) (*rpc.PreparedIntercept, error)
 	RemoveIntercept(context.Context, string)
 	DropIntercept(string)
-	RestoreAppContainer(context.Context, *rpc.InterceptInfo) error
 	FinalizeIntercept(ctx context.Context, intercept *rpc.InterceptInfo)
 	LoadMatchingIntercepts(filter func(string, *rpc.InterceptInfo) bool) map[string]*rpc.InterceptInfo
 	RemoveSession(context.Context, string)
@@ -83,18 +82,18 @@ type State interface {
 		interceptStatusGaugeVec *prometheus.GaugeVec)
 	Tunnel(context.Context, tunnel.Stream) error
 	UpdateIntercept(string, func(*rpc.InterceptInfo)) *rpc.InterceptInfo
-	UpdateClient(sessionID string, apply func(*rpc.ClientInfo)) *rpc.ClientInfo
 	RefreshSessionConsumptionMetrics(sessionID string)
 	ValidateAgentImage(string, bool) error
 	WaitForTempLogLevel(rpc.Manager_WatchLogLevelServer) error
-	WatchAgents(context.Context, func(sessionID string, agent *rpc.AgentInfo) bool) <-chan watchable.Snapshot[*rpc.AgentInfo]
+	WatchAgents(context.Context, func(sessionID string, agent *rpc.AgentInfo) bool) <-chan map[string]*rpc.AgentInfo
 	WatchDial(sessionID string) <-chan *rpc.DialRequest
-	WatchIntercepts(context.Context, func(sessionID string, intercept *rpc.InterceptInfo) bool) <-chan watchable.Snapshot[*rpc.InterceptInfo]
+	WatchIntercepts(context.Context, func(sessionID string, intercept *rpc.InterceptInfo) bool) <-chan map[string]*rpc.InterceptInfo
 	WatchWorkloads(ctx context.Context, namespace string) (ch <-chan []workload.Event, err error)
 	WatchLookupDNS(string) <-chan *rpc.DNSRequest
 	ValidateCreateAgent(context.Context, k8sapi.Workload, agentconfig.SidecarExt) error
 	NewWorkloadInfoWatcher(clientSession, namespace string) WorkloadInfoWatcher
 	ManagesNamespace(context.Context, string) bool
+	UninstallAgents(context.Context, *rpc.UninstallAgentsRequest) error
 }
 
 type (
@@ -117,10 +116,7 @@ type state struct {
 	// protect against memory corruption and ensure serialization for watches, we need to do our
 	// own locking here to ensure consistency between the various maps:
 	//
-	//  1. `agents` needs to stay in-sync with `sessions`
-	//  2. `clients` needs to stay in-sync with `sessions`
 	//  3. `port` needs to be updated in-sync with `intercepts`
-	//  4. `agentsByName` needs stay in-sync with `agents`
 	//  5. `intercepts` needs to be pruned in-sync with `clients` (based on
 	//     `intercept.ClientSession.SessionId`)
 	//  6. `intercepts` needs to be pruned in-sync with `agents` (based on
@@ -128,11 +124,10 @@ type state struct {
 	//  7. `cfgMapLocks` access must be concurrency protected
 	//  8. `cachedAgentImage` access must be concurrency protected
 	//  9. `interceptState` must be concurrency protected and updated/deleted in sync with intercepts
-	intercepts                 watchable.Map[*rpc.InterceptInfo]                          // info for intercepts, keyed by intercept id
-	agents                     watchable.Map[*rpc.AgentInfo]                              // info for agent sessions, keyed by session id
-	clients                    watchable.Map[*rpc.ClientInfo]                             // info for client sessions, keyed by session id
-	sessions                   *xsync.MapOf[string, SessionState]                         // info for all sessions, keyed by session id
-	agentsByName               *xsync.MapOf[string, *xsync.MapOf[string, *rpc.AgentInfo]] // indexed copy of `agents`
+	intercepts                 *watchable.Map[string, *rpc.InterceptInfo] // info for intercepts, keyed by intercept id
+	agents                     *watchable.Map[string, *rpc.AgentInfo]     // info for agent sessions, keyed by session id
+	clients                    *xsync.MapOf[string, *rpc.ClientInfo]      // info for client sessions, keyed by session id
+	sessions                   *xsync.MapOf[string, SessionState]         // info for all sessions, keyed by session id
 	interceptStates            *xsync.MapOf[string, *interceptState]
 	timedLogLevel              log.TimedLevel
 	llSubs                     *loglevelSubscribers
@@ -155,12 +150,22 @@ func (s *state) ManagesNamespace(ctx context.Context, ns string) bool {
 
 var NewStateFunc = NewState //nolint:gochecknoglobals // extension point
 
+func interceptEqual(a, b *rpc.InterceptInfo) bool {
+	return proto.Equal(a, b)
+}
+
+func agentsEqual(a, b *rpc.AgentInfo) bool {
+	return proto.Equal(a, b)
+}
+
 func NewState(ctx context.Context) State {
 	loglevel := os.Getenv("LOG_LEVEL")
 	s := &state{
 		backgroundCtx:    ctx,
+		intercepts:       watchable.NewMap[string, *rpc.InterceptInfo](interceptEqual, time.Millisecond),
+		agents:           watchable.NewMap[string, *rpc.AgentInfo](agentsEqual, time.Millisecond),
+		clients:          xsync.NewMapOf[string, *rpc.ClientInfo](),
 		sessions:         xsync.NewMapOf[string, SessionState](),
-		agentsByName:     xsync.NewMapOf[string, *xsync.MapOf[string, *rpc.AgentInfo]](),
 		interceptStates:  xsync.NewMapOf[string, *interceptState](),
 		workloadWatchers: xsync.NewMapOf[string, workload.Watcher](),
 		timedLogLevel:    log.NewTimedLevel(loglevel, log.SetLevel),
@@ -189,11 +194,11 @@ func NewState(ctx context.Context) State {
 func (s *state) pruneSessions(ctx context.Context) {
 	nss := namespaces.Get(ctx)
 	var sids []string
-	s.clients.LoadAllMatching(func(s string, c *rpc.ClientInfo) bool {
+	s.clients.Range(func(s string, c *rpc.ClientInfo) bool {
 		if !slices.Contains(nss, c.Namespace) {
 			sids = append(sids, s)
 		}
-		return false
+		return true
 	})
 	for _, sid := range sids {
 		s.RemoveSession(ctx, sid)
@@ -242,14 +247,14 @@ func (s *state) checkAgentsForIntercept(intercept *rpc.InterceptInfo) (errCode r
 	// main ////////////////////////////////////////////////////////////////
 
 	var agentList []*rpc.AgentInfo
-	if agentSet, ok := s.agentsByName.Load(intercept.Spec.Agent); ok {
-		agentSet.Range(func(_ string, agent *rpc.AgentInfo) bool {
-			if agent.Namespace == intercept.Spec.Namespace {
-				agentList = append(agentList, agent)
-			}
-			return true
-		})
-	}
+	agentName := intercept.Spec.Agent
+	ns := intercept.Spec.Namespace
+	s.EachAgent(func(_ string, ai *rpc.AgentInfo) bool {
+		if ai.Name == agentName && ai.Namespace == ns {
+			agentList = append(agentList, ai)
+		}
+		return true
+	})
 
 	switch {
 	case len(agentList) == 0:
@@ -299,15 +304,7 @@ func (s *state) RemoveSession(ctx context.Context, sessionID string) {
 
 		agent, isAgent := s.agents.LoadAndDelete(sessionID)
 		if isAgent {
-			// remove it from the agentsByName index (if necessary)
-			dlog.Debugf(ctx, "Agent session %s. Explicit removal", agent.PodName)
-			s.agentsByName.Compute(agent.Name, func(ag *xsync.MapOf[string, *rpc.AgentInfo], loaded bool) (*xsync.MapOf[string, *rpc.AgentInfo], bool) {
-				if loaded {
-					ag.Delete(sessionID)
-					return ag, ag.Size() == 0
-				}
-				return nil, true
-			})
+			mutator.GetMap(s.backgroundCtx).Inactivate(agent.PodName)
 		} else if client, isClient := s.clients.LoadAndDelete(sessionID); isClient {
 			scm := sess.(*clientSessionState).consumptionMetrics
 			atomic.AddUint64(&s.tunnelIngressCounter, scm.FromClientBytes.GetValue())
@@ -319,37 +316,41 @@ func (s *state) RemoveSession(ctx context.Context, sessionID string) {
 }
 
 func (s *state) gcSessionIntercepts(ctx context.Context, sessionID string) {
-	agent, isAgent := s.agents.Load(sessionID)
-
 	// GC any intercepts that relied on this session; prune any intercepts that
 	//  1. Don't have a client session (intercept.ClientSession.SessionId)
-	//  2. Don't have any agents (agent.Name == intercept.Spec.Agent)
-	// Alternatively, if the intercept is still live but has been switched over to a different agent, send it back to WAITING state
-	for interceptID, intercept := range s.intercepts.LoadAll() {
+	//  2. Don't have any agents (agent.PodIp == intercept.PodIp)
+	// Alternatively, if the intercept is still live but has been switched over to a different agent, send it back to
+	// WAITING state
+	s.intercepts.Range(func(interceptID string, intercept *rpc.InterceptInfo) bool {
 		if intercept.Disposition == rpc.InterceptDispositionType_REMOVED {
-			continue
+			return true
 		}
 		if intercept.ClientSession.SessionId == sessionID {
 			// Client went away:
 			// Delete it.
 			if client := s.GetClient(sessionID); client != nil {
-				workload := strings.SplitN(interceptID, ":", 2)[1]
-				s.allInterceptsFinalizerCall(client, &workload)
+				wl := strings.SplitN(interceptID, ":", 2)[1]
+				s.allInterceptsFinalizerCall(client, &wl)
 			}
 			s.self.RemoveIntercept(ctx, interceptID)
 		} else if errCode, errMsg := s.checkAgentsForIntercept(intercept); errCode != 0 {
 			// Refcount went to zero:
 			// Tell the client, so that the client can tell us to delete it.
-			intercept.Disposition = errCode
-			intercept.Message = errMsg
-			s.intercepts.Store(interceptID, intercept)
-		} else if isAgent && agent.PodIp == intercept.PodIp {
-			// The agent whose podIP was stored by the intercept is dead, but it's not the last agent
-			// Send it back to waiting so that one of the other agents can pick it up and set their own podIP
-			intercept.Disposition = rpc.InterceptDispositionType_WAITING
-			s.intercepts.Store(interceptID, intercept)
+			s.UpdateIntercept(interceptID, func(intercept *rpc.InterceptInfo) {
+				intercept.Disposition = errCode
+				intercept.Message = errMsg
+			})
+		} else {
+			if agent := s.GetAgent(sessionID); agent != nil && agent.PodIp == intercept.PodIp {
+				// The agent whose podIP was stored by the intercept is dead, but it's not the last agent
+				// Send it back to waiting so that one of the other agents can pick it up and set their own podIP
+				s.UpdateIntercept(interceptID, func(intercept *rpc.InterceptInfo) {
+					intercept.Disposition = rpc.InterceptDispositionType_WAITING
+				})
+			}
 		}
-	}
+		return true
+	})
 }
 
 // ExpireSessions prunes any sessions that haven't had a MarkSession heartbeat since
@@ -404,20 +405,20 @@ func (s *state) GetClient(sessionID string) *rpc.ClientInfo {
 	return ret
 }
 
-func (s *state) GetAllClients() map[string]*rpc.ClientInfo {
-	return s.clients.LoadAll()
+func (s *state) EachClient(f func(string, *rpc.ClientInfo) bool) {
+	s.clients.Range(f)
 }
 
 func (s *state) CountAgents() int {
-	return s.agents.CountAll()
+	return s.agents.Size()
 }
 
 func (s *state) CountClients() int {
-	return s.clients.CountAll()
+	return s.clients.Size()
 }
 
 func (s *state) CountIntercepts() int {
-	return s.intercepts.CountAll()
+	return s.intercepts.Size()
 }
 
 func (s *state) CountSessions() int {
@@ -438,88 +439,81 @@ func (s *state) CountTunnelEgress() uint64 {
 
 // Sessions: Agents ////////////////////////////////////////////////////////////////////////////////
 
-func (s *state) AddAgent(agent *rpc.AgentInfo, now time.Time) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	sessionID := AgentSessionIDPrefix + uuid.New().String()
+func (s *state) AddAgent(ctx context.Context, agent *rpc.AgentInfo, now time.Time) (string, error) {
+	if mutator.GetMap(ctx).IsInactive(agent.PodName) {
+		return "", status.Error(codes.Aborted, "inactivated pod")
+	}
+	sessionID := AgentSessionIDPrefix + agent.PodName + "." + agent.Namespace
 	if oldAgent, hasConflict := s.agents.LoadOrStore(sessionID, agent); hasConflict {
-		panic(fmt.Errorf("duplicate id %q, existing %+v, new %+v", sessionID, oldAgent, agent))
+		return "", status.Error(codes.AlreadyExists, fmt.Sprintf("duplicate id %q, existing %+v, new %+v", sessionID, oldAgent, agent))
 	}
 
-	agn, _ := s.agentsByName.LoadOrCompute(agent.Name, func() *xsync.MapOf[string, *rpc.AgentInfo] {
-		return xsync.NewMapOf[string, *rpc.AgentInfo]()
-	})
-	agn.Store(sessionID, agent)
 	s.sessions.Store(sessionID, newAgentSessionState(s.backgroundCtx, now))
-
-	for interceptID, intercept := range s.intercepts.LoadAll() {
+	s.intercepts.Range(func(interceptID string, intercept *rpc.InterceptInfo) bool {
 		if intercept.Disposition == rpc.InterceptDispositionType_REMOVED {
-			continue
+			return true
 		}
 		// Check whether each intercept needs to either (1) be moved in to a NO_AGENT state
 		// because this agent made things inconsistent, or (2) be moved out of a NO_AGENT
 		// state because it just gained an agent.
 		if errCode, errMsg := s.checkAgentsForIntercept(intercept); errCode != 0 {
-			intercept.Disposition = errCode
-			intercept.Message = errMsg
-			s.intercepts.Store(interceptID, intercept)
+			s.UpdateIntercept(interceptID, func(intercept *rpc.InterceptInfo) {
+				intercept.Disposition = errCode
+				intercept.Message = errMsg
+			})
 		} else if intercept.Disposition == rpc.InterceptDispositionType_NO_AGENT {
-			intercept.Disposition = rpc.InterceptDispositionType_WAITING
-			intercept.Message = ""
-			s.intercepts.Store(interceptID, intercept)
+			s.UpdateIntercept(interceptID, func(intercept *rpc.InterceptInfo) {
+				intercept.Disposition = rpc.InterceptDispositionType_WAITING
+				intercept.Message = ""
+			})
 		}
-	}
-	return sessionID
+		return true
+	})
+	return sessionID, nil
 }
 
 func (s *state) GetAgent(sessionID string) *rpc.AgentInfo {
-	ret, _ := s.agents.Load(sessionID)
-	return ret
-}
-
-func (s *state) GetActiveAgent(sessionID string) *rpc.AgentInfo {
 	if ret, ok := s.agents.Load(sessionID); ok {
-		if as := s.GetSession(sessionID); as != nil && as.Active() {
+		if !mutator.GetMap(s.backgroundCtx).IsInactive(ret.PodName) {
 			return ret
 		}
 	}
 	return nil
 }
 
-func (s *state) getAllAgents() map[string]*rpc.AgentInfo {
-	return s.agents.LoadAll()
-}
-
-func (s *state) HasAgent(name, namespace string) bool {
-	_, ok := s.agentsByName.Load(name)
-	return ok
-}
-
-func (s *state) getAgentsByName(name, namespace string) map[string]*rpc.AgentInfo {
-	agn, ok := s.agentsByName.Load(name)
-	if !ok {
-		return nil
-	}
-	ret := make(map[string]*rpc.AgentInfo, agn.Size())
-	agn.Range(func(k string, v *rpc.AgentInfo) bool {
-		if v.Namespace == namespace {
-			ret[k] = proto.Clone(v).(*rpc.AgentInfo)
+func (s *state) EachAgent(f func(string, *rpc.AgentInfo) bool) {
+	m := mutator.GetMap(s.backgroundCtx)
+	s.agents.Range(func(si string, ag *rpc.AgentInfo) bool {
+		if !m.IsInactive(ag.PodName) {
+			return f(si, ag)
 		}
 		return true
 	})
-	return ret
+}
+
+func (s *state) LoadMatchingAgents(f func(string, *rpc.AgentInfo) bool) map[string]*rpc.AgentInfo {
+	m := mutator.GetMap(s.backgroundCtx)
+	return s.agents.LoadMatching(func(s string, ai *rpc.AgentInfo) bool {
+		return !m.IsInactive(ai.PodName) && f(s, ai)
+	})
+}
+
+func (s *state) HasAgent(name, namespace string) (ok bool) {
+	s.EachAgent(func(_ string, ai *rpc.AgentInfo) bool {
+		if ai.Name == name && ai.Namespace == namespace {
+			ok = true
+			return false
+		}
+		return true
+	})
+	return ok
 }
 
 func (s *state) WatchAgents(
 	ctx context.Context,
 	filter func(sessionID string, agent *rpc.AgentInfo) bool,
-) <-chan watchable.Snapshot[*rpc.AgentInfo] {
-	if filter == nil {
-		return s.agents.Subscribe(ctx)
-	} else {
-		return s.agents.SubscribeSubset(ctx, filter)
-	}
+) <-chan map[string]*rpc.AgentInfo {
+	return s.agents.Subscribe(ctx.Done(), filter)
 }
 
 func (s *state) WatchWorkloads(ctx context.Context, ns string) (ch <-chan []workload.Event, err error) {
@@ -540,8 +534,8 @@ func (s *state) WatchWorkloads(ctx context.Context, ns string) (ch <-chan []work
 
 // getAgentsInNamespace returns the session IDs the agents in the given namespace.
 func (s *state) getAgentsInNamespace(namespace string) map[string]*rpc.AgentInfo {
-	return s.agents.LoadAllMatching(func(_ string, ii *rpc.AgentInfo) bool {
-		return ii.Namespace == namespace
+	return s.LoadMatchingAgents(func(_ string, ai *rpc.AgentInfo) bool {
+		return ai.Namespace == namespace
 	})
 }
 
@@ -572,29 +566,8 @@ func (s *state) UpdateIntercept(interceptID string, apply func(*rpc.InterceptInf
 	}
 }
 
-// UpdateClient applies a given mutator function to the stored client with sessionID;
-// storing and returning the result.  If the given client does not exist, then the mutator
-// function is not run, and nil is returned.
-func (s *state) UpdateClient(sessionID string, apply func(*rpc.ClientInfo)) *rpc.ClientInfo {
-	for {
-		cur, ok := s.clients.Load(sessionID)
-		if !ok || cur == nil {
-			// Doesn't exist (possibly was deleted while this loop was running).
-			return nil
-		}
-
-		newInfo := proto.Clone(cur).(*rpc.ClientInfo)
-		apply(newInfo)
-
-		swapped := s.clients.CompareAndSwap(sessionID, cur, newInfo)
-		if swapped {
-			return newInfo
-		}
-	}
-}
-
 func (s *state) RemoveIntercept(ctx context.Context, interceptID string) {
-	if intercept, didDelete := s.intercepts.LoadAndDelete(interceptID); didDelete {
+	if intercept, ok := s.intercepts.LoadAndDelete(interceptID); ok {
 		s.FinalizeIntercept(ctx, intercept)
 	}
 }
@@ -613,8 +586,42 @@ func (s *state) DropIntercept(interceptID string) {
 	s.intercepts.Delete(interceptID)
 }
 
+func (s *state) UninstallAgents(ctx context.Context, ur *rpc.UninstallAgentsRequest) error {
+	sessionID := ur.GetSessionInfo().GetSessionId()
+	clientInfo := s.GetClient(sessionID)
+	if clientInfo == nil {
+		return status.Errorf(codes.NotFound, "Client session %q not found", sessionID)
+	}
+	ns := clientInfo.GetNamespace()
+	mm := mutator.GetMap(ctx)
+	agents := ur.Agents
+	if len(agents) == 0 {
+		if err := mm.DeleteAllPodsWithConfig(ctx, ns); err != nil {
+			return status.Errorf(codes.Internal, "unable to delete pods with agent: %v", err)
+		}
+		return nil
+	}
+
+	wls := make([]k8sapi.Workload, len(agents))
+	for i, agent := range agents {
+		wl, err := k8sapi.GetWorkload(ctx, agent, ns, "")
+		if err != nil {
+			return status.Errorf(codes.NotFound, "Workload %s.%s not found", agent, ns)
+		}
+		wls[i] = wl
+	}
+
+	for _, wl := range wls {
+		mm.Delete(wl.GetName(), ns)
+		if err := mm.DeletePodsWithConfig(ctx, wl); err != nil {
+			return status.Errorf(codes.Internal, "unable to delete agent for workload %s.%s: %v", wl.GetName(), ns, err)
+		}
+	}
+	return nil
+}
+
 func (s *state) LoadMatchingIntercepts(filter func(string, *rpc.InterceptInfo) bool) map[string]*rpc.InterceptInfo {
-	return s.intercepts.LoadAllMatching(filter)
+	return s.intercepts.LoadMatching(filter)
 }
 
 func (s *state) GetIntercept(interceptID string) (*rpc.InterceptInfo, bool) {
@@ -624,12 +631,8 @@ func (s *state) GetIntercept(interceptID string) (*rpc.InterceptInfo, bool) {
 func (s *state) WatchIntercepts(
 	ctx context.Context,
 	filter func(sessionID string, intercept *rpc.InterceptInfo) bool,
-) <-chan watchable.Snapshot[*rpc.InterceptInfo] {
-	if filter == nil {
-		return s.intercepts.Subscribe(ctx)
-	} else {
-		return s.intercepts.SubscribeSubset(ctx, filter)
-	}
+) <-chan map[string]*rpc.InterceptInfo {
+	return s.intercepts.Subscribe(ctx.Done(), filter)
 }
 
 func (s *state) Tunnel(ctx context.Context, stream tunnel.Stream) error {
@@ -723,7 +726,7 @@ func (s *state) getAgentForDial(ctx context.Context, clientSessionID string, pod
 
 func (s *state) getAgentIdForDial(ctx context.Context, clientSessionID string, podIP netip.Addr) (string, error) {
 	// An agent with a podIO matching the given podIP has precedence
-	agents := s.agents.LoadAllMatching(func(key string, ai *rpc.AgentInfo) bool {
+	agents := s.LoadMatchingAgents(func(key string, ai *rpc.AgentInfo) bool {
 		if aip, err := netip.ParseAddr(ai.PodIp); err == nil {
 			return podIP == aip
 		}

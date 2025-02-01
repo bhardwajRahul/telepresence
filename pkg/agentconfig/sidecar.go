@@ -23,7 +23,6 @@ const (
 	TerminatingTLSMountPoint = "/terminating_tls"
 	OriginatingTLSVolumeName = "traffic-originating-tls"
 	OriginatingTLSMountPoint = "/originating_tls"
-	ConfigFile               = "config.yaml"
 	MountPrefixApp           = "/tel_app_mounts"
 	ExportsVolumeName        = "export-volume"
 	ExportsMountPoint        = "/tel_app_exports"
@@ -32,6 +31,9 @@ const (
 	EnvPrefix                = "_TEL_"
 	EnvPrefixAgent           = EnvPrefix + "AGENT_"
 	EnvPrefixApp             = EnvPrefix + "APP_"
+
+	// EnvAgentConfig is the environment variable where the traffic-agent finds its own config.
+	EnvAgentConfig = "AGENT_CONFIG"
 
 	// EnvInterceptContainer intercepted container propagated to client during intercept.
 	EnvInterceptContainer = "TELEPRESENCE_CONTAINER"
@@ -42,11 +44,15 @@ const (
 	// EnvAPIPort is the port number of the Telepresence API server, when it is enabled.
 	EnvAPIPort = "TELEPRESENCE_API_PORT"
 
-	DomainPrefix                         = "telepresence.getambassador.io/"
+	DomainPrefix = "telepresence.getambassador.io/"
+
+	RestartedAtAnnotation                = DomainPrefix + "restartedAt"
+	ManualInjectAnnotation               = DomainPrefix + "manually-injected"
 	InjectAnnotation                     = DomainPrefix + "inject-" + ContainerName
 	InjectIgnoreVolumeMounts             = DomainPrefix + "inject-ignore-volume-mounts"
 	TerminatingTLSSecretAnnotation       = DomainPrefix + "inject-terminating-tls-secret"
 	OriginatingTLSSecretAnnotation       = DomainPrefix + "inject-originating-tls-secret"
+	ConfigAnnotation                     = DomainPrefix + "agent-config"
 	ReplacedContainerAnnotationPrefix    = DomainPrefix + "replaced-container."
 	LegacyTerminatingTLSSecretAnnotation = "getambassador.io/inject-terminating-tls-secret"
 	LegacyOriginatingTLSSecretAnnotation = "getambassador.io/inject-originating-tls-secret"
@@ -56,30 +62,22 @@ const (
 	K8SCreatedByLabel                    = "app.kubernetes.io/created-by"
 )
 
-type ReplacePolicy bool
+type ReplacePolicy int
 
-func (r *ReplacePolicy) UnmarshalJSON(data []byte) error {
-	var i int
-	if err := json.Unmarshal(data, &i); err != nil {
-		// Allow true/false too.
-		var v bool
-		if boolErr := json.Unmarshal(data, &v); boolErr != nil {
-			return err
-		}
-		*r = ReplacePolicy(v)
-	} else {
-		*r = i == 1
-	}
-	return nil
-}
+const (
+	// ReplacePolicyIntercept The traffic-agent will receive all traffic intended for the ports of the app-container and
+	// then either route that traffic to the client or to the original app-container depending on if the port is
+	// intercepted or not. This will require an init-container when the targetPort of the service is numeric or
+	// when the service is headless.
+	ReplacePolicyIntercept ReplacePolicy = iota
 
-func (r ReplacePolicy) MarshalJSON() ([]byte, error) {
-	i := 0
-	if r {
-		i = 1
-	}
-	return json.Marshal(&i)
-}
+	// ReplacePolicyContainer The traffic-agent is currently replacing the app container and routes all traffic to the
+	// client.
+	ReplacePolicyContainer
+
+	// ReplacePolicyInactive The traffic-agent is not interfering with any ports or containers.
+	ReplacePolicyInactive
+)
 
 // Intercept describes the mapping between a service port and an intercepted container port or, when
 // service is used, just the container port.
@@ -135,7 +133,7 @@ type Container struct {
 	// Mounts are the actual mount points that are mounted by this container
 	Mounts []string `json:"Mounts,omitempty"`
 
-	// Replace is whether the agent should replace the intercepted container
+	// Replace is whether the agent should replace the intercepted container, it's ports, or nothing.
 	Replace ReplacePolicy `json:"replace,omitzero"`
 }
 
@@ -197,6 +195,20 @@ func (s *Sidecar) AgentConfig() *Sidecar {
 	return s
 }
 
+// Clone returns a deep copy of the SidecarExt.
+func (s *Sidecar) Clone() SidecarExt {
+	cs := *s
+	for ci, cn := range cs.Containers {
+		ccn := *cn
+		cs.Containers[ci] = &ccn
+		for ii, ic := range ccn.Intercepts {
+			cic := *ic
+			ccn.Intercepts[ii] = &cic
+		}
+	}
+	return &cs
+}
+
 // Marshal returns YAML encoding of the Sidecar.
 func (s *Sidecar) Marshal() ([]byte, error) {
 	return yaml.Marshal(s)
@@ -208,6 +220,8 @@ type SidecarExt interface {
 	AgentConfig() *Sidecar
 
 	Marshal() ([]byte, error)
+
+	Clone() SidecarExt
 }
 
 // SidecarType is Sidecar by default but can be any type implementing SidecarExt.
@@ -217,6 +231,46 @@ var SidecarType = reflect.TypeOf(Sidecar{}) //nolint:gochecknoglobals // extensi
 func UnmarshalYAML(data []byte) (SidecarExt, error) {
 	into := reflect.New(SidecarType).Interface()
 	if err := yaml.Unmarshal(data, into); err != nil {
+		return nil, err
+	}
+	return into.(SidecarExt), nil
+}
+
+// MarshalTight marshals the given instance into JSON data, with data relating to the creation of the
+// container manifest stripped off.
+func MarshalTight(s SidecarExt) (string, error) {
+	ac := s.AgentConfig()
+
+	// Strip things that are not needed once the container has been created.
+	ai := ac.AgentImage
+	pp := ac.PullPolicy
+	ps := ac.PullSecrets
+	ir := ac.InitResources
+	sc := ac.SecurityContext
+
+	ac.AgentImage = ""
+	ac.PullPolicy = ""
+	ac.PullSecrets = nil
+	ac.InitResources = nil
+	ac.SecurityContext = nil
+
+	data, err := json.Marshal(s)
+	ac.AgentImage = ai
+	ac.PullPolicy = pp
+	ac.PullSecrets = ps
+	ac.InitResources = ir
+	ac.SecurityContext = sc
+
+	if err != nil {
+		return "", err
+	}
+	return string(data), err
+}
+
+// UnmarshalJSON creates a new instance of the SidecarType from the given JSON data.
+func UnmarshalJSON(data string) (SidecarExt, error) {
+	into := reflect.New(SidecarType).Interface()
+	if err := json.Unmarshal([]byte(data), into); err != nil {
 		return nil, err
 	}
 	return into.(SidecarExt), nil

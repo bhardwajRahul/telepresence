@@ -39,7 +39,7 @@ type State interface {
 type ContainerState interface {
 	State
 	Name() string
-	Replace() bool
+	ReplaceContainer() bool
 	MountPoint() string
 	Env() map[string]string
 }

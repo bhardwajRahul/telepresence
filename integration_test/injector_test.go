@@ -11,7 +11,6 @@ import (
 
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
-	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 )
 
 // Test_InterceptOperationRestoredAfterFailingInject tests that the telepresence-agents
@@ -50,29 +49,10 @@ func (s *singleServiceSuite) Test_InterceptOperationRestoredAfterFailingInject()
 		}
 	}()
 
-	// Create an intercept again. This must succeed because nothing has changed
-	stdout = itest.TelepresenceOk(ctx, "intercept", s.ServiceName(), "--mount=false")
-	rq.Contains(stdout, "Using Deployment "+s.ServiceName())
-	rq.Eventually(func() bool {
-		stdout, _, err := itest.Telepresence(ctx, "list", "--intercepts")
-		return err == nil && regexp.MustCompile(s.ServiceName()+`\s*: intercepted`).MatchString(stdout)
-	}, 12*time.Second, 3*time.Second)
-	itest.TelepresenceOk(ctx, "leave", s.ServiceName())
-
 	// Uninstall the agent. This will remove it from the telepresence-agents configmap. It must also
 	// uninstall from the agent, even though the webhook is muted, because there will be a rollout and
 	// without the webhook, the default is that the pod has no agent.
-	func() {
-		// TODO: Uninstall should be CLI only and not require a traffic-manager connection
-		defer func() {
-			// Restore original user
-			itest.TelepresenceDisconnectOk(ctx)
-			s.TelepresenceConnect(ctx)
-		}()
-		itest.TelepresenceDisconnectOk(ctx)
-		s.TelepresenceConnect(itest.WithUser(ctx, "default"))
-		itest.TelepresenceOk(ctx, "uninstall", s.ServiceName())
-	}()
+	itest.TelepresenceOk(ctx, "uninstall", s.ServiceName())
 
 	oneContainer := func() bool {
 		pods := itest.RunningPodNames(ctx, s.ServiceName(), s.AppNamespace())
@@ -99,61 +79,16 @@ func (s *singleServiceSuite) Test_InterceptOperationRestoredAfterFailingInject()
 		return false
 	}
 
-	// Verify that the pod have no agent
+	// Verify that the pod has no agent
 	rq.Eventually(oneContainer, 30*time.Second, 3*time.Second)
 
-	// Now try to intercept. This will make the traffic-manager first inject an entry into the telepresence-agents
-	// configmap and the configmap watcher will then cause a subsequent rollout of the workload. That rollout
-	// would normally cause the mutating-webhook to kick in. That'll fail now because we disabled it further up.
-	iceptDone := make(chan error)
-	go func() {
-		defer close(iceptDone)
-		_, _, err := itest.Telepresence(ctx, "intercept", s.ServiceName(), "--mount=false")
-		select {
-		case <-ctx.Done():
-		case iceptDone <- err:
-		}
-	}()
-
-	const cmName = "telepresence-agents"
-	// Verify that there's a valid entry in the configmap
-	rq.Eventually(func() bool {
-		cmJSON, err := s.KubectlOut(ctx, "get", "configmap", cmName, "--output", "json")
-		if err != nil {
-			dlog.Errorf(ctx, "unable to get %s configmap: %v", cmName, err)
-			return false
-		}
-		var cm core.ConfigMap
-		err = json.Unmarshal([]byte(cmJSON), &cm)
-		if err != nil {
-			dlog.Errorf(ctx, "unable to parse json of %s configmap: %v", cmName, err)
-			return false
-		}
-		svcYAML, ok := cm.Data[s.ServiceName()]
-		if !ok {
-			dlog.Errorf(ctx, "didn't find an entry for %s in %s : %v", s.ServiceName(), cmName, err)
-			return false
-		}
-		sc, err := agentconfig.UnmarshalYAML([]byte(svcYAML))
-		if err != nil {
-			dlog.Errorf(ctx, "unable to parse yaml of %s in the %s configmap: %v", s.ServiceName(), cmName, err)
-		}
-		return s.ServiceName() == sc.AgentConfig().AgentName
-	}, 30*time.Second, 3*time.Second)
-
-	// Verify that the pod still have no agent
-	rq.Eventually(oneContainer, 30*time.Second, 3*time.Second)
-
+	// Now try to intercept. This attempt will timeout because the agent is never injected.
+	_, _, err := itest.Telepresence(ctx, "intercept", s.ServiceName(), "--mount=false")
 	// Wait for the intercept call to return. It must return an error.
-	rq.Error(<-iceptDone)
+	rq.Error(err)
 
-	// Verify that the entry in the configmap has been removed by the traffic-manager.
-	cmJSON, err := s.KubectlOut(ctx, "get", "configmap", "telepresence-agents", "--output", "json")
-	rq.NoError(err)
-	var cm core.ConfigMap
-	rq.NoError(json.Unmarshal([]byte(cmJSON), &cm))
-	_, ok := cm.Data[s.ServiceName()]
-	rq.False(ok)
+	// Verify that the pod still has no agent
+	rq.True(oneContainer())
 
 	// Restore mutating-webhook operation.
 	rq.NoError(itest.Kubectl(ctx, s.ManagerNamespace(), "patch", "mutatingwebhookconfiguration", wh,

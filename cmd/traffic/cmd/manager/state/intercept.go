@@ -30,29 +30,8 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
-	"github.com/telepresenceio/telepresence/v2/pkg/informer"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 )
-
-func (s *state) inactivateIfHasContainer(ctx context.Context, n, ns, cn string) {
-	api := informer.GetK8sFactory(ctx, ns).Core().V1().Pods().Lister().Pods(ns)
-	for sessionID, ai := range s.getAgentsByName(n, ns) {
-		pod, err := api.Get(ai.PodName)
-		if err != nil {
-			continue
-		}
-		cns := pod.Spec.Containers
-		for i := range cns {
-			if cns[i].Name == cn {
-				dlog.Debugf(ctx, "Inactivating pod %s %s because it contains container %q which is about to be replaced", pod.Name, pod.Status.PodIP, cn)
-				if as, ok := s.GetSession(sessionID).(*agentSessionState); ok {
-					as.active.Store(false)
-				}
-				break
-			}
-		}
-	}
-}
 
 // PrepareIntercept ensures that the given request can be matched against the intercept configuration of
 // the workload that it references. It returns a PreparedIntercept where all intercepted ports have been
@@ -95,22 +74,14 @@ func (s *state) PrepareIntercept(
 		return interceptError(err)
 	}
 
+	var rp agentconfig.ReplacePolicy
 	if spec.Replace {
-		// If we already have an agent config, then any pod that matches the spec and also has the container that we want
-		// to replace must be blacklisted now, or that agent will interfere with the replace.
-		mm := mutator.GetMap(ctx)
-		scx, err := mm.Get(ctx, spec.Agent, spec.Namespace)
-		if err != nil {
-			return interceptError(err)
-		}
-		if scx != nil {
-			if cn, err := findContainer(scx.AgentConfig(), spec); err == nil {
-				s.inactivateIfHasContainer(ctx, spec.Name, spec.Namespace, cn.Name)
-			}
-		}
+		rp = agentconfig.ReplacePolicyContainer
+	} else {
+		rp = agentconfig.ReplacePolicyIntercept
 	}
 
-	ac, _, err := s.ensureAgent(ctx, wl, s.isExtended(spec), spec)
+	ac, _, err := s.ensureAgent(ctx, wl, s.isExtended(spec), true, spec, rp)
 	if err != nil {
 		return interceptError(err)
 	}
@@ -145,16 +116,17 @@ func (s *state) PrepareIntercept(
 }
 
 func prepareAllContainerPorts(cn *agentconfig.Container, pi *rpc.PreparedIntercept) {
-	if ni := len(cn.Intercepts); ni > 0 {
+	pics := agentconfig.PortUniqueIntercepts(cn)
+	if ni := len(pics); ni > 0 {
 		// Put first port in the intercept itself
-		i0 := cn.Intercepts[0]
+		i0 := pics[0]
 		pi.ContainerPort = int32(i0.ContainerPort)
 		pi.Protocol = string(i0.Protocol)
 		if ni > 1 {
 			// Put remaining ports in PodPorts with a 1:1 mapping to target port on client.
 			pi.PodPorts = make([]string, ni-1)
 			for i := 1; i < ni; i++ {
-				ic := cn.Intercepts[i]
+				ic := pics[i]
 				pi.PodPorts[i-1] = fmt.Sprintf("%d:%d/%s", ic.ContainerPort, ic.ContainerPort, ic.Protocol)
 			}
 		}
@@ -214,7 +186,7 @@ func (s *state) preparePorts(ac *agentconfig.Sidecar, cn *agentconfig.Container,
 	}
 
 	// Validate that there's no port conflict with other intercepts using the same agent.
-	otherIcs := s.intercepts.LoadAllMatching(func(s string, info *rpc.InterceptInfo) bool {
+	otherIcs := s.intercepts.LoadMatching(func(s string, info *rpc.InterceptInfo) bool {
 		return info.Disposition == rpc.InterceptDispositionType_ACTIVE && info.Spec.Agent == ac.AgentName && info.Spec.Namespace == ac.Namespace
 	})
 
@@ -248,9 +220,6 @@ func (s *state) preparePorts(ac *agentconfig.Sidecar, cn *agentconfig.Container,
 }
 
 func (s *state) AddIntercept(ctx context.Context, cir *rpc.CreateInterceptRequest) (*rpc.ClientInfo, *rpc.InterceptInfo, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	clientSession := cir.Session
 	sessionID := clientSession.SessionId
 	client := s.GetClient(sessionID)
@@ -260,6 +229,25 @@ func (s *state) AddIntercept(ctx context.Context, cir *rpc.CreateInterceptReques
 
 	spec := cir.InterceptSpec
 	interceptID := fmt.Sprintf("%s:%s", sessionID, spec.Name)
+
+	wl, err := agentmap.GetWorkload(ctx, spec.Agent, spec.Namespace, spec.WorkloadKind)
+	if err != nil {
+		code := codes.Internal
+		if k8sErrors.IsNotFound(err) {
+			code = codes.NotFound
+		}
+		return nil, nil, status.Error(code, err.Error())
+	}
+
+	rp := agentconfig.ReplacePolicyIntercept
+	if spec.Replace {
+		rp = agentconfig.ReplacePolicyContainer
+	}
+	_, _, err = s.ensureAgent(ctx, wl, s.isExtended(spec), false, spec, rp)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	ret, is, err := s.addIntercept(interceptID, cir)
 	if err != nil {
 		return nil, nil, err
@@ -305,6 +293,10 @@ func (s *state) AddIntercept(ctx context.Context, cir *rpc.CreateInterceptReques
 			}
 			return nil
 		})
+	}
+	err = s.AddInterceptFinalizer(interceptID, s.restoreAppContainer)
+	if err != nil {
+		dlog.Errorf(ctx, "Failed to add finalizer for %s: %v", interceptID, err)
 	}
 	return client, ret, nil
 }
@@ -363,13 +355,13 @@ func (s *state) AddInterceptFinalizer(interceptID string, finalizer InterceptFin
 // getAgentsInterceptedByClient returns the session IDs for each agent that are currently
 // intercepted by the client with the given client session ID.
 func (s *state) getAgentsInterceptedByClient(clientSessionID string) map[string]*rpc.AgentInfo {
-	intercepts := s.intercepts.LoadAllMatching(func(_ string, ii *rpc.InterceptInfo) bool {
+	intercepts := s.intercepts.LoadMatching(func(_ string, ii *rpc.InterceptInfo) bool {
 		return ii.ClientSession.SessionId == clientSessionID
 	})
 	if len(intercepts) == 0 {
 		return nil
 	}
-	return s.agents.LoadAllMatching(func(_ string, ai *rpc.AgentInfo) bool {
+	return s.LoadMatchingAgents(func(_ string, ai *rpc.AgentInfo) bool {
 		for _, ii := range intercepts {
 			if ai.Name == ii.Spec.Agent && ai.Namespace == ii.Spec.Namespace {
 				return true
@@ -388,7 +380,7 @@ func (s *state) EnsureAgent(ctx context.Context, n, ns string) (as []*rpc.AgentI
 		}
 		return nil, err
 	}
-	_, as, err = s.ensureAgent(ctx, wl, false, nil)
+	_, as, err = s.ensureAgent(ctx, wl, false, false, nil, agentconfig.ReplacePolicyInactive)
 	return as, err
 }
 
@@ -403,7 +395,7 @@ func sortAgents(as []*rpc.AgentInfo) {
 	})
 }
 
-func (s *state) ensureAgent(parentCtx context.Context, wl k8sapi.Workload, extended bool, spec *rpc.InterceptSpec) (
+func (s *state) ensureAgent(parentCtx context.Context, wl k8sapi.Workload, extended, dryRun bool, spec *rpc.InterceptSpec, rp agentconfig.ReplacePolicy) (
 	ac *agentconfig.Sidecar, as []*rpc.AgentInfo, err error,
 ) {
 	if agentmap.TrafficManagerSelector.Matches(labels.Set(wl.GetLabels())) {
@@ -413,27 +405,37 @@ func (s *state) ensureAgent(parentCtx context.Context, wl k8sapi.Workload, exten
 	}
 
 	if !managerutil.AgentInjectorEnabled(parentCtx) {
-		sce, err := mutator.GetMap(parentCtx).Get(parentCtx, wl.GetName(), wl.GetNamespace())
+		cfgJSON, ok := wl.GetPodTemplate().Annotations[agentconfig.ConfigAnnotation]
+		if !ok {
+			msg := fmt.Sprintf("agent-injector is disabled and no agent has been added manually for %s.%s", wl.GetName(), wl.GetNamespace())
+			return nil, nil, status.Error(codes.FailedPrecondition, msg)
+		}
+		sce, err := agentconfig.UnmarshalJSON(cfgJSON)
 		if err != nil {
 			return nil, nil, err
 		}
-		if sce != nil {
-			ac = sce.AgentConfig()
-			am := s.agents.LoadAllMatching(func(_ string, ai *rpc.AgentInfo) bool {
-				return ai.Name == ac.AgentName && ai.Namespace == ac.Namespace
-			})
-			as = make([]*rpc.AgentInfo, len(am))
-			i := 0
-			for _, found := range am {
-				as[i] = found
-				i++
-			}
-			sortAgents(as)
-			return ac, as, nil
+		ac = sce.AgentConfig()
+		am := s.LoadMatchingAgents(func(_ string, ai *rpc.AgentInfo) bool {
+			return ai.Name == ac.AgentName && ai.Namespace == ac.Namespace
+		})
+		as = make([]*rpc.AgentInfo, len(am))
+		i := 0
+		for _, found := range am {
+			as[i] = found
+			i++
 		}
-		msg := fmt.Sprintf("agent-injector is disabled and no agent has been added manually for %s.%s", wl.GetName(), wl.GetNamespace())
-		return nil, nil, status.Error(codes.FailedPrecondition, msg)
+		sortAgents(as)
+		return ac, as, nil
 	}
+
+	if dryRun {
+		sce, err := s.getOrCreateAgentConfig(parentCtx, wl, extended, dryRun, spec, rp)
+		if err != nil {
+			return nil, nil, err
+		}
+		return sce.AgentConfig(), nil, nil
+	}
+
 	ctx, cancel := context.WithTimeout(parentCtx, managerutil.GetEnv(parentCtx).AgentArrivalTimeout)
 	defer cancel()
 
@@ -442,17 +444,20 @@ func (s *state) ensureAgent(parentCtx context.Context, wl k8sapi.Workload, exten
 		return nil, nil, err
 	}
 
-	sce, err := s.getOrCreateAgentConfig(ctx, wl, extended, spec, false)
+	sce, err := s.getOrCreateAgentConfig(ctx, wl, extended, dryRun, spec, rp)
 	if err != nil {
 		return nil, nil, err
 	}
+	err = mutator.GetMap(ctx).DeletePodsWithConfigMismatch(ctx, sce)
+	if err != nil {
+		dlog.Errorf(ctx, "failed to inactivate pods: %v", err)
+		return nil, nil, err
+	}
 	ac = sce.AgentConfig()
-	if as, err = s.waitForAgents(ctx, ac.AgentName, ac.Namespace, failedCreateCh); err != nil {
+	if as, err = s.waitForAgents(ctx, ac, failedCreateCh); err != nil {
 		// If no agent arrives, then drop its entry from the configmap. This ensures that there
 		// are no false positives the next time an intercept is attempted.
-		if dropErr := s.dropAgentConfig(parentCtx, wl); dropErr != nil {
-			dlog.Errorf(ctx, "failed to remove configmap entry for %s.%s: %v", wl.GetName(), wl.GetNamespace(), dropErr)
-		}
+		s.dropAgentConfig(parentCtx, wl)
 		return nil, nil, err
 	}
 	sortAgents(as)
@@ -476,24 +481,19 @@ func (s *state) ValidateAgentImage(agentImage string, extended bool) (err error)
 func (s *state) dropAgentConfig(
 	ctx context.Context,
 	wl k8sapi.Workload,
-) error {
-	return mutator.GetMap(ctx).Delete(ctx, wl.GetName(), wl.GetNamespace())
+) {
+	mutator.GetMap(ctx).Delete(wl.GetName(), wl.GetNamespace())
 }
 
-func (s *state) RestoreAppContainer(ctx context.Context, ii *rpc.InterceptInfo) (err error) {
+func (s *state) restoreAppContainer(ctx context.Context, ii *rpc.InterceptInfo) (err error) {
 	dlog.Debugf(ctx, "Restoring app container for %s", ii.Id)
 	spec := ii.Spec
 	n := spec.Agent
 	ns := spec.Namespace
 	mm := mutator.GetMap(ctx)
-	return mm.Update(ctx, ns, func(cm *core.ConfigMap) (changed bool, err error) {
-		y, ok := cm.Data[n]
-		if !ok {
-			return false, nil
-		}
-		sce, err := unmarshalConfigMapEntry(y, n, ns)
-		if err != nil {
-			return false, err
+	_, err = mm.Update(n, ns, func(sce agentconfig.SidecarExt) (ext agentconfig.SidecarExt, err error) {
+		if sce == nil {
+			return nil, nil
 		}
 		var cn *agentconfig.Container
 		if spec.NoDefaultPort {
@@ -501,57 +501,21 @@ func (s *state) RestoreAppContainer(ctx context.Context, ii *rpc.InterceptInfo) 
 		} else {
 			cn, _, err = findIntercept(sce.AgentConfig(), spec)
 		}
-		if !(err == nil && cn.Replace) {
-			return false, nil
+		if err != nil {
+			return nil, nil
 		}
-		cn.Replace = false
+		if cn.Replace == agentconfig.ReplacePolicyInactive {
+			return nil, nil
+		}
+		cn.Replace = agentconfig.ReplacePolicyInactive
 
 		// The pods for this workload will be killed once the new updated sidecar
 		// reaches the configmap. We inactivate them now, so that they don't continue to
 		// review intercepts.
-		for sessionID := range s.getAgentsByName(n, ns) {
-			if as, ok := s.GetSession(sessionID).(*agentSessionState); ok {
-				as.active.Store(false)
-			}
-		}
-		return updateSidecar(sce, cm, n)
+		err = mm.DeletePodsWithConfigMismatch(ctx, sce)
+		return sce, err
 	})
-}
-
-func updateSidecar(sce agentconfig.SidecarExt, cm *core.ConfigMap, n string) (bool, error) {
-	yml, err := sce.Marshal()
-	if err != nil {
-		return false, err
-	}
-	oldYaml := cm.Data[n]
-	newYaml := string(yml)
-	if oldYaml != newYaml {
-		cm.Data[n] = newYaml
-		return true, nil
-	}
-	return false, nil
-}
-
-func (s *state) waitForAgentDepartures(ctx context.Context, wl k8sapi.Workload) error {
-	filter := func(s string, info *rpc.AgentInfo) bool {
-		return info.Kind == wl.GetKind() && info.Name == wl.GetName() && info.Namespace == wl.GetNamespace()
-	}
-	if len(s.agents.LoadAllMatching(filter)) == 0 {
-		return nil
-	}
-	dlog.Debugf(ctx, "Waiting for deleted %s.%s agents to depart", wl.GetName(), wl.GetNamespace())
-	agCh := s.agents.SubscribeSubset(ctx, filter)
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case as, ok := <-agCh:
-			if ok && len(as.State) > 0 {
-				continue
-			}
-		}
-		return nil
-	}
+	return err
 }
 
 func (s *state) GetOrGenerateAgentConfig(ctx context.Context, name, namespace string) (agentconfig.SidecarExt, error) {
@@ -563,15 +527,31 @@ func (s *state) GetOrGenerateAgentConfig(ctx context.Context, name, namespace st
 		}
 		return nil, status.Error(code, err.Error())
 	}
-	return s.getOrCreateAgentConfig(ctx, wl, false, nil, true)
+	return s.getOrCreateAgentConfig(ctx, wl, false, true, nil, agentconfig.ReplacePolicyInactive)
+}
+
+func (s *state) createAgentConfig(ctx context.Context, wl k8sapi.Workload, agentImage string) (sce agentconfig.SidecarExt, err error) {
+	var gc agentmap.GeneratorConfig
+	if gc, err = agentmap.GeneratorConfigFunc(agentImage); err != nil {
+		return nil, err
+	}
+	dlog.Debugf(ctx, "generating new agent config for %s.%s", wl.GetName(), wl.GetNamespace())
+	if sce, err = gc.Generate(ctx, wl, nil); err != nil {
+		return nil, err
+	}
+	if err = s.self.ValidateCreateAgent(ctx, wl, sce); err != nil {
+		return nil, err
+	}
+	return sce, nil
 }
 
 func (s *state) getOrCreateAgentConfig(
 	ctx context.Context,
 	wl k8sapi.Workload,
 	extended bool,
-	spec *rpc.InterceptSpec,
 	dryRun bool,
+	spec *rpc.InterceptSpec,
+	rp agentconfig.ReplacePolicy,
 ) (sce agentconfig.SidecarExt, err error) {
 	enabled, err := checkInterceptAnnotations(wl)
 	if err != nil {
@@ -585,40 +565,32 @@ func (s *state) getOrCreateAgentConfig(
 	if err = s.self.ValidateAgentImage(agentImage, extended); err != nil {
 		return nil, err
 	}
-	err = mutator.GetMap(ctx).Update(ctx, wl.GetNamespace(), func(cm *core.ConfigMap) (changed bool, err error) {
-		doUpdate := false
-		y, cmFound := cm.Data[wl.GetName()]
-		if cmFound {
-			if sce, err = unmarshalConfigMapEntry(y, wl.GetName(), wl.GetNamespace()); err != nil {
-				return false, err
-			}
-			ac := sce.AgentConfig()
-			// If the agentImage has changed, and the extended image is requested, then update
-			if ac.AgentImage != agentImage && extended {
-				ac.AgentImage = agentImage
-				doUpdate = true
-			}
-		} else {
-			if cm.Data == nil {
-				cm.Data = make(map[string]string)
-			}
-			var gc agentmap.GeneratorConfig
-			if gc, err = agentmap.GeneratorConfigFunc(agentImage); err != nil {
-				return false, err
-			}
-			if sce, err = gc.Generate(ctx, wl, nil); err != nil {
-				return false, err
-			}
+	mm := mutator.GetMap(ctx)
+	if dryRun {
+		sce = mm.Get(wl.GetName(), wl.GetNamespace())
+		if sce == nil {
+			sce, err = s.createAgentConfig(ctx, wl, agentImage)
+		}
+		return sce, err
+	}
 
-			// If we don't have an entry for the workload in the config-map, then all current agents for that
-			// workload are invalid, and we'll have to wait for them to be removed.
-			if err = s.waitForAgentDepartures(ctx, wl); err != nil {
-				return false, err
+	return mm.Update(wl.GetName(), wl.GetNamespace(), func(sce agentconfig.SidecarExt) (agentconfig.SidecarExt, error) {
+		var ac *agentconfig.Sidecar
+		if sce != nil {
+			ac = sce.AgentConfig()
+			// If the agentImage has changed, and the extended image is requested, then update
+			if ac.AgentImage != agentImage {
+				ac.AgentImage = agentImage
 			}
-			doUpdate = true
+			dlog.Debugf(ctx, "found existing agent config for %s.%s", wl.GetName(), wl.GetNamespace())
+		} else {
+			sce, err = s.createAgentConfig(ctx, wl, agentImage)
+			if err != nil {
+				return nil, err
+			}
+			ac = sce.AgentConfig()
 		}
 
-		ac := sce.AgentConfig()
 		if spec != nil {
 			var cn *agentconfig.Container
 			if spec.NoDefaultPort {
@@ -627,37 +599,17 @@ func (s *state) getOrCreateAgentConfig(
 				cn, _, err = findIntercept(ac, spec)
 			}
 			if err != nil {
-				return false, err
+				return nil, err
 			}
-			if cn.Replace != agentconfig.ReplacePolicy(spec.Replace) {
-				cn.Replace = agentconfig.ReplacePolicy(spec.Replace)
-				doUpdate = true
-			}
-		}
-		if dryRun {
-			return false, nil
+			cn.Replace = rp
 		}
 
-		if doUpdate {
-			if cmFound {
-				// The pods for this workload be killed once the new updated sidecar
-				// reaches the configmap. We remove them now, so that they don't continue to
-				// review intercepts.
-				for sessionID := range s.getAgentsByName(wl.GetName(), wl.GetNamespace()) {
-					if as, ok := s.GetSession(sessionID).(*agentSessionState); ok {
-						as.active.Store(false)
-					}
-				}
-			} else {
-				if err = s.self.ValidateCreateAgent(ctx, wl, sce); err != nil {
-					return false, err
-				}
-			}
-			return updateSidecar(sce, cm, wl.GetName())
+		if dryRun {
+			dlog.Debugf(ctx, "dry run for getOrCreateAgentConfig %s.%s returns", wl.GetName(), wl.GetNamespace())
+			return sce, nil
 		}
-		return false, nil
+		return sce, nil
 	})
-	return sce, err
 }
 
 func checkInterceptAnnotations(wl k8sapi.Workload) (bool, error) {
@@ -668,7 +620,7 @@ func checkInterceptAnnotations(wl k8sapi.Workload) (bool, error) {
 	}
 
 	webhookEnabled := true
-	manuallyManaged := a[mutator.ManualInjectAnnotation] == "true"
+	manuallyManaged := a[agentconfig.ManualInjectAnnotation] == "true"
 	ia := a[mutator.InjectAnnotation]
 	switch ia {
 	case "":
@@ -679,7 +631,7 @@ func checkInterceptAnnotations(wl k8sapi.Workload) (bool, error) {
 	default:
 		return false, errcat.User.Newf(
 			"%s is not a valid value for the %s.%s/%s annotation",
-			ia, wl.GetName(), wl.GetNamespace(), mutator.ManualInjectAnnotation)
+			ia, wl.GetName(), wl.GetNamespace(), agentconfig.ManualInjectAnnotation)
 	}
 
 	if !manuallyManaged {
@@ -697,7 +649,7 @@ func checkInterceptAnnotations(wl k8sapi.Workload) (bool, error) {
 	if an == nil {
 		return false, errcat.User.Newf(
 			"annotation %s.%s/%s=true but pod has no traffic-agent container",
-			wl.GetName(), wl.GetNamespace(), mutator.ManualInjectAnnotation)
+			wl.GetName(), wl.GetNamespace(), agentconfig.ManualInjectAnnotation)
 	}
 	return true, nil
 }
@@ -743,7 +695,9 @@ func watchFailedInjectionEvents(ctx context.Context, name, namespace string) (<-
 	return ec, nil
 }
 
-func (s *state) waitForAgents(ctx context.Context, name, namespace string, failedCreateCh <-chan *events.Event) ([]*rpc.AgentInfo, error) {
+func (s *state) waitForAgents(ctx context.Context, ac *agentconfig.Sidecar, failedCreateCh <-chan *events.Event) ([]*rpc.AgentInfo, error) {
+	name := ac.AgentName
+	namespace := ac.Namespace
 	dlog.Debugf(ctx, "Waiting for agent %s.%s", name, namespace)
 	snapshotCh := s.WatchAgents(ctx, func(sessionID string, agent *rpc.AgentInfo) bool {
 		return agent.Name == name && agent.Namespace == namespace
@@ -809,16 +763,17 @@ func (s *state) waitForAgents(ctx context.Context, name, namespace string, faile
 				// The request has been canceled.
 				return nil, status.Error(codes.Canceled, fmt.Sprintf("channel closed while waiting for agent %s.%s to arrive", name, namespace))
 			}
-			if len(snapshot.State) == 0 {
+			if len(snapshot) == 0 {
 				continue
 			}
-			as := make([]*rpc.AgentInfo, 0, len(snapshot.State))
-			for _, a := range snapshot.State {
-				if mm.IsBlacklisted(a.PodName, a.Namespace) {
-					dlog.Debugf(ctx, "Pod %s.%s is blacklisted", a.PodName, a.Namespace)
+			as := make([]*rpc.AgentInfo, 0, len(snapshot))
+			for _, a := range snapshot {
+				if mm.IsInactive(a.PodName) {
+					dlog.Debugf(ctx, "Agent %s.%s is blacklisted", a.PodName, a.Namespace)
 				} else {
 					dlog.Debugf(ctx, "Agent %s.%s is ready", a.Name, a.Namespace)
 					as = append(as, a)
+					break
 				}
 			}
 			if len(as) > 0 {
@@ -872,14 +827,6 @@ func writeEventList(bf *strings.Builder, es []*events.Event) {
 	for _, e := range es {
 		fmt.Fprintf(bf, "%-*s%-*s%-*s%-*s%s\n", ageLen, age(e), typeLen, e.Type, reasonLen, e.Reason, objectLen, object(e), e.Note)
 	}
-}
-
-func unmarshalConfigMapEntry(y string, name, namespace string) (agentconfig.SidecarExt, error) {
-	scx, err := agentconfig.UnmarshalYAML([]byte(y))
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse entry for %s in ConfigMap %s.%s: %w", name, agentconfig.ConfigMap, namespace, err)
-	}
-	return scx, nil
 }
 
 // findContainer finds the container configuration that matches the given InterceptSpec.

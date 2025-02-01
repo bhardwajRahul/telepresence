@@ -23,7 +23,7 @@ type affectedConfig struct {
 	scx agentconfig.SidecarExt
 }
 
-func (c *configWatcher) configsAffectedBySvc(ctx context.Context, nsData map[string]string, svc *core.Service, trustUID bool) []affectedConfig {
+func (c *configWatcher) configsAffectedBySvc(ctx context.Context, svc *core.Service, trustUID bool) []affectedConfig {
 	references := func(ac *agentconfig.Sidecar) (k8sapi.Workload, error, bool) {
 		for _, cn := range ac.Containers {
 			for _, ic := range cn.Intercepts {
@@ -46,27 +46,21 @@ func (c *configWatcher) configsAffectedBySvc(ctx context.Context, nsData map[str
 	}
 
 	var affected []affectedConfig
-	for _, cfg := range nsData {
-		scx, err := agentconfig.UnmarshalYAML([]byte(cfg))
-		if err != nil {
-			dlog.Errorf(ctx, "failed to decode ConfigMap entry %q into an agent config", cfg)
-		} else if wl, err, ok := references(scx.AgentConfig()); ok {
-			affected = append(affected, affectedConfig{scx: scx, wl: wl, err: err})
+	c.agentConfigs.Compute(svc.Namespace, func(sceMap map[string]agentconfig.SidecarExt, loaded bool) (map[string]agentconfig.SidecarExt, bool) {
+		if loaded {
+			for _, scx := range sceMap {
+				if wl, err, ok := references(scx.AgentConfig()); ok {
+					affected = append(affected, affectedConfig{scx: scx, wl: wl, err: err})
+				}
+			}
 		}
-	}
+		return sceMap, !loaded
+	})
 	return affected
 }
 
 func (c *configWatcher) affectedConfigs(ctx context.Context, svc *core.Service, trustUID bool) []affectedConfig {
-	ns := svc.Namespace
-	nsData, err := data(ctx, ns)
-	if err != nil {
-		return nil
-	}
-	if len(nsData) == 0 {
-		return nil
-	}
-	return c.configsAffectedBySvc(ctx, nsData, svc, trustUID)
+	return c.configsAffectedBySvc(ctx, svc, trustUID)
 }
 
 func (c *configWatcher) startServices(ctx context.Context, ns string) cache.SharedIndexInformer {
@@ -136,9 +130,7 @@ func (c *configWatcher) updateSvc(ctx context.Context, svc *core.Service, trustU
 			if err != nil {
 				if errors.IsNotFound(err) {
 					dlog.Debugf(ctx, "Deleting config entry for %s %s.%s", ac.WorkloadKind, ac.WorkloadName, ac.Namespace)
-					if err = c.remove(ctx, ac.AgentName, ac.Namespace); err != nil {
-						dlog.Error(ctx, err)
-					}
+					c.Delete(ac.AgentName, ac.Namespace)
 				} else {
 					dlog.Error(ctx, err)
 				}
@@ -149,15 +141,17 @@ func (c *configWatcher) updateSvc(ctx context.Context, svc *core.Service, trustU
 		acn, err := cfg.Generate(ctx, wl, ac)
 		if err != nil {
 			if strings.Contains(err.Error(), "unable to find") {
-				if err = c.remove(ctx, ac.AgentName, ac.Namespace); err != nil {
-					dlog.Error(ctx, err)
-				}
+				c.Delete(ac.AgentName, ac.Namespace)
 			} else {
 				dlog.Error(ctx, err)
 			}
 			continue
 		}
-		if err = c.store(ctx, acn); err != nil {
+		ac = acn.AgentConfig()
+		c.Store(acn)
+		dlog.Debugf(ctx, "deleting pods with config mismatch for %s %s.%s", ac.WorkloadKind, ac.WorkloadName, ac.Namespace)
+		err = c.DeletePodsWithConfigMismatch(ctx, acn)
+		if err != nil {
 			dlog.Error(ctx, err)
 		}
 	}

@@ -2,14 +2,12 @@ package agent_test
 
 import (
 	"context"
-	"path/filepath"
 	"runtime"
 	"testing"
 
 	"github.com/spf13/afero"
 	"github.com/stretchr/testify/require"
 	core "k8s.io/api/core/v1"
-	"sigs.k8s.io/yaml"
 
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/agent"
@@ -60,14 +58,13 @@ func testContext(t *testing.T, env dos.MapEnv) context.Context {
 	if env == nil {
 		env = make(dos.MapEnv)
 	}
-	y, err := yaml.Marshal(&testConfig)
+	require.NoError(t, fs.MkdirAll(agentconfig.ExportsMountPoint, 0o700))
+
+	cfgJSON, err := agentconfig.MarshalTight(&testConfig)
 	require.NoError(t, err)
 
-	require.NoError(t, fs.MkdirAll(agentconfig.ConfigMountPoint, 0o700))
-	require.NoError(t, fs.MkdirAll(agentconfig.ExportsMountPoint, 0o700))
-	require.NoError(t, afero.WriteFile(fs, filepath.Join(agentconfig.ConfigMountPoint, agentconfig.ConfigFile), y, 0o600))
-
 	env[agentconfig.EnvPrefixAgent+"POD_IP"] = podIP
+	env[agentconfig.EnvAgentConfig] = cfgJSON
 
 	ctx := dlog.NewTestContext(t, false)
 	ctx = dos.WithFS(ctx, aferofs.Wrap(fs))
@@ -78,6 +75,7 @@ func Test_LoadConfig(t *testing.T) {
 	ctx := testContext(t, nil)
 	config, err := agent.LoadConfig(ctx)
 	require.NoError(t, err)
+	testConfig.AgentImage = ""
 	require.Equal(t, &testConfig, config.AgentConfig())
 	require.Equal(t, podIP, config.PodIP())
 }

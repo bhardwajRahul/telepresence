@@ -59,6 +59,7 @@ const (
 	Manager_Tunnel_FullMethodName                    = "/telepresence.manager.Manager/Tunnel"
 	Manager_ReportMetrics_FullMethodName             = "/telepresence.manager.Manager/ReportMetrics"
 	Manager_WatchDial_FullMethodName                 = "/telepresence.manager.Manager/WatchDial"
+	Manager_UninstallAgents_FullMethodName           = "/telepresence.manager.Manager/UninstallAgents"
 )
 
 // ManagerClient is the client API for Manager service.
@@ -177,6 +178,9 @@ type ManagerClient interface {
 	// connection and responds with a Tunnel. The manager then connects the
 	// two tunnels.
 	WatchDial(ctx context.Context, in *SessionInfo, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DialRequest], error)
+	// UninstallAgents will uninstall the traffic-agent from the given workloads (or all
+	// workloads if the list is empty).
+	UninstallAgents(ctx context.Context, in *UninstallAgentsRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 }
 
 type managerClient struct {
@@ -621,6 +625,16 @@ func (c *managerClient) WatchDial(ctx context.Context, in *SessionInfo, opts ...
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Manager_WatchDialClient = grpc.ServerStreamingClient[DialRequest]
 
+func (c *managerClient) UninstallAgents(ctx context.Context, in *UninstallAgentsRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, Manager_UninstallAgents_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ManagerServer is the server API for Manager service.
 // All implementations must embed UnimplementedManagerServer
 // for forward compatibility.
@@ -737,6 +751,9 @@ type ManagerServer interface {
 	// connection and responds with a Tunnel. The manager then connects the
 	// two tunnels.
 	WatchDial(*SessionInfo, grpc.ServerStreamingServer[DialRequest]) error
+	// UninstallAgents will uninstall the traffic-agent from the given workloads (or all
+	// workloads if the list is empty).
+	UninstallAgents(context.Context, *UninstallAgentsRequest) (*emptypb.Empty, error)
 	mustEmbedUnimplementedManagerServer()
 }
 
@@ -851,6 +868,9 @@ func (UnimplementedManagerServer) ReportMetrics(context.Context, *TunnelMetrics)
 }
 func (UnimplementedManagerServer) WatchDial(*SessionInfo, grpc.ServerStreamingServer[DialRequest]) error {
 	return status.Errorf(codes.Unimplemented, "method WatchDial not implemented")
+}
+func (UnimplementedManagerServer) UninstallAgents(context.Context, *UninstallAgentsRequest) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UninstallAgents not implemented")
 }
 func (UnimplementedManagerServer) mustEmbedUnimplementedManagerServer() {}
 func (UnimplementedManagerServer) testEmbeddedByValue()                 {}
@@ -1429,6 +1449,24 @@ func _Manager_WatchDial_Handler(srv interface{}, stream grpc.ServerStream) error
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type Manager_WatchDialServer = grpc.ServerStreamingServer[DialRequest]
 
+func _Manager_UninstallAgents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UninstallAgentsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ManagerServer).UninstallAgents(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Manager_UninstallAgents_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ManagerServer).UninstallAgents(ctx, req.(*UninstallAgentsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Manager_ServiceDesc is the grpc.ServiceDesc for Manager service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1535,6 +1573,10 @@ var Manager_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReportMetrics",
 			Handler:    _Manager_ReportMetrics_Handler,
+		},
+		{
+			MethodName: "UninstallAgents",
+			Handler:    _Manager_UninstallAgents_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
