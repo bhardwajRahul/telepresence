@@ -33,7 +33,7 @@ func (d *device) AddSubnet(ctx context.Context, subnet netip.Prefix) (err error)
 
 // Index returns the index of this device.
 func (d *device) Index() uint32 {
-	return d.index()
+	return d.interfaceIndex
 }
 
 // Name returns the name of this device, e.g. "tun0".
