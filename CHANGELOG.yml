@@ -33,6 +33,14 @@ docDescription: >-
   environments, access to instantaneous feedback loops, and highly
   customizable development environments.
 items:
+  - version: 2.21.3
+    date: (TBD)
+    notes:
+      - type: bugfix
+        title: Fix panic in root daemon when using the "allow conflicting subnets" feature on macOS.
+        body: >-
+          A regression was introduced in version 2.21.0, causing a panic due to an unimplemented method in the
+          TUN-device on macOS based clients.
   - version: 2.21.2
     date: 2025-01-26
     notes:

@@ -98,10 +98,6 @@ func (d *device) removeSubnet(ctx context.Context, pfx netip.Prefix) error {
 	return netlink.AddrDel(link, addr)
 }
 
-func (d *device) index() uint32 {
-	return d.interfaceIndex
-}
-
 func (d *device) getMTU() (mtu uint32, err error) {
 	err = withSocket(unix.AF_INET, func(fd int) error {
 		ifr, err := unix.NewIfreq(d.name)
