@@ -44,7 +44,8 @@ func (pa *podAccess) startMount(ctx context.Context, iceptWG, podWG *sync.WaitGr
 		}
 		// The FTP mounter survives multiple starts for the same intercept. It just resets the address
 		mountCtx = pa.ctx
-		if fuseftp = userd.GetService(ctx).FuseFTPMgr().GetFuseFTPClient(ctx); fuseftp == nil {
+		fuseftp = userd.GetService(ctx).FuseFTPMgr().GetFuseFTPClient(ctx)
+		if fuseftp == nil {
 			dlog.Errorf(ctx, "Client is configured to perform remote mounts using FTP, but the fuseftp server was unable to start")
 			return
 		}

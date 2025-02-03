@@ -79,6 +79,7 @@ following Free and Open Source software:
     github.com/hectane/go-acl                                      v0.0.0-20230122075934-ca0b05cb1adb    MIT license
     github.com/huandu/xstrings                                     v1.5.0                                MIT license
     github.com/inconshreveable/mousetrap                           v1.1.0                                Apache License 2.0
+    github.com/jlaffaye/ftp                                        v0.2.0                                ISC license
     github.com/jmoiron/sqlx                                        v1.4.0                                MIT license
     github.com/josharian/intern                                    v1.0.1-0.20211109044230-42b52b674af5  MIT license
     github.com/json-iterator/go                                    v1.1.12                               MIT license
@@ -128,10 +129,12 @@ following Free and Open Source software:
     github.com/spf13/cobra                                         v1.8.1                                Apache License 2.0
     github.com/spf13/pflag                                         v1.0.6                                3-clause BSD license
     github.com/stretchr/testify                                    v1.10.0                               MIT license
+    github.com/telepresenceio/go-fuseftp                           v0.6.1                                Apache License 2.0
     github.com/telepresenceio/go-fuseftp/rpc                       v0.6.1                                Apache License 2.0
     github.com/telepresenceio/telepresence/rpc/v2                  (modified)                            Apache License 2.0
     github.com/vishvananda/netlink                                 v1.3.0                                Apache License 2.0
     github.com/vishvananda/netns                                   v0.0.5                                Apache License 2.0
+    github.com/winfsp/cgofuse                                      v1.6.0                                MIT license
     github.com/x448/float16                                        v0.8.4                                MIT license
     github.com/xeipuuv/gojsonpointer                               v0.0.0-20190905194746-02993c407bfb    Apache License 2.0
     github.com/xeipuuv/gojsonreference                             v0.0.0-20180127040603-bd5ef7bd5415    Apache License 2.0

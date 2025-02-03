@@ -115,9 +115,9 @@ func Stop(ctx context.Context, svc *grpc.Server, maxTime time.Duration) {
 // if the context has soft-cancel enabled. The server's Stop function will be called if no soft-cancel is enabled or
 // when the GracefulStop doesn't finish until the Done channel of the hard context closed.
 func Wait(ctx context.Context, svc *grpc.Server) {
+	<-ctx.Done()
 	hardCtx := dcontext.HardContext(ctx)
 	if hardCtx != ctx {
-		<-ctx.Done()
 		dead := make(chan struct{})
 		go func() {
 			dlog.Debug(ctx, "Initiating soft shutdown")
