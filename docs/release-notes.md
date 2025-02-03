@@ -14,6 +14,12 @@ Typically, a `telepresence connect --proxy-via <subnet>=<workflow>` would fail w
 A regression was introduced in version 2.21.0, causing a panic due to an unimplemented method in the TUN-device on macOS based clients.
 </div>
 
+## <div style="display:flex;"><img src="images/bugfix.png" alt="bugfix" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">Ensure that annotation enabled traffic-agents are uninstall when uninstalling the traffic-manager.</div></div>
+<div style="margin-left: 15px">
+
+A traffic-agent injected because the workload had the inject annotation enabled would sometimes not get uninstalled when the traffic-manager was uninstalled.
+</div>
+
 ## Version 2.21.2 <span style="font-size: 16px;">(January 26)</span>
 ## <div style="display:flex;"><img src="images/bugfix.png" alt="bugfix" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">Fix panic when agentpf.client creates a Tunnel</div></div>
 <div style="margin-left: 15px">

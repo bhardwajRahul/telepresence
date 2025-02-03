@@ -48,6 +48,11 @@ items:
         body: >-
           A regression was introduced in version 2.21.0, causing a panic due to an unimplemented method in the
           TUN-device on macOS based clients.
+      - type: bugfix
+        title: Ensure that annotation enabled traffic-agents are uninstall when uninstalling the traffic-manager.
+        body: >-
+          A traffic-agent injected because the workload had the inject annotation enabled would sometimes not get
+          uninstalled when the traffic-manager was uninstalled.
   - version: 2.21.2
     date: 2025-01-26
     notes:
