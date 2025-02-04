@@ -3,6 +3,7 @@ package manager
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"sort"
@@ -11,7 +12,6 @@ import (
 	"github.com/blang/semver/v4"
 	"github.com/google/uuid"
 	dns2 "github.com/miekg/dns"
-	"golang.org/x/exp/maps"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -414,8 +414,7 @@ func (s *service) watchAgents(ctx context.Context, includeAgent func(string, *rp
 				dlog.Debug(ctx, "WatchAgentsNS request cancelled")
 				return nil
 			}
-			agentSessionIDs := maps.Keys(snapshot.State)
-			sort.Strings(agentSessionIDs)
+			agentSessionIDs := slices.Sorted(maps.Keys(snapshot.State))
 			agents := make([]*rpc.AgentInfo, len(agentSessionIDs))
 			for i, agentSessionID := range agentSessionIDs {
 				agents[i] = snapshot.State[agentSessionID]

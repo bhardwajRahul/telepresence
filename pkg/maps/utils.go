@@ -1,9 +1,8 @@
 package maps
 
 import (
+	"cmp"
 	"sort"
-
-	"golang.org/x/exp/constraints"
 )
 
 // Copy creates a copy of the given map and returns it.
@@ -36,7 +35,7 @@ func Merge[K comparable, V any](dst, src map[K]V) {
 }
 
 // ToSortedSlice returns a slice of the values in the given map, sorted by that map's keys.
-func ToSortedSlice[K constraints.Ordered, V any](m map[K]V) []V {
+func ToSortedSlice[K cmp.Ordered, V any](m map[K]V) []V {
 	ns := make([]K, len(m))
 	i := 0
 	for n := range m {

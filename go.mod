@@ -37,7 +37,6 @@ require (
 	github.com/telepresenceio/go-fuseftp/rpc v0.5.0
 	github.com/telepresenceio/telepresence/rpc/v2 v2.21.1
 	github.com/vishvananda/netlink v1.3.0
-	golang.org/x/exp v0.0.0-20250106191152-7588d65b2ba8
 	golang.org/x/net v0.34.0
 	golang.org/x/sys v0.29.0
 	golang.org/x/term v0.28.0
