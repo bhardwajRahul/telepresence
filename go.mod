@@ -36,7 +36,7 @@ require (
 	github.com/spf13/pflag v1.0.5
 	github.com/stretchr/testify v1.10.0
 	github.com/telepresenceio/go-fuseftp/rpc v0.5.0
-	github.com/telepresenceio/telepresence/rpc/v2 v2.21.2
+	github.com/telepresenceio/telepresence/rpc/v2 v2.21.3-test.4
 	github.com/vishvananda/netlink v1.3.0
 	golang.org/x/exp v0.0.0-20241210194714-1829a127f884
 	golang.org/x/net v0.32.0

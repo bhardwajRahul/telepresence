@@ -160,6 +160,9 @@ func (s *nsPair) RollbackTM(ctx context.Context) {
 	t := getT(ctx)
 	require.NoError(t, err)
 	require.NoError(t, RolloutStatusWait(ctx, s.Namespace, "deploy/traffic-manager"))
+	assert.Eventually(t, func() bool {
+		return len(RunningPodNames(ctx, "traffic-manager", s.Namespace)) == 1
+	}, 30*time.Second, 5*time.Second)
 	s.CapturePodLogs(ctx, "traffic-manager", "", s.Namespace)
 }
 

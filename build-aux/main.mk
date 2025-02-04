@@ -86,7 +86,7 @@ protoc: protoc-clean $(tools/protoc) $(tools/protoc-gen-go) $(tools/protoc-gen-g
 .PHONY: generate
 generate: ## (Generate) Update generated files that get checked in to Git
 generate: generate-clean
-generate: protoc $(tools/go-mkopensource) $(BUILDDIR)/$(shell go env GOVERSION).src.tar.gz docs-files
+generate: protoc $(tools/go-mkopensource) $(BUILDDIR)/$(shell go env GOVERSION).src.tar.gz
 	cd ./rpc && export GOFLAGS=-mod=mod && go mod tidy && go mod vendor && rm -rf vendor
 	cd ./pkg/vif/testdata/router && export GOFLAGS=-mod=mod && go mod tidy && go mod vendor && rm -rf vendor
 	cd ./tools/src/test-report && export GOFLAGS=-mod=mod && go mod tidy && go mod vendor && rm -rf vendor
@@ -108,12 +108,15 @@ generate: protoc $(tools/go-mkopensource) $(BUILDDIR)/$(shell go env GOVERSION).
 
 	rm -rf vendor
 
+generate: docs-files
+
 .PHONY: generate-clean
 generate-clean: ## (Generate) Delete generated files
 	rm -rf ./rpc/vendor
 	rm -rf ./vendor
 	rm -f DEPENDENCIES.md
 	rm -f DEPENDENCY_LICENSES.md
+	rm -f docs/release-notes.md*
 
 CHANGELOG.yml: FORCE
 	@# Check if the version is in the x.x.x format (GA release)

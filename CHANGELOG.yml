@@ -37,10 +37,22 @@ items:
     date: (TBD)
     notes:
       - type: bugfix
+        title: Using the --proxy-via flag would sometimes cause connection timeouts.
+        body: >-
+          Typically, a `telepresence connect --proxy-via <subnet>=<workflow>` would fail with a "deadline exceeded"
+          message when several workloads were present in the namespace, the one targeted by the proxy-via didn't yet
+          have an agent installed, and other workloads had an agent. This was due to a race condition in the logic
+          for the agent-based port-forwards in the root daemon. The conditions causing this race are now eliminated.
+      - type: bugfix
         title: Fix panic in root daemon when using the "allow conflicting subnets" feature on macOS.
         body: >-
           A regression was introduced in version 2.21.0, causing a panic due to an unimplemented method in the
           TUN-device on macOS based clients.
+      - type: bugfix
+        title: Ensure that annotation enabled traffic-agents are uninstall when uninstalling the traffic-manager.
+        body: >-
+          A traffic-agent injected because the workload had the inject annotation enabled would sometimes not get
+          uninstalled when the traffic-manager was uninstalled.
   - version: 2.21.2
     date: 2025-01-26
     notes:
