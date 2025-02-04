@@ -191,12 +191,22 @@ func (rt *Router) addStaticOverrides(ctx context.Context, neverProxy, neverProxy
 			if err != nil {
 				return err
 			}
-			pr = &routing.Route{
-				Interface: ifd,
+			for _, addr := range addrs {
+				pfx, err := netip.ParsePrefix(addr.String())
+				if err != nil {
+					return err
+				}
+				pr, err = routing.GetRoute(ctx, pfx)
+				if err != nil {
+					return err
+				}
+				if pr.Gateway.IsValid() {
+					break
+				}
 			}
-			if len(addrs) > 0 {
-				if pfx, err := netip.ParsePrefix(addrs[0].String()); err == nil {
-					pr.LocalIP = pfx.Addr()
+			if pr == nil {
+				pr = &routing.Route{
+					Interface: ifd,
 				}
 			}
 		}
