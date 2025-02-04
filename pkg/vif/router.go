@@ -178,29 +178,34 @@ func (rt *Router) addStaticOverrides(ctx context.Context, neverProxy, neverProxy
 		}
 	}
 
-	if len(staticNets) > 0 {
-		ifd, err := net.InterfaceByIndex(int(rt.device.Index()))
-		if err != nil {
-			return err
-		}
+	ifd, err := net.InterfaceByIndex(int(rt.device.Index()))
+	if err != nil {
+		return err
+	}
+	addrs, err := ifd.Addrs()
+	if err != nil {
+		return err
+	}
+	for _, sn := range staticNets {
 		var pr *routing.Route
-		if dr.Interface.Index == ifd.Index {
+		ip4 := sn.Addr().Is4()
+		if dr.Interface.Index == ifd.Index && ip4 == dr.LocalIP.Is4() {
 			pr = dr
 		} else {
-			addrs, err := ifd.Addrs()
-			if err != nil {
-				return err
-			}
 			for _, addr := range addrs {
 				pfx, err := netip.ParsePrefix(addr.String())
 				if err != nil {
 					return err
+				}
+				if ip4 != pfx.Addr().Is4() {
+					continue
 				}
 				pr, err = routing.GetRoute(ctx, pfx)
 				if err != nil {
 					return err
 				}
 				if pr.Gateway.IsValid() {
+					// Address families match and we have a gateway. It doesn't get any better.
 					break
 				}
 			}
@@ -209,9 +214,7 @@ func (rt *Router) addStaticOverrides(ctx context.Context, neverProxy, neverProxy
 					Interface: ifd,
 				}
 			}
-		}
 
-		for _, sn := range staticNets {
 			desired = append(desired, &routing.Route{
 				LocalIP:   pr.LocalIP,
 				Gateway:   pr.Gateway,
