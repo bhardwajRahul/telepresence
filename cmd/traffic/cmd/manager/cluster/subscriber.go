@@ -5,9 +5,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"slices"
 	"sync"
-
-	"golang.org/x/exp/slices"
 
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/manager"
 )

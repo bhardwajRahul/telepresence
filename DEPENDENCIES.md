@@ -142,7 +142,6 @@ following Free and Open Source software:
     go.opentelemetry.io/otel/metric                                v1.34.0                               Apache License 2.0
     go.opentelemetry.io/otel/trace                                 v1.34.0                               Apache License 2.0
     golang.org/x/crypto                                            v0.32.0                               3-clause BSD license
-    golang.org/x/exp                                               v0.0.0-20250106191152-7588d65b2ba8    3-clause BSD license
     golang.org/x/mod                                               v0.22.0                               3-clause BSD license
     golang.org/x/net                                               v0.34.0                               3-clause BSD license
     golang.org/x/oauth2                                            v0.25.0                               3-clause BSD license

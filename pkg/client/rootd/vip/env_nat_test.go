@@ -2,10 +2,9 @@ package vip
 
 import (
 	"context"
+	"maps"
 	"net/netip"
 	"testing"
-
-	"golang.org/x/exp/maps"
 
 	"github.com/datawire/dlib/dlog"
 )
