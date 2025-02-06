@@ -171,7 +171,6 @@ type inactivation struct {
 type configWatcher struct {
 	cancel       context.CancelFunc
 	agentConfigs *xsync.MapOf[string, map[string]agentconfig.SidecarExt]
-	nsLocks      *xsync.MapOf[string, *sync.RWMutex]
 	informers    *xsync.MapOf[string, *informersWithCancel]
 	inactivePods *xsync.MapOf[types.UID, inactivation]
 	startedAt    time.Time
@@ -235,7 +234,6 @@ func (c *configWatcher) Store(sce agentconfig.SidecarExt) {
 
 func NewWatcher() Map {
 	w := &configWatcher{
-		nsLocks:      xsync.NewMapOf[string, *sync.RWMutex](),
 		informers:    xsync.NewMapOf[string, *informersWithCancel](),
 		inactivePods: xsync.NewMapOf[types.UID, inactivation](),
 		agentConfigs: xsync.NewMapOf[string, map[string]agentconfig.SidecarExt](),
@@ -335,13 +333,6 @@ func (c *configWatcher) OnAdd(ctx context.Context, wl k8sapi.Workload, acx agent
 
 func (c *configWatcher) OnDelete(context.Context, string, string) error {
 	return nil
-}
-
-func (c *configWatcher) getNamespaceLock(ns string) *sync.RWMutex {
-	lock, _ := c.nsLocks.LoadOrCompute(ns, func() *sync.RWMutex {
-		return &sync.RWMutex{}
-	})
-	return lock
 }
 
 // Get returns the Sidecar configuration that for the given key and namespace.
@@ -497,12 +488,7 @@ func (c *configWatcher) DeleteMapsAndRolloutAll(ctx context.Context) {
 }
 
 func (c *configWatcher) deleteMapsAndRolloutNS(ctx context.Context, ns string, iwc *informersWithCancel) {
-	lock := c.getNamespaceLock(ns)
-	lock.Lock()
-	defer func() {
-		c.nsLocks.Delete(ns)
-		c.informers.Delete(ns)
-	}()
+	defer c.informers.Delete(ns)
 
 	dlog.Debugf(ctx, "Cancelling watchers for namespace %s", ns)
 	for i := 0; i < watcherMax; i++ {
@@ -511,7 +497,6 @@ func (c *configWatcher) deleteMapsAndRolloutNS(ctx context.Context, ns string, i
 		}
 	}
 	iwc.cancel()
-	lock.Unlock()
 
 	err := c.DeleteAllPodsWithConfig(ctx, ns)
 	if err != nil {
