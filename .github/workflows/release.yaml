@@ -112,7 +112,7 @@ jobs:
             echo "prerelease=false" >> $GITHUB_OUTPUT
           fi
       - name: Create draft release
-        if: steps.semver_check.outputs.draft == true
+        if: ${{ steps.semver_check.outputs.draft == 'true' }}
         uses: ncipollo/release-action@v1
         with:
           artifacts: "binaries-*/*"
@@ -123,7 +123,7 @@ jobs:
             ## Draft Release
             For more information, visit our [installation docs](https://www.telepresence.io/docs/latest/quick-start/).
       - name: Create release
-        if: steps.semver_check.outputs.draft != true
+        if: ${{ steps.semver_check.outputs.draft == 'false' }}
         uses: ncipollo/release-action@v1
         with:
           artifacts: "binaries-*/*"
@@ -148,9 +148,9 @@ jobs:
 
             ![Assets](https://static.scarf.sh/a.png?x-pxid=d842651a-2e4d-465a-98e1-4808722c01ab)
       - uses: actions/checkout@v4
-        if: steps.semver_check.outputs.make_latest == true
+        if: ${{ steps.semver_check.outputs.make_latest == 'true' }}
       - name: Update Homebrew
-        if: steps.semver_check.outputs.make_latest == true
+        if: ${{ steps.semver_check.outputs.make_latest == 'true' }}
         run: |
           v=${{ github.ref_name }}
           packaging/homebrew-package.sh "${v#v}" tel2oss "${{ vars.GH_BOT_USER }}" "${{ vars.GH_BOT_EMAIL }}" "${{ secrets.HOMEBREW_TAP_TOKEN }}"
@@ -159,7 +159,7 @@ jobs:
     needs:
       - push-images
       - publish-release
-    if: needs.publish-release.semver_check.outputs.draft != true
+    if: ${{ needs.publish-release.semver_check.outputs.draft == 'false' }}
     strategy:
       fail-fast: false
       matrix:

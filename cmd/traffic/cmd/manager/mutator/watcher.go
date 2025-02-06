@@ -106,7 +106,7 @@ func (c *configWatcher) isRolloutNeeded(ctx context.Context, wl k8sapi.Workload,
 		// Annotation controls injection, so no explicit rollout is needed unless the deployment was added before the
 		// traffic-manager or the traffic-manager already received an injection event but failed due to the lack
 		// of an agent config.
-		if !c.terminating.Load() {
+		if c.running.Load() {
 			if c.receivedPrematureInjectEvent(wl) {
 				dlog.Debugf(ctx, "Rollout of %s.%s is necessary. Pod template has inject annotation %s and a premature injection event was received",
 					wl.GetName(), wl.GetNamespace(), ia)
@@ -453,7 +453,7 @@ type configWatcher struct {
 	informers                *xsync.MapOf[string, *informersWithCancel]
 	startedAt                time.Time
 	rolloutDisabled          bool
-	terminating              atomic.Bool
+	running                  atomic.Bool
 
 	self Map // For extension
 }
@@ -566,6 +566,7 @@ func (c *configWatcher) SetSelf(self Map) {
 }
 
 func (c *configWatcher) startInformers(ctx context.Context, ns string) (iwc *informersWithCancel, err error) {
+	defer c.running.Store(true)
 	ctx, cancel := context.WithCancel(ctx)
 	defer func() {
 		if err != nil {
@@ -944,11 +945,13 @@ func (c *configWatcher) namespacesChangeWatcher(ctx context.Context) error {
 }
 
 func (c *configWatcher) DeleteMapsAndRolloutAll(ctx context.Context) {
-	c.cancel() // No more updates from watcher
-	c.informers.Range(func(ns string, iwc *informersWithCancel) bool {
-		c.deleteMapsAndRolloutNS(ctx, ns, iwc)
-		return true
-	})
+	if c.running.CompareAndSwap(true, false) {
+		c.cancel() // No more updates from watcher
+		c.informers.Range(func(ns string, iwc *informersWithCancel) bool {
+			c.deleteMapsAndRolloutNS(ctx, ns, iwc)
+			return true
+		})
+	}
 }
 
 func (c *configWatcher) deleteMapsAndRolloutNS(ctx context.Context, ns string, iwc *informersWithCancel) {

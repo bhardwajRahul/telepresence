@@ -130,10 +130,6 @@ func (d *device) getLUID() winipcfg.LUID {
 	return winipcfg.LUID(d.dev.(*tun.NativeTun).LUID())
 }
 
-func (d *device) index() uint32 {
-	return d.interfaceIndex
-}
-
 func (d *device) addSubnet(_ context.Context, subnet netip.Prefix) error {
 	return d.getLUID().AddIPAddress(subnet)
 }

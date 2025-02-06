@@ -25,7 +25,7 @@
 # For older changes, see CHANGELOG.OLD.md
 items:
   - version: 2.22.0
-    date: (TBD)
+    date: 2025-02-06
     notes:
       - type: feature
         title: One single invocation of the Telepresence intercept command can now intercept multiple ports.
@@ -75,6 +75,26 @@ items:
         body: >-
           macOS based systems will often PTR queries using nameslike `b._dns-sd._udp`, lb._dns-sd._udp, or
           `db-dns-sd._udp`. Those queries are no longer dispatched to the cluster.
+  - version: 2.21.3
+    date: 2025-02-06
+    notes:
+      - type: bugfix
+        title: Using the --proxy-via flag would sometimes cause connection timeouts.
+        body: >-
+          Typically, a `telepresence connect --proxy-via <subnet>=<workflow>` would fail with a "deadline exceeded"
+          message when several workloads were present in the namespace, the one targeted by the proxy-via didn't yet
+          have an agent installed, and other workloads had an agent. This was due to a race condition in the logic
+          for the agent-based port-forwards in the root daemon. The conditions causing this race are now eliminated.
+      - type: bugfix
+        title: Fix panic in root daemon when using the "allow conflicting subnets" feature on macOS.
+        body: >-
+          A regression was introduced in version 2.21.0, causing a panic due to an unimplemented method in the
+          TUN-device on macOS based clients.
+      - type: bugfix
+        title: Ensure that annotation enabled traffic-agents are uninstall when uninstalling the traffic-manager.
+        body: >-
+          A traffic-agent injected because the workload had the inject annotation enabled would sometimes not get
+          uninstalled when the traffic-manager was uninstalled.
   - version: 2.21.2
     date: 2025-01-26
     notes:
