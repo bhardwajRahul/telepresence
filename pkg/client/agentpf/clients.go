@@ -498,6 +498,13 @@ func (s *clients) WaitForWorkload(ctx context.Context, timeout time.Duration, na
 func (s *clients) updateClients(ctx context.Context, ais []*manager.AgentPodInfo) error {
 	defer s.notifyWaiters()
 
+	if dlog.MaxLogLevel(ctx) >= dlog.LogLevelDebug {
+		ns := make([]string, len(ais))
+		for i, ac := range ais {
+			ns[i] = fmt.Sprintf("%s(%s)", ac.PodName, net.IP(ac.PodIp))
+		}
+		dlog.Debugf(ctx, "updateClients %s", ns)
+	}
 	var aim map[string]*manager.AgentPodInfo
 	if len(ais) > 0 {
 		aim = make(map[string]*manager.AgentPodInfo, len(ais))

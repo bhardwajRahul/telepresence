@@ -292,9 +292,9 @@ func (s *service) WatchAgentPods(session *rpc.SessionInfo, stream rpc.Manager_Wa
 	}
 
 	var interceptInfos map[string]*state.Intercept
-	isIntercepted := func(name, namespace string) bool {
+	isIntercepted := func(a *rpc.AgentPodInfo) bool {
 		for _, ii := range interceptInfos {
-			if name == ii.Spec.Agent && namespace == ii.Spec.Namespace {
+			if a.WorkloadName == ii.Spec.Agent && a.Namespace == ii.Spec.Namespace {
 				return true
 			}
 		}
@@ -319,15 +319,16 @@ func (s *service) WatchAgentPods(session *rpc.SessionInfo, stream rpc.Manager_Wa
 				if err != nil {
 					dlog.Errorf(ctx, "error parsing agent pod ip %q: %v", a.PodIp, err)
 				}
-				agents[i] = &rpc.AgentPodInfo{
+				ap := &rpc.AgentPodInfo{
 					WorkloadName: a.Name,
 					PodName:      a.PodName,
 					Namespace:    a.Namespace,
 					PodIp:        aip.AsSlice(),
 					ApiPort:      a.ApiPort,
-					Intercepted:  isIntercepted(a.Name, a.Namespace),
 				}
-				agentNames[i] = a.Name
+				ap.Intercepted = isIntercepted(ap)
+				agents[i] = ap
+				agentNames[i] = fmt.Sprintf("%s(%s)", ap.PodName, net.IP(ap.PodIp))
 				i++
 			}
 		case is, ok := <-interceptsCh:
@@ -335,11 +336,12 @@ func (s *service) WatchAgentPods(session *rpc.SessionInfo, stream rpc.Manager_Wa
 				return nil
 			}
 			interceptInfos = is
-			for i, a := range agents {
-				a.Intercepted = isIntercepted(agentNames[i], a.Namespace)
+			for _, ap := range agents {
+				ap.Intercepted = isIntercepted(ap)
 			}
 		}
 		if agents != nil {
+			dlog.Debugf(ctx, "Sending update for %s", agentNames)
 			if err = stream.Send(&rpc.AgentPodInfoSnapshot{Agents: agents}); err != nil {
 				return err
 			}
@@ -412,7 +414,7 @@ func (s *service) watchAgents(ctx context.Context, includeAgent func(tunnel.Sess
 		case snapshot, ok := <-snapshotCh:
 			if !ok {
 				// The request has been canceled.
-				dlog.Debug(ctx, "WatchAgentsNS request cancelled")
+				dlog.Debug(ctx, "Request cancelled")
 				return nil
 			}
 			agentSessionIDs := slices.Sorted(maps.Keys(snapshot))
@@ -433,7 +435,7 @@ func (s *service) watchAgents(ctx context.Context, includeAgent func(tunnel.Sess
 					names[i] = a.PodName + "." + a.Namespace
 					i++
 				}
-				dlog.Tracef(ctx, "WatchAgentsNS sending update %v", names)
+				dlog.Tracef(ctx, "Sending update %v", names)
 			}
 			resp := &rpc.AgentInfoSnapshot{
 				Agents: agents,
@@ -443,7 +445,7 @@ func (s *service) watchAgents(ctx context.Context, includeAgent func(tunnel.Sess
 			}
 		case <-sessionDone:
 			// Manager believes this session has ended.
-			dlog.Debug(ctx, "WatchAgentsNS session cancelled")
+			dlog.Debug(ctx, "Session cancelled")
 			return nil
 		}
 	}
@@ -473,7 +475,7 @@ func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_W
 					return false
 				}
 				if as := s.state.GetAgent(sessionID); as == nil {
-					dlog.Debugf(ctx, "WatchIntercepts session no longer active")
+					dlog.Debugf(ctx, "Session no longer active")
 					return false
 				}
 				// Don't return intercepts that aren't in a "agent-owned" state.
@@ -505,10 +507,10 @@ func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_W
 		select {
 		case snapshot, ok := <-snapshotCh:
 			if !ok {
-				dlog.Debugf(ctx, "WatchIntercepts request cancelled")
+				dlog.Debugf(ctx, "Request cancelled")
 				return nil
 			}
-			dlog.Tracef(ctx, "WatchIntercepts sending update")
+			dlog.Tracef(ctx, "Sending update")
 			intercepts := make([]*rpc.InterceptInfo, 0, len(snapshot))
 			for _, intercept := range snapshot {
 				intercepts = append(intercepts, intercept.InterceptInfo)
@@ -520,14 +522,14 @@ func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_W
 				return intercepts[i].Id < intercepts[j].Id
 			})
 			if err := stream.Send(resp); err != nil {
-				dlog.Debugf(ctx, "WatchIntercepts encountered a write error: %v", err)
+				dlog.Debugf(ctx, "Encountered a write error: %v", err)
 				return err
 			}
 		case <-ctx.Done():
-			dlog.Debugf(ctx, "WatchIntercepts context cancelled")
+			dlog.Debugf(ctx, "Context cancelled")
 			return nil
 		case <-sessionDone:
-			dlog.Debugf(ctx, "WatchIntercepts session cancelled")
+			dlog.Debugf(ctx, "Session cancelled")
 			return nil
 		}
 	}
