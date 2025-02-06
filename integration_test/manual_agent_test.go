@@ -102,6 +102,7 @@ func testManualAgent(s *itest.Suite, nsp itest.NamespacePair) {
 	}()
 
 	err = nsp.RolloutStatusWait(ctx, "deploy/"+ac.WorkloadName)
+	nsp.CapturePodLogs(ctx, ac.WorkloadName, "traffic-agent", nsp.AppNamespace())
 	require.NoError(err)
 
 	nsp.TelepresenceConnect(ctx)
