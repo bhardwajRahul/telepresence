@@ -40,7 +40,7 @@ type client struct {
 	cancelClient    context.CancelFunc
 	cancelDialWatch context.CancelFunc
 	tunnelCount     int32
-	infant          bool
+	infant          atomic.Bool
 }
 
 func (ac *client) String() string {
@@ -52,11 +52,7 @@ func (ac *client) String() string {
 }
 
 func (ac *client) ensureConnect(ctx context.Context) (err error) {
-	ac.Lock()
-	infant := ac.infant
-	ac.infant = false
-	ac.Unlock()
-	if infant {
+	if ac.infant.CompareAndSwap(true, false) {
 		go ac.connect(ctx, func() {
 			ac.remove()
 		})
@@ -125,7 +121,7 @@ func (ac *client) connect(ctx context.Context, deleteMe func()) {
 			conn.Close()
 			ac.cancelClient = nil
 			ac.cli = nil
-			ac.infant = true
+			ac.infant.Store(true)
 			for len(ac.ready) > 0 {
 				<-ac.ready
 			}
@@ -140,8 +136,11 @@ func (ac *client) connect(ctx context.Context, deleteMe func()) {
 }
 
 func (ac *client) dormant() bool {
+	if ac.infant.Load() || atomic.LoadInt32(&ac.tunnelCount) > 0 {
+		return false
+	}
 	ac.RLock()
-	dormant := !(ac.infant || ac.cli == nil || ac.info.Intercepted) && atomic.LoadInt32(&ac.tunnelCount) == 0
+	dormant := ac.cli != nil && !ac.info.Intercepted
 	ac.RUnlock()
 	return dormant
 }
@@ -173,29 +172,23 @@ func (ac *client) cancel() bool {
 func (ac *client) setIntercepted(ctx context.Context, k string, status bool) {
 	ac.RLock()
 	aci := ac.info.Intercepted
+	cdw := ac.cancelDialWatch
 	ac.RUnlock()
 	if status {
 		if aci {
 			return
 		}
 		dlog.Debugf(ctx, "Agent %s changed to intercepted", k)
-		if err := ac.startDialWatcher(ctx); err != nil {
-			dlog.Errorf(ctx, "failed to start client watcher for %s: %v", k, err)
-		}
+		go func() {
+			if err := ac.startDialWatcher(ctx); err != nil {
+				dlog.Errorf(ctx, "failed to start client watcher for %s: %v", k, err)
+			}
+		}()
 		// This agent is now intercepting. Start a dial watcher.
-	} else {
-		if !aci {
-			return
-		}
-
+	} else if aci && cdw != nil {
 		// This agent is no longer intercepting. Stop the dial watcher
 		dlog.Debugf(ctx, "Agent %s changed to not intercepted", k)
-		ac.RLock()
-		cdw := ac.cancelDialWatch
-		ac.RUnlock()
-		if cdw != nil {
-			cdw()
-		}
+		cdw()
 	}
 }
 
@@ -557,9 +550,9 @@ func (s *clients) updateClients(ctx context.Context, ais []*manager.AgentPodInfo
 				remove: func() {
 					deleteClient(k)
 				},
-				info:   ai,
-				infant: true,
+				info: ai,
 			}
+			ac.infant.Store(true)
 			dlog.Debugf(ctx, "Adding agent pod %s (%s)", k, net.IP(ai.PodIp))
 			return ac, false
 		})
