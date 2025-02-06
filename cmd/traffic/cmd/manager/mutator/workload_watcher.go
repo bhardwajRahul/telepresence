@@ -100,13 +100,13 @@ func (c *configWatcher) updateWorkload(ctx context.Context, wl, oldWl k8sapi.Wor
 		c.Store(scx)
 		ac := scx.AgentConfig()
 		dlog.Debugf(ctx, "deleting pods with config mismatch for %s %s.%s", ac.WorkloadKind, ac.WorkloadName, ac.Namespace)
-		err = c.DeletePodsWithConfigMismatch(ctx, scx)
+		err = c.EvictPodsWithAgentConfigMismatch(ctx, scx)
 		if err != nil {
 			dlog.Error(ctx, err)
 		}
 	case "false", "disabled":
 		c.Delete(wl.GetName(), wl.GetNamespace())
-		err := c.DeletePodsWithConfig(ctx, wl)
+		err := c.EvictPodsWithAgentConfig(ctx, wl)
 		if err != nil {
 			dlog.Error(ctx, err)
 		}

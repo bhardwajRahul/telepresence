@@ -611,7 +611,7 @@ func (s *state) UninstallAgents(ctx context.Context, ur *rpc.UninstallAgentsRequ
 	mm := mutator.GetMap(ctx)
 	agents := ur.Agents
 	if len(agents) == 0 {
-		if err := mm.DeleteAllPodsWithConfig(ctx, ns); err != nil {
+		if err := mm.EvictAllPodsWithAgentConfig(ctx, ns); err != nil {
 			return status.Errorf(codes.Internal, "unable to delete pods with agent: %v", err)
 		}
 		return nil
@@ -628,7 +628,7 @@ func (s *state) UninstallAgents(ctx context.Context, ur *rpc.UninstallAgentsRequ
 
 	for _, wl := range wls {
 		mm.Delete(wl.GetName(), ns)
-		if err := mm.DeletePodsWithConfig(ctx, wl); err != nil {
+		if err := mm.EvictPodsWithAgentConfig(ctx, wl); err != nil {
 			return status.Errorf(codes.Internal, "unable to delete agent for workload %s.%s: %v", wl.GetName(), ns, err)
 		}
 	}

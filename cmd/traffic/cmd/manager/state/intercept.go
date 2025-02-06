@@ -30,6 +30,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
+	"github.com/telepresenceio/telepresence/v2/pkg/ioutil"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
 )
@@ -143,12 +144,12 @@ func (s *state) PrepareIntercept(
 func prepareAllContainerPorts(cn *agentconfig.Container, pi *rpc.PreparedIntercept) {
 	pics := agentconfig.PortUniqueIntercepts(cn)
 	if ni := len(pics); ni > 0 {
-		// Put first port in the intercept itself
+		// Put the first port in the intercept itself
 		i0 := pics[0]
 		pi.ContainerPort = int32(i0.ContainerPort)
 		pi.Protocol = string(i0.Protocol)
 		if ni > 1 {
-			// Put remaining ports in PodPorts with a 1:1 mapping to target port on client.
+			// Put the remaining ports in PodPorts with a 1:1 mapping to target port on the client.
 			pi.PodPorts = make([]string, ni-1)
 			for i := 1; i < ni; i++ {
 				ic := pics[i]
@@ -292,8 +293,8 @@ func (s *state) AddIntercept(ctx context.Context, cir *rpc.CreateInterceptReques
 		pmSpec.PodPorts = nil
 		pmSpec.LocalPorts = nil
 
-		// This intercept targets a pod-port (container port) directly. The name of the container
-		// is not necessary, because container ports must be unique within the pod.
+		// This intercept targets a pod-port (container port) directly. A container name
+		// is not necessary because container ports must be unique within the pod.
 		pmSpec.ServiceUid = ""
 		pmSpec.ServicePortName = ""
 		pmSpec.ServicePort = 0
@@ -331,7 +332,7 @@ func IsChildIntercept(spec *rpc.InterceptSpec) bool {
 func (s *state) addIntercept(id string, cir *rpc.CreateInterceptRequest) (*Intercept, error) {
 	is := s.self.NewInterceptInfo(id, cir)
 
-	// Wrap each potential-state-change in a
+	// Wrap each potential-state-change in an
 	//
 	//     if cept.Disposition == rpc.InterceptDispositionType_WAITING { … }
 	//
@@ -470,7 +471,7 @@ func (s *state) ensureAgent(parentCtx context.Context, wl k8sapi.Workload, exten
 	if err != nil {
 		return nil, nil, err
 	}
-	err = mutator.GetMap(ctx).DeletePodsWithConfigMismatch(ctx, sce)
+	err = mutator.GetMap(ctx).EvictPodsWithAgentConfigMismatch(ctx, sce)
 	if err != nil {
 		dlog.Errorf(ctx, "failed to inactivate pods: %v", err)
 		return nil, nil, err
@@ -534,7 +535,7 @@ func (s *state) restoreAppContainer(ctx context.Context, ii *rpc.InterceptInfo) 
 		// The pods for this workload will be killed once the new updated sidecar
 		// reaches the configmap. We inactivate them now, so that they don't continue to
 		// review intercepts.
-		err = mm.DeletePodsWithConfigMismatch(ctx, sce)
+		err = mm.EvictPodsWithAgentConfigMismatch(ctx, sce)
 		return sce, err
 	})
 	return err
@@ -701,7 +702,7 @@ func watchFailedInjectionEvents(ctx context.Context, name, namespace string) (<-
 				if !ok {
 					return
 				}
-				// Using a negated Before when comparing the timestamps here is relevant. They will often be equal and still relevant
+				// Using negated Before when comparing the timestamps here is relevant. They will often be equal and still relevant
 				if e, ok := eo.Object.(*events.Event); ok &&
 					!e.CreationTimestamp.Time.Before(start) &&
 					!strings.HasPrefix(e.Note, "(combined from similar events):") {
@@ -738,7 +739,7 @@ func (s *state) waitForAgents(ctx context.Context, ac *agentconfig.Sidecar, fail
 			}
 			msg := fe.Note
 			// Terminate directly on known fatal events. No need for the user to wait for a timeout
-			// when one of these are encountered.
+			// when one of those is encountered.
 			switch fe.Reason {
 			case "BackOff":
 				// The traffic-agent container was injected, but it fails to start
@@ -807,7 +808,7 @@ func (s *state) waitForAgents(ctx context.Context, ac *agentconfig.Sidecar, fail
 				v = "timed out"
 			}
 			bf := &strings.Builder{}
-			fmt.Fprintf(bf, "request %s while waiting for agent %s.%s to arrive", v, name, namespace)
+			ioutil.Printf(bf, "request %s while waiting for agent %s.%s to arrive", v, name, namespace)
 			if len(fes) > 0 {
 				bf.WriteString(": Events that may be relevant:\n")
 				writeEventList(bf, fes)
@@ -845,9 +846,9 @@ func writeEventList(bf *strings.Builder, es []*events.Event) {
 	typeLen += 3
 	reasonLen += 3
 	objectLen += 3
-	fmt.Fprintf(bf, "%-*s%-*s%-*s%-*s%s\n", ageLen, "AGE", typeLen, "TYPE", reasonLen, "REASON", objectLen, "OBJECT", "MESSAGE")
+	ioutil.Printf(bf, "%-*s%-*s%-*s%-*s%s\n", ageLen, "AGE", typeLen, "TYPE", reasonLen, "REASON", objectLen, "OBJECT", "MESSAGE")
 	for _, e := range es {
-		fmt.Fprintf(bf, "%-*s%-*s%-*s%-*s%s\n", ageLen, age(e), typeLen, e.Type, reasonLen, e.Reason, objectLen, object(e), e.Note)
+		ioutil.Printf(bf, "%-*s%-*s%-*s%-*s%s\n", ageLen, age(e), typeLen, e.Type, reasonLen, e.Reason, objectLen, object(e), e.Note)
 	}
 }
 

@@ -150,7 +150,7 @@ func (c *configWatcher) updateSvc(ctx context.Context, svc *core.Service, trustU
 		ac = acn.AgentConfig()
 		c.Store(acn)
 		dlog.Debugf(ctx, "deleting pods with config mismatch for %s %s.%s", ac.WorkloadKind, ac.WorkloadName, ac.Namespace)
-		err = c.DeletePodsWithConfigMismatch(ctx, acn)
+		err = c.EvictPodsWithAgentConfigMismatch(ctx, acn)
 		if err != nil {
 			dlog.Error(ctx, err)
 		}

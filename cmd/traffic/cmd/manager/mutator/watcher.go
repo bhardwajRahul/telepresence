@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -41,9 +40,9 @@ type Map interface {
 	DeleteMapsAndRolloutAll(context.Context)
 	IsInactive(podID types.UID) bool
 	Inactivate(podID types.UID)
-	DeletePodsWithConfig(ctx context.Context, wl k8sapi.Workload) error
-	DeletePodsWithConfigMismatch(ctx context.Context, scx agentconfig.SidecarExt) error
-	DeleteAllPodsWithConfig(ctx context.Context, namespace string) error
+	EvictPodsWithAgentConfig(ctx context.Context, wl k8sapi.Workload) error
+	EvictPodsWithAgentConfigMismatch(ctx context.Context, scx agentconfig.SidecarExt) error
+	EvictAllPodsWithAgentConfig(ctx context.Context, namespace string) error
 
 	RegenerateAgentMaps(ctx context.Context, s string) error
 
@@ -135,7 +134,7 @@ func (c *configWatcher) regenerateAgentMaps(ctx context.Context, ns string, gc a
 		}
 		if newSce == nil || !cmp.Equal(newSce, sce, dbpCmp) {
 			go func() {
-				deletePod(ctx, pod)
+				evictPod(ctx, pod)
 			}()
 		}
 	}
@@ -498,13 +497,13 @@ func (c *configWatcher) deleteMapsAndRolloutNS(ctx context.Context, ns string, i
 	}
 	iwc.cancel()
 
-	err := c.DeleteAllPodsWithConfig(ctx, ns)
+	err := c.EvictAllPodsWithAgentConfig(ctx, ns)
 	if err != nil {
 		dlog.Errorf(ctx, "unable to delete agents in namespace %s: %v", ns, err)
 	}
 }
 
-func (c *configWatcher) DeletePodsWithConfigMismatch(ctx context.Context, scx agentconfig.SidecarExt) error {
+func (c *configWatcher) EvictPodsWithAgentConfigMismatch(ctx context.Context, scx agentconfig.SidecarExt) error {
 	ac := scx.AgentConfig()
 	pods, err := podList(ctx, ac.WorkloadKind, ac.AgentName, ac.Namespace)
 	if err != nil {
@@ -516,7 +515,7 @@ func (c *configWatcher) DeletePodsWithConfigMismatch(ctx context.Context, scx ag
 	}
 
 	for _, pod := range pods {
-		err = c.DeleteIfMismatch(ctx, pod, cfgJSON)
+		err = c.evictPodWithAgentConfigMismatch(ctx, pod, cfgJSON)
 		if err != nil {
 			return err
 		}
@@ -524,14 +523,14 @@ func (c *configWatcher) DeletePodsWithConfigMismatch(ctx context.Context, scx ag
 	return nil
 }
 
-func (c *configWatcher) DeletePodsWithConfig(ctx context.Context, wl k8sapi.Workload) error {
+func (c *configWatcher) EvictPodsWithAgentConfig(ctx context.Context, wl k8sapi.Workload) error {
 	pods, err := podList(ctx, wl.GetKind(), wl.GetName(), wl.GetNamespace())
 	if err != nil {
 		return err
 	}
 
 	for _, pod := range pods {
-		err = c.DeleteIfMismatch(ctx, pod, "")
+		err = c.evictPodWithAgentConfigMismatch(ctx, pod, "")
 		if err != nil {
 			return err
 		}
@@ -539,14 +538,14 @@ func (c *configWatcher) DeletePodsWithConfig(ctx context.Context, wl k8sapi.Work
 	return nil
 }
 
-func (c *configWatcher) DeleteAllPodsWithConfig(ctx context.Context, namespace string) error {
+func (c *configWatcher) EvictAllPodsWithAgentConfig(ctx context.Context, namespace string) error {
 	c.agentConfigs.Delete(namespace)
 	pods, err := podList(ctx, "", "", namespace)
 	if err != nil {
 		return err
 	}
 	for _, pod := range pods {
-		err = c.DeleteIfMismatch(ctx, pod, "")
+		err = c.evictPodWithAgentConfigMismatch(ctx, pod, "")
 		if err != nil {
 			return err
 		}
@@ -554,9 +553,9 @@ func (c *configWatcher) DeleteAllPodsWithConfig(ctx context.Context, namespace s
 	return nil
 }
 
-func (c *configWatcher) DeleteIfMismatch(ctx context.Context, pod *core.Pod, cfgJSON string) error {
+func (c *configWatcher) evictPodWithAgentConfigMismatch(ctx context.Context, pod *core.Pod, cfgJSON string) error {
 	podID := pod.UID
-	if c.IsDeleted(podID) {
+	if c.isEvicted(podID) {
 		dlog.Debugf(ctx, "Skipping pod %s because it is already deleted", pod.Name)
 		return nil
 	}
@@ -575,13 +574,13 @@ func (c *configWatcher) DeleteIfMismatch(ctx context.Context, pod *core.Pod, cfg
 			dlog.Debugf(ctx, "Skipping pod %s because it was deleted by another goroutine", pod.Name)
 			return v, false
 		}
-		deletePod(ctx, pod)
+		evictPod(ctx, pod)
 		return inactivation{Time: time.Now(), deleted: true}, false
 	})
 	return err
 }
 
-func deletePod(ctx context.Context, pod *core.Pod) {
+func evictPod(ctx context.Context, pod *core.Pod) {
 	dlog.Debugf(ctx, "Evicting pod %s", pod.Name)
 	err := k8sapi.GetK8sInterface(ctx).CoreV1().Pods(pod.Namespace).EvictV1(ctx, &v1.Eviction{
 		ObjectMeta: meta.ObjectMeta{Name: pod.Name, Namespace: pod.Namespace},
@@ -597,14 +596,14 @@ func (c *configWatcher) Inactivate(podID types.UID) {
 	})
 }
 
-func (c *configWatcher) IsDeleted(podID types.UID) bool {
-	v, ok := c.inactivePods.Load(podID)
-	return ok && v.deleted
-}
-
 func (c *configWatcher) IsInactive(podID types.UID) bool {
 	_, ok := c.inactivePods.Load(podID)
 	return ok
+}
+
+func (c *configWatcher) isEvicted(podID types.UID) bool {
+	v, ok := c.inactivePods.Load(podID)
+	return ok && v.deleted
 }
 
 func podIsRunning(pod *core.Pod) bool {
