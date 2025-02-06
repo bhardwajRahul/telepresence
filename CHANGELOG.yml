@@ -34,7 +34,7 @@ docDescription: >-
   customizable development environments.
 items:
   - version: 2.21.3
-    date: (TBD)
+    date: 2025-02-06
     notes:
       - type: bugfix
         title: Using the --proxy-via flag would sometimes cause connection timeouts.
