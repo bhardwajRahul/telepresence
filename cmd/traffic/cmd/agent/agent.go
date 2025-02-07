@@ -210,9 +210,9 @@ func sidecar(ctx context.Context, s State, info *rpc.AgentInfo) error {
 				// Redirect non-intercepted traffic to the pod, so that injected sidecars that hijack the ports for
 				// incoming connections will continue to work.
 				targetHost := s.PodIP()
-				fwd = forwarder.NewInterceptor(pp, targetHost, cp)
+				fwd = forwarder.NewInterceptor(pp, tunnel.AgentToProxied, targetHost, cp)
 			} else {
-				fwd = forwarder.NewInterceptor(pp, "", 0)
+				fwd = forwarder.NewInterceptor(pp, tunnel.AgentToClient, "", 0)
 				cp = ic.ContainerPort
 			}
 

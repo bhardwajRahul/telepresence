@@ -129,7 +129,7 @@ func (s *Session) streamCreator(ctx context.Context) tunnel.StreamCreator {
 
 		tc := client.GetConfig(c).Timeouts()
 		return tunnel.NewClientStream(
-			c, ct, id, tunnel.SessionID(s.session.SessionId), tc.Get(client.TimeoutRoundtripLatency), tc.Get(client.TimeoutEndpointDial))
+			c, tunnel.TunToClient, ct, id, tunnel.SessionID(s.session.SessionId), tc.Get(client.TimeoutRoundtripLatency), tc.Get(client.TimeoutEndpointDial))
 	}
 }
 

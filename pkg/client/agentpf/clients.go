@@ -229,7 +229,7 @@ func (ac *client) startDialWatcherReady(ctx context.Context) error {
 	ac.Unlock()
 
 	go func() {
-		err := tunnel.DialWaitLoop(ctx, tunnel.AgentProvider(ac.cli), watcher, tunnel.SessionID(ac.session.SessionId))
+		err := tunnel.DialWaitLoop(ctx, tunnel.ClientToAgent, tunnel.AgentProvider(ac.cli), watcher, tunnel.SessionID(ac.session.SessionId))
 		if err != nil {
 			dlog.Error(ctx, err)
 		}

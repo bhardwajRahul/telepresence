@@ -19,9 +19,10 @@ type tcp struct {
 	interceptor
 }
 
-func newTCP(listenPort uint16, targetHost string, targetPort uint16) Interceptor {
+func newTCP(listenPort uint16, tag tunnel.Tag, targetHost string, targetPort uint16) Interceptor {
 	return &tcp{
 		interceptor: interceptor{
+			tag:        tag,
 			listenPort: listenPort,
 			targetHost: targetHost,
 			targetPort: targetPort,
@@ -178,7 +179,7 @@ func (f *tcp) rerouteConn(ctx context.Context, conn net.Conn, clientSession tunn
 	f.mu.Lock()
 	sp := f.streamProvider
 	f.mu.Unlock()
-	s, err := sp.CreateClientStream(ctx, clientSession, id, latency, timeout)
+	s, err := sp.CreateClientStream(ctx, tunnel.AgentToClient, clientSession, id, latency, timeout)
 	if err != nil {
 		cancel()
 		return err

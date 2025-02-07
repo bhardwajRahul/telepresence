@@ -27,7 +27,7 @@ func (s *state) Version(context.Context, *emptypb.Empty) (*rpc.VersionInfo2, err
 
 func (s *state) Tunnel(server agent.Agent_TunnelServer) error {
 	ctx := server.Context()
-	stream, err := tunnel.NewServerStream(ctx, server)
+	stream, err := tunnel.NewServerStream(ctx, tunnel.ClientToAgent, server)
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "failed to connect stream: %v", err)
 	}
@@ -80,7 +80,8 @@ func (s *state) WatchDial(session *rpc.SessionInfo, server agent.Agent_WatchDial
 	}
 }
 
-func (s *state) CreateClientStream(ctx context.Context, sessionID tunnel.SessionID, id tunnel.ConnID, roundTripLatency, dialTimeout time.Duration) (tunnel.Stream, error) {
+func (s *state) CreateClientStream(ctx context.Context, _ tunnel.Tag, sessionID tunnel.SessionID, id tunnel.ConnID, roundTripLatency, dialTimeout time.Duration,
+) (tunnel.Stream, error) {
 	dlog.Debugf(ctx, "Creating tunnel to client %s for id %s", sessionID, id)
 	drCh, ok := s.dialWatchers.Load(sessionID)
 	var stCh <-chan tunnel.Stream

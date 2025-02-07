@@ -17,9 +17,10 @@ type udp struct {
 	interceptor
 }
 
-func newUDP(listenPort uint16, targetHost string, targetPort uint16) Interceptor {
+func newUDP(listenPort uint16, tag tunnel.Tag, targetHost string, targetPort uint16) Interceptor {
 	return &udp{
 		interceptor: interceptor{
+			tag:        tag,
 			listenPort: listenPort,
 			targetHost: targetHost,
 			targetPort: targetPort,
@@ -100,10 +101,10 @@ func (f *udp) forwardConn(ctx context.Context, conn *net.UDPConn) error {
 	if err != nil {
 		return fmt.Errorf("error on resolve(%s): %w", iputil.JoinHostPort(f.targetHost, f.targetPort), err)
 	}
-	return ForwardUDP(ctx, conn, targetAddr)
+	return ForwardUDP(ctx, f.tag, conn, targetAddr)
 }
 
-func ForwardUDP(ctx context.Context, conn *net.UDPConn, targetAddr *net.UDPAddr) error {
+func ForwardUDP(ctx context.Context, tag tunnel.Tag, conn *net.UDPConn, targetAddr *net.UDPAddr) error {
 	targets := tunnel.NewPool()
 	la := conn.LocalAddr()
 	dlog.Infof(ctx, "Forwarding udp from %s to %s", la, targetAddr)
@@ -113,7 +114,7 @@ func ForwardUDP(ctx context.Context, conn *net.UDPConn, targetAddr *net.UDPAddr)
 	}()
 
 	ch := make(chan tunnel.UdpReadResult)
-	go tunnel.UdpReader(ctx, conn, ch)
+	go tunnel.UdpReader(ctx, tag, conn, ch)
 	for {
 		select {
 		case <-ctx.Done():
@@ -123,13 +124,14 @@ func ForwardUDP(ctx context.Context, conn *net.UDPConn, targetAddr *net.UDPAddr)
 				return nil
 			}
 			id := tunnel.ConnIDFromUDP(rr.Addr, targetAddr)
-			dlog.Tracef(ctx, "<- SRC udp %s, len %d", id, len(rr.Payload))
+			dlog.Tracef(ctx, "<- %s udp %s, len %d", tag, id, len(rr.Payload))
 			h, _, err := targets.GetOrCreate(ctx, id, func(ctx context.Context, release func()) (tunnel.Handler, error) {
 				tc, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(id.Destination()))
 				if err != nil {
 					return nil, err
 				}
 				return &udpHandler{
+					tag:       tag,
 					UDPConn:   tc,
 					id:        id,
 					replyWith: conn,
@@ -144,10 +146,10 @@ func ForwardUDP(ctx context.Context, conn *net.UDPConn, targetAddr *net.UDPAddr)
 			for n := 0; n < pn; {
 				wn, err := uh.Write(rr.Payload[n:])
 				if err != nil {
-					dlog.Errorf(ctx, "!! TRG udp %s write: %v", id, err)
+					dlog.Errorf(ctx, "!> %s udp %s write: %v", tag, id, err)
 					return err
 				}
-				dlog.Tracef(ctx, "-> TRG udp %s, len %d", id, wn)
+				dlog.Tracef(ctx, "-> %s udp %s, len %d", tag, id, wn)
 				n += wn
 			}
 		}
@@ -158,6 +160,7 @@ type udpHandler struct {
 	*net.UDPConn
 	id        tunnel.ConnID
 	replyWith net.PacketConn
+	tag       tunnel.Tag
 	release   func()
 }
 
@@ -171,12 +174,12 @@ func (u *udpHandler) Stop(_ context.Context) {
 }
 
 func (u *udpHandler) Start(ctx context.Context) {
-	go u.forward(ctx)
+	go u.forward(ctx, u.tag)
 }
 
-func (u *udpHandler) forward(ctx context.Context) {
+func (u *udpHandler) forward(ctx context.Context, tag tunnel.Tag) {
 	ch := make(chan tunnel.UdpReadResult)
-	go tunnel.UdpReader(ctx, u, ch)
+	go tunnel.UdpReader(ctx, tag, u, ch)
 	for {
 		select {
 		case <-ctx.Done():
@@ -185,15 +188,15 @@ func (u *udpHandler) forward(ctx context.Context) {
 			if !ok {
 				return
 			}
-			dlog.Tracef(ctx, "<- TRG udp %s, len %d", u.id, len(rr.Payload))
+			dlog.Tracef(ctx, "<- %s udp %s, len %d", tag, u.id, len(rr.Payload))
 			pn := len(rr.Payload)
 			for n := 0; n < pn; {
 				wn, err := u.replyWith.WriteTo(rr.Payload[n:], net.UDPAddrFromAddrPort(u.id.Source()))
 				if err != nil {
-					dlog.Errorf(ctx, "!! SRC udp %s write: %v", u.id, err)
+					dlog.Errorf(ctx, "!> %s udp %s write: %v", tag, u.id, err)
 					return
 				}
-				dlog.Tracef(ctx, "-> SRC udp %s, len %d", u.id, wn)
+				dlog.Tracef(ctx, "-> %s udp %s, len %d", tag, u.id, wn)
 				n += wn
 			}
 		}
@@ -205,11 +208,12 @@ func (f *udp) interceptConn(ctx context.Context, conn *net.UDPConn, iCept *manag
 	dest := netip.AddrPortFrom(iputil.Parse(spec.TargetHost), uint16(spec.TargetPort))
 	dlog.Infof(ctx, "Forwarding udp from %s to %s %s", conn.LocalAddr(), spec.Client, dest)
 	defer dlog.Infof(ctx, "Done forwarding udp from %s to %s %s", conn.LocalAddr(), spec.Client, dest)
-	d := tunnel.NewUDPListener(conn, net.UDPAddrFromAddrPort(dest), func(ctx context.Context, id tunnel.ConnID) (tunnel.Stream, error) {
+	d := tunnel.NewUDPListener(conn, tunnel.AgentToClient, net.UDPAddrFromAddrPort(dest), func(ctx context.Context, id tunnel.ConnID) (tunnel.Stream, error) {
 		f.mu.Lock()
 		sp := f.streamProvider
 		f.mu.Unlock()
-		return sp.CreateClientStream(ctx, tunnel.SessionID(iCept.ClientSession.SessionId), id, time.Duration(spec.RoundtripLatency), time.Duration(spec.DialTimeout))
+		return sp.CreateClientStream(
+			ctx, tunnel.AgentToClient, tunnel.SessionID(iCept.ClientSession.SessionId), id, time.Duration(spec.RoundtripLatency), time.Duration(spec.DialTimeout))
 	})
 	d.Start(ctx)
 	<-d.Done()

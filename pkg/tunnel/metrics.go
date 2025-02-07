@@ -10,11 +10,11 @@ import (
 )
 
 type StreamProvider interface {
-	CreateClientStream(ctx context.Context, clientSessionID SessionID, id ConnID, roundTripLatency, dialTimeout time.Duration) (Stream, error)
+	CreateClientStream(ctx context.Context, tag Tag, clientSessionID SessionID, id ConnID, roundTripLatency, dialTimeout time.Duration) (Stream, error)
 }
 
 type ClientStreamProvider interface {
-	CreateClientStream(ctx context.Context, clientSessionID SessionID, id ConnID, roundTripLatency, dialTimeout time.Duration) (Stream, error)
+	CreateClientStream(ctx context.Context, tag Tag, clientSessionID SessionID, id ConnID, roundTripLatency, dialTimeout time.Duration) (Stream, error)
 	ReportMetrics(ctx context.Context, metrics *manager.TunnelMetrics)
 }
 
@@ -25,6 +25,7 @@ type TrafficManagerStreamProvider struct {
 
 func (sp *TrafficManagerStreamProvider) CreateClientStream(
 	ctx context.Context,
+	tag Tag,
 	clientSessionID SessionID,
 	id ConnID,
 	roundTripLatency,
@@ -36,7 +37,7 @@ func (sp *TrafficManagerStreamProvider) CreateClientStream(
 		return nil, fmt.Errorf("call to manager.Tunnel() failed. Id %s: %v", id, err)
 	}
 
-	s, err := NewClientStream(ctx, ms, id, sp.AgentSessionID, roundTripLatency, dialTimeout)
+	s, err := NewClientStream(ctx, tag, ms, id, sp.AgentSessionID, roundTripLatency, dialTimeout)
 	if err != nil {
 		return nil, err
 	}

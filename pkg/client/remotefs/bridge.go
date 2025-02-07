@@ -71,7 +71,7 @@ func (m *bridgeMounter) dispatchToTunnel(ctx context.Context, conn net.Conn, pod
 
 	tos := client2.GetConfig(ctx).Timeouts()
 	ctx, cancel := context.WithCancel(ctx)
-	s, err := tunnel.NewClientStream(ctx, ms, id, m.sessionID, tos.PrivateRoundtripLatency, tos.PrivateEndpointDial)
+	s, err := tunnel.NewClientStream(ctx, tunnel.ClientToFileServer, ms, id, m.sessionID, tos.PrivateRoundtripLatency, tos.PrivateEndpointDial)
 	if err != nil {
 		cancel()
 		return fmt.Errorf("failed to create stream: %v", err)

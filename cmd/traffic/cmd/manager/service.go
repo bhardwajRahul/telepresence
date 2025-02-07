@@ -719,9 +719,13 @@ func (s *service) removeExcludedEnvVars(envVars map[string]string) {
 
 func (s *service) Tunnel(server rpc.Manager_TunnelServer) error {
 	ctx := server.Context()
-	stream, err := tunnel.NewServerStream(ctx, server)
+	stream, err := tunnel.NewServerStream(ctx, tunnel.ClientToManager, server)
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "failed to connect stream: %v", err)
+	}
+	if a := s.state.GetAgent(stream.SessionID()); a != nil {
+		// This is actually an AgentToManager tunnel.
+		stream.SetTag(tunnel.AgentToManager)
 	}
 	return s.state.Tunnel(ctx, stream)
 }

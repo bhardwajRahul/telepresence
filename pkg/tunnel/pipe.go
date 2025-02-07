@@ -12,13 +12,11 @@ func NewPipe(id ConnID, sessionID SessionID) (Stream, Stream) {
 	in := make(chan Message, 1)
 	return &channelStream{
 			id:     id,
-			tag:    "SND",
 			sid:    sessionID,
 			recvCh: in,
 			sendCh: out,
 		}, &channelStream{
 			id:     id,
-			tag:    "RCV",
 			sid:    sessionID,
 			recvCh: out,
 			sendCh: in,
@@ -27,14 +25,16 @@ func NewPipe(id ConnID, sessionID SessionID) (Stream, Stream) {
 
 type channelStream struct {
 	id     ConnID
-	tag    string
 	sid    SessionID
 	recvCh <-chan Message
 	sendCh chan<- Message
 }
 
-func (s channelStream) Tag() string {
-	return s.tag
+func (s channelStream) SetTag(_ Tag) {
+}
+
+func (s channelStream) Tag() Tag {
+	return "AcB"
 }
 
 func (s channelStream) ID() ConnID {
