@@ -187,7 +187,10 @@ func (h *dialer) connToStreamLoop(ctx context.Context, wg *sync.WaitGroup) {
 	id := h.stream.ID()
 	tag := h.stream.Tag()
 
-	outgoing := make(chan Message, 50)
+	// Outgoing must not be buffered. It's essential that messages that are read from the connection
+	// are sent on the stream a.s.a.p. and that a delay when doing that causes back-pressure on the
+	// connection.
+	outgoing := make(chan Message)
 	defer func() {
 		if !h.ResetIdle() {
 			// Hard close of peer. We don't want any more data
@@ -204,7 +207,7 @@ func (h *dialer) connToStreamLoop(ctx context.Context, wg *sync.WaitGroup) {
 	wg.Add(1)
 	WriteLoop(ctx, h.stream, outgoing, wg, h.egressBytesProbe)
 
-	buf := make([]byte, 0x100000)
+	buf := make([]byte, 0x80000)
 	dlog.Tracef(ctx, "-> %s %s conn-to-stream loop started", tag, id)
 	for {
 		n, err := h.conn.Read(buf)
@@ -224,13 +227,13 @@ func (h *dialer) connToStreamLoop(ctx context.Context, wg *sync.WaitGroup) {
 				endReason = "EOF was encountered"
 			case errors.Is(err, net.ErrClosed):
 				endReason = "the connection was closed"
-				h.startDisconnect(ctx, endReason)
 			case strings.Contains(err.Error(), "connection aborted"):
 				endReason = "the connection was aborted"
 			default:
 				endReason = fmt.Sprintf("a read error occurred: %T %v", err, err)
 				endLevel = dlog.LogLevelError
 			}
+			h.startDisconnect(ctx, endReason)
 			return
 		}
 
