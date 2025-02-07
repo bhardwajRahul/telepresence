@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -340,11 +341,15 @@ func (s *Service) startSession(parentCtx context.Context, oi *rpc.NetworkConfig,
 	s.sessionContext = ctx
 	s.sessionCancel = func() {
 		cancel()
-		wCtx, wCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer wCancel()
 		select {
 		case <-session.Done():
-		case <-wCtx.Done():
+		case <-time.After(5 * time.Second):
+			// Something is wrong. The session doesn't die.
+			if dlog.MaxLogLevel(ctx) >= dlog.LogLevelDebug {
+				buf := make([]byte, 1024*1024)
+				n := runtime.Stack(buf, true)
+				dlog.Debug(ctx, string(buf[:n]))
+			}
 		}
 	}
 	_ = client.ReloadDaemonLogLevel(ctx, true)
