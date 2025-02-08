@@ -1025,9 +1025,6 @@ func (s *Session) checkPodConnectivity(ctx context.Context, info *manager.Cluste
 func (s *Session) run(c context.Context, initErrs chan error) error {
 	defer func() {
 		dlog.Info(c, "-- Session ended")
-		if s.clientConn != nil {
-			_ = s.clientConn.Close()
-		}
 		close(s.done)
 	}()
 
@@ -1129,6 +1126,11 @@ func (s *Session) stop(c context.Context) {
 		// Session already stopped (or is stopping)
 		return
 	}
+	if s.clientConn != nil {
+		dlog.Debug(c, "Closing port-forward to traffic-manager")
+		_ = s.clientConn.Close()
+	}
+
 	dlog.Debug(c, "Bringing down TUN-device")
 
 	scout.Report(c, "incluster_dns_queries",

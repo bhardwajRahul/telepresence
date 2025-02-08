@@ -378,6 +378,7 @@ outer:
 		for ctx.Err() == nil {
 			ais, err := as.Recv()
 			if errors.Is(err, io.EOF) {
+				// User daemon departed from the session.
 				return nil
 			}
 			switch status.Code(err) {
