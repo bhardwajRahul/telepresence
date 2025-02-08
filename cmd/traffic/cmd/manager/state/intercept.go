@@ -22,7 +22,6 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dlog"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/manager"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
@@ -51,13 +50,6 @@ func (s *state) PrepareIntercept(
 	ctx context.Context,
 	cr *rpc.CreateInterceptRequest,
 ) (pi *rpc.PreparedIntercept, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = derror.PanicToError(r)
-			dlog.Errorf(ctx, "%+v", err)
-		}
-	}()
-
 	interceptError := func(err error) (*rpc.PreparedIntercept, error) {
 		dlog.Errorf(ctx, "PrepareIntercept error %v", err)
 		if _, ok := status.FromError(err); ok {

@@ -10,13 +10,13 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 
 	"github.com/coreos/go-iptables/iptables"
 	core "k8s.io/api/core/v1"
 
-	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/version"
@@ -195,12 +195,8 @@ func findLoopback() (string, error) {
 
 // Main is the main function for the agent init container.
 func Main(ctx context.Context, args ...string) error {
+	debug.SetTraceback("single")
 	dlog.Infof(ctx, "Traffic Agent Init %s", version.Version)
-	defer func() {
-		if r := recover(); r != nil {
-			dlog.Error(ctx, derror.PanicToError(r))
-		}
-	}()
 	cfg, err := loadConfig()
 	if err != nil {
 		dlog.Error(ctx, err)

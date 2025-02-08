@@ -428,11 +428,6 @@ func (c *configWatcher) Start(ctx context.Context) {
 }
 
 func (c *configWatcher) namespacesChangeWatcher(ctx context.Context) error {
-	defer func() {
-		if err := recover(); err != nil {
-			dlog.Errorf(ctx, "%+v", derror.PanicToError(err))
-		}
-	}()
 	sid, nsChanges := namespaces.Subscribe(ctx)
 	defer namespaces.Unsubscribe(ctx, sid)
 	for {

@@ -255,11 +255,11 @@ func (wf *workloadInfoWatcher) handleAgentSnapshot(ctx context.Context, ais map[
 				wl := w.Workload
 				if wl.AgentState != as {
 					wl.AgentState = as
-					dlog.Debugf(ctx, "WorkloadInfoEvent: AgentInfo %s.%s %s %s", a.Name, a.Namespace, as, wl.State)
+					dlog.Debugf(ctx, "WorkloadInfoEvent: AgentInfo %s(%s).%s %s %s", a.PodName, a.PodIp, a.Namespace, as, wl.State)
 					wf.resetTicker()
 				}
 			} else if wl, err := agentmap.GetWorkload(ctx, name, a.Namespace, ""); err == nil {
-				dlog.Debugf(ctx, "WorkloadInfoEvent: AgentInfo %s.%s %s %s", a.Name, a.Namespace, as, workload.GetWorkloadState(wl))
+				dlog.Debugf(ctx, "WorkloadInfoEvent: AgentInfo %s(%s).%s %s %s", a.PodName, a.PodIp, a.Namespace, as, workload.GetWorkloadState(wl))
 				wf.addEvent(workload.EventTypeUpdate, wl, as, nil)
 			} else {
 				dlog.Debugf(ctx, "Unable to get workload %s.%s: %v", name, a.Namespace, err)
@@ -290,14 +290,14 @@ func (wf *workloadInfoWatcher) handleAgentSnapshot(ctx context.Context, ais map[
 		}
 		if w, ok := wf.workloadEvents[name]; ok && w.Type != rpc.WorkloadEvent_DELETED {
 			wl := w.Workload
-			dlog.Debugf(ctx, "WorkloadInfoEvent: AgentInfo %s.%s %s %s", a.Name, a.Namespace, as, w.Workload.State)
+			dlog.Debugf(ctx, "WorkloadInfoEvent: AgentInfo %s(%s).%s %s %s", a.PodName, a.PodIp, a.Namespace, as, w.Workload.State)
 			if wl.AgentState != as {
 				wl.AgentState = as
 				wl.InterceptClients = iClients
 				wf.resetTicker()
 			}
 		} else if wl, err := agentmap.GetWorkload(ctx, name, a.Namespace, ""); err == nil {
-			dlog.Debugf(ctx, "WorkloadInfoEvent: AgentInfo %s.%s %s %s", a.Name, a.Namespace, as, workload.GetWorkloadState(wl))
+			dlog.Debugf(ctx, "WorkloadInfoEvent: AgentInfo %s(%s).%s %s %s", a.PodName, a.PodIp, a.Namespace, as, workload.GetWorkloadState(wl))
 			wf.addEvent(workload.EventTypeUpdate, wl, as, iClients)
 		} else {
 			dlog.Debugf(ctx, "Unable to get workload %s.%s: %v", name, a.Namespace, err)

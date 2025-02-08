@@ -269,11 +269,6 @@ func isNamespaceOfInterest(ns string) bool {
 }
 
 func serveRequest(ctx context.Context, r *http.Request, method string, f func(ctx context.Context)) (int, error) {
-	defer func() {
-		if r := recover(); r != nil {
-			dlog.Errorf(ctx, "%+v", derror.PanicToError(r))
-		}
-	}()
 	if r.Method != method {
 		return http.StatusMethodNotAllowed, fmt.Errorf("invalid method %s, only %s requests are allowed", r.Method, method)
 	}

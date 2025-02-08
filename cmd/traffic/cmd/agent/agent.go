@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -132,6 +133,7 @@ func sftpServer(ctx context.Context, sftpPortCh chan<- uint16) error {
 }
 
 func Main(ctx context.Context, _ ...string) error {
+	debug.SetTraceback("single")
 	dlog.Infof(ctx, "Traffic Agent %s", version.Version)
 
 	ctx, cancel := context.WithCancel(ctx)

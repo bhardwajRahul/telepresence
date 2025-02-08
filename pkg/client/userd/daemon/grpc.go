@@ -16,7 +16,6 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 	empty "google.golang.org/protobuf/types/known/emptypb"
 
-	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dexec"
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/rpc/v2/common"
@@ -31,14 +30,6 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
 	"github.com/telepresenceio/telepresence/v2/pkg/proc"
 )
-
-func callRecovery(c context.Context, r any, err error) error {
-	if perr := derror.PanicToError(r); perr != nil {
-		dlog.Errorf(c, "%+v", perr)
-		err = perr
-	}
-	return err
-}
 
 func (s *service) FuseFTPError() error {
 	return s.fuseFTPError
@@ -57,7 +48,6 @@ func (s *service) WithSession(c context.Context, f func(context.Context, userd.S
 		// Session context has been cancelled
 		return status.Error(codes.Canceled, "session cancelled")
 	}
-	defer func() { err = callRecovery(c, recover(), err) }()
 	return f(s.sessionContext, s.session)
 }
 

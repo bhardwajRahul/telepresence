@@ -30,7 +30,6 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/datawire/dlib/dcontext"
-	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dgroup"
 	"github.com/datawire/dlib/dlog"
 	"github.com/datawire/dlib/dtime"
@@ -165,12 +164,6 @@ func NewSession(
 	cr := cri.Request()
 	connectStart := time.Now()
 	defer func() {
-		if r := recover(); r != nil {
-			rc = ctx
-			err := derror.PanicToError(r)
-			dlog.Errorf(ctx, "%+v", err)
-			info = connectError(connector.ConnectInfo_DAEMON_FAILED, err)
-		}
 		if info.Error == connector.ConnectInfo_UNSPECIFIED {
 			scout.Report(ctx, "connect",
 				scout.Entry{

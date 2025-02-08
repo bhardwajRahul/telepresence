@@ -17,7 +17,6 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dgroup"
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/rpc/v2/common"
@@ -382,15 +381,7 @@ func (s *Service) startSession(parentCtx context.Context, oi *rpc.NetworkConfig,
 	return reply
 }
 
-func (s *Service) serveGrpc(c context.Context, l net.Listener) (err error) {
-	defer func() {
-		// Error recovery.
-		if perr := derror.PanicToError(recover()); perr != nil {
-			err = perr
-			dlog.Errorf(c, "%+v", perr)
-		}
-	}()
-
+func (s *Service) serveGrpc(c context.Context, l net.Listener) error {
 	var opts []grpc.ServerOption
 	cfg := client.GetConfig(c)
 	if mz := cfg.Grpc().MaxReceiveSize(); mz > 0 {

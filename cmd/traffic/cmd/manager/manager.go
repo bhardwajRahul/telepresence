@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"sync/atomic"
@@ -65,6 +66,7 @@ func Main(ctx context.Context, _ ...string) error {
 }
 
 func MainWithEnv(ctx context.Context) (err error) {
+	debug.SetTraceback("single")
 	defer runtime.RecoverFromPanic(&err)
 
 	dlog.Infof(ctx, "%s %s [uid:%d,gid:%d]", DisplayName, version.Version, os.Getuid(), os.Getgid())
