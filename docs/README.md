@@ -13,10 +13,10 @@ raw markdown version, more bells and whistles at [telepresence.io](https://telep
 - Core concepts
   - [The developer experience and the inner dev loop](concepts/devloop.md)
   - [Making the remote local: Faster feedback, collaboration and debugging](concepts/faster.md)
-  - [Using Telepresence with Docker](howtos/docker.md)
   - [Intercepts](concepts/intercepts.md)
 - How do I...
   - [Code and debug an application locally](howtos/intercepts.md)
+  - [Using Telepresence with Docker](howtos/docker.md)
   - [Work with large clusters](howtos/large-clusters.md)
   - [Host a cluster in Docker or a VM](howtos/cluster-in-vm.md)
 - Technical reference

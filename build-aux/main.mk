@@ -123,6 +123,7 @@ generate-clean: ## (Generate) Delete generated files
 	rm -f DEPENDENCIES.md
 	rm -f DEPENDENCY_LICENSES.md
 	rm -f docs/release-notes.md*
+	rm -f docs/README.md
 
 CHANGELOG.yml: FORCE
 	@# Check if the version is in the x.x.x format (GA release)
@@ -133,7 +134,7 @@ CHANGELOG.yml: FORCE
 		git add CHANGELOG.yml; \
 	fi
 
-docs-files: docs/README.md docs/release-notes.md docs/release-notes.mdx
+docs-files: docs/README.md docs/release-notes.md docs/release-notes.mdx docs/variables.yml
 
 docs/README.md: docs/doc-links.yml $(tools/tocgen)
 	$(tools/tocgen) --input $< > $@
@@ -145,6 +146,10 @@ docs/release-notes.md: CHANGELOG.yml $(tools/relnotesgen)
 
 docs/release-notes.mdx: CHANGELOG.yml $(tools/relnotesgen)
 	$(tools/relnotesgen) --mdx --input $< > $@
+	git add $@
+
+docs/variables.yml: CHANGELOG.yml $(tools/relnotesgen)
+	$(tools/relnotesgen) --variables --input $< > $@
 	git add $@
 
 PKG_VERSION = $(shell go list ./pkg/version)
