@@ -85,6 +85,11 @@ items:
                values: <namespaces>`.
           ```
         docs: install/manager#static-versus-dynamic-namespace-selection
+      - type: feature
+        title: List output includes workload kind.
+        body: >-
+          The output of the `telepresence list` command will now include the workload kind (deployment, replicaset,
+          statefulset, or rollout) in all entries.
       - type: change
         title: Drop deprecated current-cluster-id command.
         body: >-

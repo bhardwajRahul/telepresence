@@ -66,6 +66,12 @@ namespaceSelector:
 ```
 </div>
 
+## <div style="display:flex;"><img src="images/feature.png" alt="feature" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">List output includes workload kind.</div></div>
+<div style="margin-left: 15px">
+
+The output of the `telepresence list` command will now include the workload kind (deployment, replicaset, statefulset, or rollout) in all entries.
+</div>
+
 ## <div style="display:flex;"><img src="images/change.png" alt="change" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">Drop deprecated current-cluster-id command.</div></div>
 <div style="margin-left: 15px">
 

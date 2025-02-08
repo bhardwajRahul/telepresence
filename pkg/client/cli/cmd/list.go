@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
@@ -210,10 +211,17 @@ func (s *listCommand) printList(ctx context.Context, workloads []*connector.Work
 			}
 			ns = depNs
 		}
+		typeLen := 0
+
 		nameLen := 0
 		for _, dep := range workloads {
-			n := dep.Name
+			n := dep.WorkloadResourceType
 			nl := len(n)
+			if nl > typeLen {
+				typeLen = nl
+			}
+			n = dep.Name
+			nl = len(n)
 			if includeNs {
 				nl += len(dep.Namespace) + 1
 			}
@@ -222,11 +230,12 @@ func (s *listCommand) printList(ctx context.Context, workloads []*connector.Work
 			}
 		}
 		for _, workload := range workloads {
+			t := workload.WorkloadResourceType
 			n := workload.Name
 			if includeNs {
 				n += "." + workload.Namespace
 			}
-			ioutil.Printf(stdout, "%-*s: %s\n", nameLen, n, state(workload))
+			ioutil.Printf(stdout, "%-*s %-*s: %s\n", typeLen, strings.ToLower(t), nameLen, n, state(workload))
 		}
 	}
 }
