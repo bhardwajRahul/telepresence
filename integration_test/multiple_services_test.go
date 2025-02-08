@@ -14,6 +14,7 @@ import (
 
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
+	"github.com/telepresenceio/telepresence/v2/pkg/client"
 )
 
 type multipleServicesSuite struct {
@@ -32,6 +33,19 @@ func init() {
 }
 
 func (s *multipleServicesSuite) Test_LargeRequest() {
+	// This particular cannot run with recursion detection, because it will trigger on the very high concurrency.
+	ctx := s.Context()
+	itest.TelepresenceQuitOk(ctx)
+	ctx = itest.WithConfig(ctx, func(config client.Config) {
+		config.Routing().RecursionBlockDuration = 0
+	})
+	s.TelepresenceConnect(ctx)
+	defer func() {
+		// Restore the connection to what it was before the test.
+		itest.TelepresenceQuitOk(ctx)
+		s.TelepresenceConnect(s.Context())
+	}()
+
 	const sendSize = 1024 * 1024 * 16
 	const varyMax = 1024 * 1024 * 4 // vary last 4Mi
 	const concurrentRequests = 100

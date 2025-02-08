@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -27,6 +28,7 @@ type largeFilesSuite struct {
 	itest.Suite
 	itest.TrafficManager
 	name         string
+	manifest     []byte
 	serviceCount int
 	mountPoint   []string
 	largeFiles   []string
@@ -78,16 +80,21 @@ func (s *largeFilesSuite) SetupSuite() {
 		go func(i int) {
 			defer wg.Done()
 			svc := fmt.Sprintf("%s-%d", s.Name(), i)
-			rdr, err := itest.OpenTemplate(ctx, filepath.Join(k8s, "hello-pv-volume.goyaml"), &itest.PersistentVolume{
+			mf, err := itest.ReadTemplate(ctx, filepath.Join(k8s, "hello-pv-volume.goyaml"), &itest.PersistentVolume{
 				Name:           svc,
 				MountDirectory: "/home/scratch",
 			})
+			s.manifest = mf
 			require.NoError(err)
-			require.NoError(s.Kubectl(dos.WithStdin(ctx, rdr), "apply", "-f", "-"))
+			require.NoError(s.Kubectl(dos.WithStdin(ctx, bytes.NewReader(s.manifest)), "apply", "-f", "-"))
 			s.NoError(itest.RolloutStatusWait(ctx, s.AppNamespace(), "deploy/"+svc))
 		}(i)
 	}
 	wg.Wait()
+}
+
+func (s *largeFilesSuite) TeardownSuite() {
+	s.NoError(s.Kubectl(dos.WithStdin(s.Context(), bytes.NewReader(s.manifest)), "delete", "-f", "-"))
 }
 
 func (s *largeFilesSuite) createIntercepts(ctx context.Context) {

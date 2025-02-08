@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/datawire/dlib/dlog"
 	"github.com/datawire/dlib/dtime"
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
+	"github.com/telepresenceio/telepresence/v2/pkg/dos"
 )
 
 type mountsSuite struct {
@@ -106,17 +108,21 @@ func (s *mountsSuite) Test_MountWrite() {
 
 	ctx := s.Context()
 	k8s := filepath.Join("testdata", "k8s")
-	s.ApplyTemplate(ctx, filepath.Join(k8s, "hello-pv-volume.goyaml"), &itest.PersistentVolume{
+	rq := s.Require()
+	mf, err := itest.ReadTemplate(ctx, filepath.Join(k8s, "hello-pv-volume.goyaml"), &itest.PersistentVolume{
 		Name:           "hello",
 		MountDirectory: "/data",
 	})
-	defer s.DeleteSvcAndWorkload(ctx, "deploy", "hello")
+	rq.NoError(err)
+
+	rq.NoError(s.Kubectl(dos.WithStdin(ctx, bytes.NewReader(mf)), "apply", "-f", "-"))
+	defer func() {
+		rq.NoError(s.Kubectl(dos.WithStdin(ctx, bytes.NewReader(mf)), "delete", "-f", "-"))
+	}()
 
 	mountPoint := filepath.Join(s.T().TempDir(), "mnt")
 	itest.TelepresenceOk(ctx, "intercept", "hello", "--mount", mountPoint, "--port", "80:80")
 	time.Sleep(2 * time.Second)
-
-	rq := s.Require()
 
 	content := "hello world\n"
 	path := filepath.Join(mountPoint, "data", "hello.txt")

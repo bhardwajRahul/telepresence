@@ -377,7 +377,7 @@ func (s *cluster) withBasicConfig(c context.Context, t *testing.T) context.Conte
 
 	config.Grpc().MaxReceiveSizeV, _ = resource.ParseQuantity("10Mi")
 	config.Intercept().UseFtp = true
-	config.Routing().RecursionBlockDuration = 5 * time.Millisecond
+	config.Routing().RecursionBlockDuration = 2 * time.Millisecond
 
 	configYaml, err := config.MarshalYAML()
 	require.NoError(t, err)
