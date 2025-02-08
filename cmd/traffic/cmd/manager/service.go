@@ -300,6 +300,7 @@ func (s *service) WatchAgentPods(session *rpc.SessionInfo, stream rpc.Manager_Wa
 		}
 		return false
 	}
+	m := mutator.GetMap(ctx)
 	var agents []*rpc.AgentPodInfo
 	var agentNames []string
 	for {
@@ -311,10 +312,12 @@ func (s *service) WatchAgentPods(session *rpc.SessionInfo, stream rpc.Manager_Wa
 			if !ok {
 				return nil
 			}
-			agents = make([]*rpc.AgentPodInfo, len(agm))
-			agentNames = make([]string, len(agm))
-			i := 0
+			agents = make([]*rpc.AgentPodInfo, 0, len(agm))
+			agentNames = make([]string, 0, len(agm))
 			for _, a := range agm {
+				if m.IsInactive(types.UID(a.PodUid)) {
+					continue
+				}
 				aip, err := netip.ParseAddr(a.PodIp)
 				if err != nil {
 					dlog.Errorf(ctx, "error parsing agent pod ip %q: %v", a.PodIp, err)
@@ -327,9 +330,8 @@ func (s *service) WatchAgentPods(session *rpc.SessionInfo, stream rpc.Manager_Wa
 					ApiPort:      a.ApiPort,
 				}
 				ap.Intercepted = isIntercepted(ap)
-				agents[i] = ap
-				agentNames[i] = fmt.Sprintf("%s(%s)", ap.PodName, net.IP(ap.PodIp))
-				i++
+				agents = append(agents, ap)
+				agentNames = append(agentNames, fmt.Sprintf("%s(%s)", ap.PodName, net.IP(ap.PodIp)))
 			}
 		case is, ok := <-interceptsCh:
 			if !ok {
@@ -409,6 +411,7 @@ func (s *service) watchAgents(ctx context.Context, includeAgent func(tunnel.Sess
 	// creating a lastSnap with one nil entry.
 	lastSnap := make([]*rpc.AgentInfo, 1)
 
+	m := mutator.GetMap(ctx)
 	for {
 		select {
 		case snapshot, ok := <-snapshotCh:
@@ -417,11 +420,14 @@ func (s *service) watchAgents(ctx context.Context, includeAgent func(tunnel.Sess
 				dlog.Debug(ctx, "Request cancelled")
 				return nil
 			}
+
+			// Sort snapshot by sessionID and discard inactive agents.
 			agentSessionIDs := slices.Sorted(maps.Keys(snapshot))
 			agents := make([]*rpc.AgentInfo, 0, len(agentSessionIDs))
 			for _, agentSessionID := range agentSessionIDs {
-				if as := s.state.GetAgent(agentSessionID); as != nil {
-					agents = append(agents, snapshot[agentSessionID].AgentInfo)
+				ag := snapshot[agentSessionID]
+				if !m.IsInactive(types.UID(ag.PodUid)) {
+					agents = append(agents, ag.AgentInfo)
 				}
 			}
 			if slices.EqualFunc(agents, lastSnap, infosEqual) {
