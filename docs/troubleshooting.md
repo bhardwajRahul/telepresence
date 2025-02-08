@@ -31,12 +31,12 @@ FUSE library version: 2.9.9
 fuse: no mount point
 ```
 
-5. Next, try a mount (or an intercept that performs a mount). It will fail because you need to give permission to “Benjamin Fleischer” to execute a kernel extension (a pop-up appears that takes you to the system preferences).
+5. Next, try a mount (or an replace/ingest/intercept that performs a mount). It will fail because you need to give permission to “Benjamin Fleischer” to execute a kernel extension (a pop-up appears that takes you to the system preferences).
 6. Approve the needed permission
 7. Reboot your computer.
 
 ## Volume mounts are not working on Linux
-It's necessary to have `sshfs` installed in order for volume mounts to work correctly during intercepts.
+It's necessary to have `sshfs` installed in order for volume mounts to work correctly when Telepresence engages with remote containers.
 
 After you've installed `sshfs`, if mounts still aren't working:
 1. Uncomment `user_allow_other` in `/etc/fuse.conf`

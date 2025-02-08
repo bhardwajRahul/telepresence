@@ -14,10 +14,10 @@ When requesting a connection to a host, the IP of that host must be determined. 
 The cluster side host lookup will be performed by a traffic-agent in the connected namespace, or by the traffic-manager if no such agent exists.
 
 ### macOS resolver
-This resolver hooks into the macOS DNS system by creating files under `/etc/resolver`. Those files correspond to some domain and contain the port number of the Telepresence resolver. Telepresence creates one such file for each of the currently mapped namespaces and `include-suffixes` option. The file `telepresence.local` contains a search path that is configured based on current intercepts so that single label names can be resolved correctly.
+This resolver hooks into the macOS DNS system by creating files under `/etc/resolver`. Those files correspond to some domain and contain the port number of the Telepresence resolver. Telepresence creates one such file for each of the currently mapped namespaces and `include-suffixes` option. The file `telepresence.local` contains a search path that is configured based on currently connected namespace so that single label names can be resolved correctly.
 
 ### Linux systemd-resolved resolver
-This resolver registers itself as part of telepresence's [VIF](tun-device.md) using `systemd-resolved` and uses the DBus API to configure domains and routes that corresponds to the current set of intercepts and namespaces.
+This resolver registers itself as part of telepresence's [VIF](tun-device.md) using `systemd-resolved` and uses the DBus API to configure domains and routes that corresponds to the connected namespace and the namespaces managed by the Traffic Manager.
 
 ### Linux overriding resolver
 Linux systems that aren't configured with `systemd-resolved` will use this resolver. A Typical case is when running Telepresence [inside a docker container](inside-container.md). During initialization, the resolver will first establish a _fallback_ connection to the IP passed as `--dns`, the one configured as `local-ip` in the [local DNS configuration](config.md#dns), or the primary `nameserver` registered in `/etc/resolv.conf`. It will then use iptables to actually override that IP so that requests to it instead end up in the overriding resolver, which unless it succeeds on its own, will use the _fallback_.
@@ -43,7 +43,7 @@ There are multiple reasons for doing this. One is that it is important that the 
 ```bash
 curl some-host
 ```
-results in a http request with header `Host: some-host`. Now, if a service-mesh like Istio performs header based routing, then it will fail to find that host unless the request originates from the same namespace as the host resides in. Another reason is that the configuration of a service mesh can contain very strict rules. If the request then originates from the wrong pod, it will be denied. Only one intercept at a time can be used if there is a need to ensure that the chosen pod is exactly right.
+results in a http request with header `Host: some-host`. Now, if a service-mesh like Istio performs header-based routing, then it will fail to find that host unless the request originates from the same namespace as the host resides in. Another reason is that the configuration of a service mesh can contain very strict rules. If the request then originates from the wrong pod, it will be denied.
 
 ## Recursion detection
 It is common that clusters used in development, such as Minikube, Minishift or k3s, run on the same host as the Telepresence client, often in a Docker container. Such clusters may have access to host network, which means that both DNS and L4 routing may be subjected to recursion.

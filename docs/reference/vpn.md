@@ -77,7 +77,7 @@ flag, Telepresence will take the following  actions:
 
 - The local DNS-server will translate any IP contained in a VNAT subnet to a virtual IP.
 - All access to a virtual IP will be translated back to its original when routed to the cluster. 
-- The container environment retrieved when using `ingest` or `intercept` will be mangled, so that all IPs contained
+- The container environment retrieved when using `replace`, `ingest`, or `intercept` will be mangled, so that all IPs contained
    in VNAT subnets are replaced with corresponding virtual IPs.
 
 The `--vnat` flag can be repeated to make Telepresence translate more than one subnet.

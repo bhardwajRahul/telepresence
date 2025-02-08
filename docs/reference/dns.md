@@ -4,27 +4,23 @@ hide_table_of_contents: true
 ---
 # DNS resolution
 
-The Telepresence DNS resolver is dynamically configured to resolve names using the namespaces of currently active intercepts. Processes running locally on the desktop will have network access to all services in the such namespaces by service-name only.
-
-All intercepts contribute to the DNS resolver, even those that do not use the `--namespace=<value>` option. This is because `--namespace default` is implied, and in this context, `default` is treated just like any other namespace.
-
-No namespaces are used by the DNS resolver (not even `default`) when no intercepts are active, which means that no service is available by `<svc-name>` only. Without an active intercept, the namespace qualified DNS name must be used (in the form `<svc-name>.<namespace>`).
+The Telepresence DNS resolver is dynamically configured to resolve names using the namespaces currently managed by the Traffic Manager. Processes running locally on the desktop will have network access to all services in the currently connected namespace by service-name only, and to other managed namespaces using service-name.namespace.
 
 See this demonstrated below, using the [quick start's](../quick-start.md) sample app services.
 
-No intercepts are currently running, we'll connect to the cluster and list the services that can be intercepted.
+We'll connect to a namespace in the cluster and list the services that can be intercepted.
 
 ```
-$ telepresence connect
+$ telepresence connect --namespace default
 
   Connecting to traffic manager...
   Connected to context default, namespace default (https://<cluster-public-IP>)
 
 $ telepresence list
 
-  web-app: ready to intercept (traffic-agent not yet installed)
-  emoji  : ready to intercept (traffic-agent not yet installed)
-  web    : ready to intercept (traffic-agent not yet installed)
+  deployment web-app: ready to engage (traffic-agent not yet installed)
+  deployment emoji  : ready to engage (traffic-agent not yet installed)
+  deployment web    : ready to engage (traffic-agent not yet installed)
 
 $ curl web-app:80
 
@@ -36,32 +32,8 @@ $ curl web-app:80
   ...
 ```
 
-Now we'll start an intercept against another service.
-
-```
-$ telepresence intercept web --port 8080
-
-  Using Deployment web
-  intercepted
-      Intercept name    : web
-      State             : ACTIVE
-      Workload kind     : Deployment
-      Destination       : 127.0.0.1:8080
-      Volume Mount Point: /tmp/telfs-166119801
-      Intercepting      : all TCP connections
-
-$ curl webapp:80
-
-  <!DOCTYPE html>
-  <html>
-  <head>
-      <meta charset="UTF-8">
-      <title>Emoji Vote</title>
-  ...
-```
-
 The DNS resolver will also be able to resolve services using `<service-name>.<namespace>` regardless of what namespace the
-client is connected to.
+client is connected to as long as the given namespace is among the set managed by the Traffic Manager.
 
 ### Supported Query Types
 

@@ -16,14 +16,14 @@
       link: concepts/devloop
     - title: "Making the remote local: Faster feedback, collaboration and debugging"
       link: concepts/faster
-    - title: Using Telepresence with Docker
-      link: concepts/docker
     - title: Intercepts
       link: concepts/intercepts
 - title: How do I...
   items:
     - title: Code and debug an application locally
       link: howtos/intercepts
+    - title: Using Telepresence with Docker
+      link: howtos/docker
     - title: Work with large clusters
       link: howtos/large-clusters
     - title: Host a cluster in Docker or a VM

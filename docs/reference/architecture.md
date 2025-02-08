@@ -18,7 +18,7 @@ Telepresence has Daemons that run on a developer's workstation and act as the ma
 network in order to communicate with the cluster and handle intercepted traffic.
 
 ### User-Daemon
-The User-Daemon coordinates the creation and deletion of ingests and intercepts by communicating with the [Traffic Manager](#traffic-manager).
+The User-Daemon coordinates the creation and deletion of replacements, ingests and intercepts by communicating with the [Traffic Manager](#traffic-manager).
 All requests from and to the cluster go through this Daemon.
 
 ### Root-Daemon
@@ -30,19 +30,19 @@ please refer to this blog post:
 ## Traffic Manager
 
 The Traffic Manager is the central point of communication between Traffic Agents in the cluster and Telepresence Daemons
-on developer workstations. It is responsible for injecting the Traffic Agent sidecar into ingested or intercepted pods,
-proxying all relevant inbound and outbound traffic, and tracking active intercepts.
+on developer workstations. It is responsible for injecting the Traffic Agent sidecar into engaged pods,
+proxying all relevant inbound and outbound traffic, and tracking active engagements.
 
 The Traffic-Manager is installed by a cluster administrator. It can either be installed using the Helm chart embedded
 in the telepresence client binary (`telepresence helm install`) or by using a Helm Chart directly.
 
 ## Traffic Agent
 
-The Traffic Agent is a sidecar container that facilitates ingests and intercepts. When an ingest or intercept is first
+The Traffic Agent is a sidecar container that facilitates engagements. When a `replace`, `ingest` or `intercept` is first
 started, the Traffic Agent container is injected into the workload's pod(s). You can see the Traffic Agent's status by
 running `telepresence list` or `kubectl describe pod <pod-name>`.
 
-Depending on if an intercept is active or not, the Traffic Agent will either route the incoming request  to a 
-your workstation, or it will pass it along to the container in the pod usually handling requests on that port.
+Depending on if an `replace` or `intercept` is active or not, the Traffic Agent will either route the incoming request 
+to your workstation, or it will pass it along to the container in the pod usually handling requests.
 
 Please see [Traffic Agent Sidecar](intercepts/sidecar.md) for details.

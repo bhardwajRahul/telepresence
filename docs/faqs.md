@@ -14,9 +14,13 @@ Telepresence enables you to connect your local development machine seamlessly to
 
 Ultimately, this empowers you to develop services locally and still test integrations with dependent services or data stores running in the remote cluster.
 
-You can “intercept” any requests made to a target Kubernetes workload, and code and debug your associated service locally using your favourite local IDE and in-process debugger. You can test your integrations by making requests against the remote cluster’s ingress and watching how the resulting internal traffic is handled by your service running locally.
+Telepresence provides three different ways for you to code, debug, and test your service locally using your favourite local IDE and in-process debugger.
 
-You can also "ingest" a target Kubernetes workload. Very similar to an intercept in that your local workstation has access to the workload's network, environment, and volumes, but no traffic will be rerouted from the cluster
+First off, you can "replace" the service with your own local version. This means even though you run your service locally, you can see how it interacts with the rest of the services in the cluster. It's like swapping out a piece of a puzzle and seeing how the whole picture changes. Your local process will have access to the same network, environment, and volumes as the service that it replaces.
+
+You can also "intercept" any requests made to a service. This is similar to replacing the service, but the remote service will keep running, perform background tasks, and handle traffic that isn't intercepted.
+
+Finally, you can "ingest" a service. Again, similar to a "replace", but nothing changes in the cluster during an "ingest", and no traffic is routed to the workstation.
 
 ** What operating systems does Telepresence work on?**
 
@@ -26,11 +30,11 @@ Telepresence currently works natively on macOS (Intel and Apple Silicon), Linux,
 
 Both TCP and UDP are supported.
 
-** When using Telepresence to ingest or intercept a container, are the Kubernetes cluster environment variables proxied on my local machine?**
+** When using Telepresence run a cluster service locally, are the Kubernetes cluster environment variables proxied on my local machine?**
 
-Yes, you can either set the container's environment variables on your machine or write the variables to a file to use with Docker or another build process. You can also directly pass the environments to an intercept handler that is run by the ingest or intercept. Please see [the environment variable reference doc](reference/environment.md) for more information.
+Yes, you can either set the container's environment variables on your machine or write the variables to a file to use with Docker or another build process. You can also directly pass the environments to a handler that runs locally. Please see [the environment variable reference doc](reference/environment.md) for more information.
 
-** When using Telepresence to ingest or intercept a container, can the associated container volume mounts also be mounted by my local machine?**
+** When using Telepresence to run a cluster service locally, can the associated container volume mounts also be mounted by my local machine?**
 
 Yes, please see [the volume mounts reference doc](reference/volume.md) for more information.
 
@@ -51,7 +55,7 @@ You can connect to cloud-based data stores and services that are directly addres
 
 
 
-** Will Telepresence be able to ingest and intercept workloads running on a private cluster or cluster running within a virtual private cloud (VPC)?**
+** Will Telepresence be able to engage with workloads running on a private cluster or cluster running within a virtual private cloud (VPC)?**
 
 Yes, but it doesn't need to have a publicly accessible IP address.
 
@@ -65,11 +69,11 @@ The local daemon needs sudo to create a VIF (Virtual Network Interface) for outb
 
 A single `traffic-manager` service is deployed in the `ambassador` namespace within your cluster, and this manages resilient intercepts and connections between your local machine and the cluster.
 
-A Traffic Agent container is injected per pod that is being intercepted. The first time an ingest or intercept is made on a workload, all pods associated with this workload will be restarted with the Traffic Agent automatically injected.
+A Traffic Agent container is injected per pod that is being engaged. The first time a `replace`, an `ingest`, or an `intercept` is made on a workload, all pods associated with this workload will be restarted with the Traffic Agent automatically injected.
 
 ** How can I remove all the Telepresence components installed within my cluster?**
 
-You can run the command `telepresence helm uninstall` to remove everything from the cluster, including the `traffic-manager`, and all the `traffic-agent` containers injected into each pod being intercepted.
+You can run the command `telepresence helm uninstall` to remove everything from the cluster, including the `traffic-manager`, and all the `traffic-agent` containers injected into each pod being engaged.
 
 Also run `telepresence quit -s` to stop all local daemons running.
 
