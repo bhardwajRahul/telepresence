@@ -30,7 +30,22 @@ const (
 	notConnected = int32(iota)
 	connecting
 	connected
+	readClosed
+	writeClosed
 )
+
+type halfReadCloser interface {
+	CloseRead() error
+}
+
+type halfWriteCloser interface {
+	CloseWrite() error
+}
+
+type halfCloser interface {
+	halfReadCloser
+	halfWriteCloser
+}
 
 // streamReader is implemented by the dialer and udpListener so that they can share the
 // readLoop function.
@@ -40,7 +55,7 @@ type streamReader interface {
 	Stop(context.Context)
 	getStream() Stream
 	reply([]byte) (int, error)
-	startDisconnect(context.Context, string)
+	startDisconnect(context.Context, string, bool)
 }
 
 // The dialer takes care of dispatching messages between gRPC and UDP connections.
@@ -166,18 +181,45 @@ func (h *dialer) Done() <-chan struct{} {
 
 // Stop will close the underlying TCP/UDP connection.
 func (h *dialer) Stop(ctx context.Context) {
-	h.startDisconnect(ctx, "explicit close")
+	h.startDisconnect(ctx, "explicit close", true)
+	h.startDisconnect(ctx, "explicit close", false)
 	h.cancel()
 }
 
-func (h *dialer) startDisconnect(ctx context.Context, reason string) {
-	if !atomic.CompareAndSwapInt32(&h.connected, connected, notConnected) {
+func (h *dialer) startDisconnect(ctx context.Context, reason string, isReader bool) {
+	if wrConn, ok := h.conn.(halfCloser); ok {
+		if isReader {
+			h.startReaderDisconnect(ctx, reason, wrConn)
+		} else {
+			h.startWriterDisconnect(ctx, reason, wrConn)
+		}
+	} else if atomic.CompareAndSwapInt32(&h.connected, connected, notConnected) {
+		dlog.Tracef(ctx, "<> %s %s closing connection: %s", h.stream.Tag(), h.stream.ID(), reason)
+		if err := h.conn.Close(); err != nil {
+			dlog.Tracef(ctx, "!! %s %s, Close failed: %v", h.stream.Tag(), h.stream.ID(), err)
+		}
+	}
+}
+
+func (h *dialer) startReaderDisconnect(ctx context.Context, reason string, conn halfCloser) {
+	if atomic.CompareAndSwapInt32(&h.connected, connected, readClosed) || atomic.CompareAndSwapInt32(&h.connected, writeClosed, notConnected) {
+		dlog.Tracef(ctx, "<- %s %s closing connection write: %s", h.stream.Tag(), h.stream.ID(), reason)
+		if err := conn.CloseWrite(); err != nil {
+			dlog.Debugf(ctx, "<! %s %s, CloseWrite failed: %T %v", h.stream.Tag(), h.stream.ID(), err, err)
+		}
 		return
 	}
-	id := h.stream.ID()
-	dlog.Tracef(ctx, "   CONN %s closing connection: %s", id, reason)
-	if err := h.conn.Close(); err != nil {
-		dlog.Tracef(ctx, "!! CONN %s, Close failed: %v", id, err)
+}
+
+func (h *dialer) startWriterDisconnect(ctx context.Context, reason string, conn halfCloser) {
+	if atomic.CompareAndSwapInt32(&h.connected, connected, writeClosed) || atomic.CompareAndSwapInt32(&h.connected, readClosed, notConnected) {
+		dlog.Tracef(ctx, "-> %s %s closing connection read: %s", h.stream.Tag(), h.stream.ID(), reason)
+		err := conn.CloseRead()
+		switch {
+		case err == nil, err == io.EOF, strings.Contains(err.Error(), "not connected"):
+		default:
+			dlog.Debugf(ctx, "!< %s %s, CloseRead failed: %v", h.stream.Tag(), h.stream.ID(), err)
+		}
 	}
 }
 
@@ -233,7 +275,7 @@ func (h *dialer) connToStreamLoop(ctx context.Context, wg *sync.WaitGroup) {
 				endReason = fmt.Sprintf("a read error occurred: %T %v", err, err)
 				endLevel = dlog.LogLevelError
 			}
-			h.startDisconnect(ctx, endReason)
+			h.startDisconnect(ctx, endReason, false)
 			return
 		}
 
@@ -283,7 +325,7 @@ func readLoop(ctx context.Context, tag Tag, h streamReader, trafficProbe *Counte
 	endLevel := dlog.LogLevelTrace
 	id := h.getStream().ID()
 	defer func() {
-		h.startDisconnect(ctx, endReason)
+		h.startDisconnect(ctx, endReason, true)
 		dlog.Logf(ctx, endLevel, "<- %s %s stream-to-conn loop ended because %s", tag, id, endReason)
 	}()
 
