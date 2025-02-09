@@ -3,28 +3,17 @@
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: local-pv
+  name: {{ .Name }}-pv
   labels:
     purpose: tp-cli-testing
 spec:
   capacity:
-    storage: 0.5Gi
+    storage: 0.2Gi
   accessModes:
   - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
   hostPath:
-    path: /data/local-pv
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: local-pvc
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 1Gi
+    path: /data/{{ .Name }}-pv
 ---
 apiVersion: v1
 kind: Service

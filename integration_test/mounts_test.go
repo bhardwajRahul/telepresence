@@ -109,6 +109,8 @@ func (s *mountsSuite) Test_MountWrite() {
 	ctx := s.Context()
 	k8s := filepath.Join("testdata", "k8s")
 	rq := s.Require()
+	pvcPath := filepath.Join(k8s, "local-pvc.yaml")
+	rq.NoError(s.Kubectl(ctx, "apply", "-f", pvcPath))
 	mf, err := itest.ReadTemplate(ctx, filepath.Join(k8s, "hello-pv-volume.goyaml"), &itest.PersistentVolume{
 		Name:           "hello",
 		MountDirectory: "/data",
@@ -118,6 +120,7 @@ func (s *mountsSuite) Test_MountWrite() {
 	rq.NoError(s.Kubectl(dos.WithStdin(ctx, bytes.NewReader(mf)), "apply", "-f", "-"))
 	defer func() {
 		rq.NoError(s.Kubectl(dos.WithStdin(ctx, bytes.NewReader(mf)), "delete", "-f", "-"))
+		rq.NoError(s.Kubectl(ctx, "delete", "-f", pvcPath))
 	}()
 
 	mountPoint := filepath.Join(s.T().TempDir(), "mnt")
