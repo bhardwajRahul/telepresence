@@ -24,7 +24,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 
 	"github.com/datawire/dlib/dcontext"
-	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dgroup"
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
@@ -278,12 +277,6 @@ func serveRequest(ctx context.Context, r *http.Request, method string, f func(ct
 
 // serveMutatingFunc is a helper function to call a mutatorFunc.
 func serveMutatingFunc(ctx context.Context, r *http.Request, mf mutatorFunc) ([]byte, int, error) {
-	defer func() {
-		if r := recover(); r != nil {
-			dlog.Errorf(ctx, "%+v", derror.PanicToError(r))
-		}
-	}()
-
 	// Request validations.
 	// Only handle POST requests with a body and json content type.
 	if r.Method != http.MethodPost {
