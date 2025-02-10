@@ -38,20 +38,20 @@
       link: reference/config
     - title: Cluster-side configuration
       link: reference/cluster-config
-    - title: Using Docker for intercepts
+    - title: Using Docker for engagements
       link: reference/docker-run
     - title: Running Telepresence in a Docker container
       link: reference/inside-container
     - title: Environment variables
       link: reference/environment
-    - title: Intercepts
+    - title: Engagements
       items:
         - title: Configure intercept using CLI
-          link: reference/intercepts/cli
+          link: reference/engagements/cli
         - title: Traffic Agent Sidecar
-          link: reference/intercepts/sidecar
+          link: reference/engagements/sidecar
         - title: Target a specific container
-          link: reference/intercepts/container
+          link: reference/engagements/container
     - title: Volume mounts
       link: reference/volume
     - title: DNS resolution

@@ -172,7 +172,7 @@ Telepresence not only detects subnet conflicts between the cluster and workstati
 It is now possible to use a virtual subnet without routing the affected IPs to a specific workload. A new `telepresence connect --vnat CIDR` flag was added that will perform virtual network address translation of cluster IPs. This flag is very similar to the `--proxy-via CIDR=WORKLOAD` introduced in 2.19, but without the need to specify a workload.
 </div>
 
-## <div style="display:flex;"><img src="images/feature.png" alt="feature" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">[Intercepts targeting a specific container](reference/intercepts/container)</div></div>
+## <div style="display:flex;"><img src="images/feature.png" alt="feature" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">[Intercepts targeting a specific container](reference/engagements/container)</div></div>
 <div style="margin-left: 15px">
 
 In certain scenarios, the container owning the intercepted port differs
@@ -233,7 +233,7 @@ See [Streaming Transitions from SPDY to WebSockets](https://kubernetes.io/blog/2
 The OSS code-base will no longer report usage data to the proprietary collector at Ambassador Labs. The actual calls to the collector remain, but will be no-ops unless a proper collector client is installed using an extension point.
 </div>
 
-## <div style="display:flex;"><img src="images/feature.png" alt="feature" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">[Add deployments, statefulSets, replicaSets to workloads Helm chart value](reference/intercepts/sidecar#disable-workloads)</div></div>
+## <div style="display:flex;"><img src="images/feature.png" alt="feature" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">[Add deployments, statefulSets, replicaSets to workloads Helm chart value](reference/engagements/sidecar#disable-workloads)</div></div>
 <div style="margin-left: 15px">
 
 The Helm chart value `workloads` now supports the kinds `deployments.enabled`, `statefulSets.enabled`, `replicaSets.enabled`. and `rollouts.enabled`. All except `rollouts` are enabled by default. The traffic-manager will ignore workloads, and Telepresence will not be able to intercept them, if the `enabled` of the corresponding kind is set to `false`.
@@ -381,7 +381,7 @@ The name of the `telepresence gather-logs` flag `--daemons` suggests that the ar
 Telepresence is now capable of easily find telepresence gather-logs by certain timestamp.
 </div>
 
-## <div style="display:flex;"><img src="images/feature.png" alt="feature" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">[Enable intercepts of workloads that have no service.](https://telepresence.io/docs/reference/intercepts/cli#intercepting-without-a-service)</div></div>
+## <div style="display:flex;"><img src="images/feature.png" alt="feature" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">[Enable intercepts of workloads that have no service.](https://telepresence.io/docs/reference/engagements/cli#intercepting-without-a-service)</div></div>
 <div style="margin-left: 15px">
 
 Telepresence is now capable of intercepting workloads that have no associated service. The intercept will then target container port instead of a service port. The new behavior is enabled by adding a <code>telepresence.getambassador.io/inject-container-ports</code> annotation where the value is a comma separated list of port identifiers consisting of either the name or the port number of a container port, optionally suffixed with `/TCP` or `/UDP`.

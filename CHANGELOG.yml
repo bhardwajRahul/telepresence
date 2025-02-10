@@ -209,7 +209,7 @@ items:
           guarantees that the environment variables and mounts propagated to the
           client originate from the specified container. Additionally, if the
           `--replace` option is used, it ensures that this container is replaced.
-        docs: reference/intercepts/container
+        docs: reference/engagements/container
       - type: feature
         title: New telepresence ingest command
         body: >-
@@ -274,7 +274,7 @@ items:
           The Helm chart value `workloads` now supports the kinds `deployments.enabled`, `statefulSets.enabled`, `replicaSets.enabled`.
           and `rollouts.enabled`. All except `rollouts` are enabled by default. The traffic-manager will ignore workloads, and
           Telepresence will not be able to intercept them, if the `enabled` of the corresponding kind is set to `false`.
-        docs: reference/intercepts/sidecar#disable-workloads
+        docs: reference/engagements/sidecar#disable-workloads
       - type: feature
         title: Improved command auto-completion
         body: >-
@@ -448,7 +448,7 @@ items:
           instead of a service port. The new behavior is enabled by adding a <code>telepresence.getambassador.io/inject-container-ports</code>
           annotation where the value is a comma separated list of port identifiers consisting of either the name or the port number of a container
           port, optionally suffixed with `/TCP` or `/UDP`.
-        docs: https://telepresence.io/docs/reference/intercepts/cli#intercepting-without-a-service
+        docs: https://telepresence.io/docs/reference/engagements/cli#intercepting-without-a-service
       - type: feature
         title: Publish the OSS version of the telepresence Helm chart
         body: >-

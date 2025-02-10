@@ -24,13 +24,13 @@ raw markdown version, more bells and whistles at [telepresence.io](https://telep
   - [Client reference](reference/client.md)
   - [Laptop-side configuration](reference/config.md)
   - [Cluster-side configuration](reference/cluster-config.md)
-  - [Using Docker for intercepts](reference/docker-run.md)
+  - [Using Docker for engagements](reference/docker-run.md)
   - [Running Telepresence in a Docker container](reference/inside-container.md)
   - [Environment variables](reference/environment.md)
-  - Intercepts
-    - [Configure intercept using CLI](reference/intercepts/cli.md)
-    - [Traffic Agent Sidecar](reference/intercepts/sidecar.md)
-    - [Target a specific container](reference/intercepts/container.md)
+  - Engagements
+    - [Configure intercept using CLI](reference/engagements/cli.md)
+    - [Traffic Agent Sidecar](reference/engagements/sidecar.md)
+    - [Target a specific container](reference/engagements/container.md)
   - [Volume mounts](reference/volume.md)
   - [DNS resolution](reference/dns.md)
   - [RBAC](reference/rbac.md)
