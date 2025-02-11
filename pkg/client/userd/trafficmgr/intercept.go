@@ -69,6 +69,10 @@ type intercept struct {
 
 	// Mount read-only
 	readOnly bool
+
+	// finalRemovalDone is closed when the traffic-manager sends a snapshot that no longer contains
+	// this intercept.
+	finalRemovalDone chan struct{}
 }
 
 // interceptResult is what gets written to the awaitIntercept's waitCh channel when the
@@ -120,6 +124,7 @@ func (ic *intercept) podAccess(rd daemon.DaemonClient) *podAccess {
 		localMountPort:   ic.localMountPort,
 		readOnly:         ic.readOnly,
 		mounter:          &ic.Mounter,
+		wg:               &ic.wg,
 	}
 	if err := pa.ensureAccess(ic.ctx, rd); err != nil {
 		dlog.Error(ic.ctx, err)
@@ -245,7 +250,6 @@ func (s *session) getCurrentInterceptInfos() []*manager.InterceptInfo {
 
 func (s *session) setCurrentIntercepts(ctx context.Context, iis []*manager.InterceptInfo) {
 	s.currentInterceptsLock.Lock()
-	defer s.currentInterceptsLock.Unlock()
 	intercepts := make(map[string]*intercept, len(iis))
 	sb := strings.Builder{}
 	sb.WriteByte('[')
@@ -256,7 +260,7 @@ func (s *session) setCurrentIntercepts(ctx context.Context, iis []*manager.Inter
 			ii.ClientMountPoint = ic.ClientMountPoint
 			ic.InterceptInfo = ii
 		} else {
-			ic = &intercept{InterceptInfo: ii}
+			ic = &intercept{InterceptInfo: ii, finalRemovalDone: make(chan struct{})}
 			ic.ctx, ic.cancel = context.WithCancel(ctx)
 			dlog.Debugf(ctx, "Received new intercept %s", ic.Spec.Name)
 			if aw, ok := s.interceptWaiters[ii.Spec.Name]; ok {
@@ -277,14 +281,21 @@ func (s *session) setCurrentIntercepts(ctx context.Context, iis []*manager.Inter
 	dlog.Debugf(ctx, "setCurrentIntercepts(%s)", sb.String())
 
 	// Cancel those that no longer exists
+	var removed []*intercept
 	for id, ic := range s.currentIntercepts {
 		if _, ok := intercepts[id]; !ok {
-			dlog.Debugf(ctx, "Cancelling context for intercept %s", ic.Spec.Name)
-			ic.cancel()
+			removed = append(removed, ic)
 		}
 	}
 	s.currentIntercepts = intercepts
 	s.reconcileAPIServers(ctx)
+	s.currentInterceptsLock.Unlock()
+
+	for _, ic := range removed {
+		dlog.Debugf(ctx, "Cancelling context for intercept %s", ic.Spec.Name)
+		ic.cancel()
+		close(ic.finalRemovalDone)
+	}
 }
 
 func InterceptError(tp common.InterceptError, err error) *rpc.InterceptResult {
@@ -375,7 +386,7 @@ func ensureUniqueLocalPorts(spec *manager.InterceptSpec, pi *manager.PreparedInt
 		targetPort = pi.ContainerPort
 	}
 
-	ports := make(map[agentconfig.PortAndProto]struct{}, len(spec.LocalPorts)+len(spec.PodPorts)+1)
+	ports := make(map[agentconfig.PortAndProto]struct{}, len(spec.LocalPorts)+len(pi.PodPorts)+1)
 	ports[agentconfig.PortAndProto{
 		Port:  uint16(targetPort),
 		Proto: core.Protocol(pi.Protocol),
@@ -518,7 +529,9 @@ func (s *session) AddIntercept(c context.Context, ir *rpc.CreateInterceptRequest
 	// of using PrepareIntercept.
 	pi := iInfo.PreparedIntercept()
 
-	if pi.ServicePort > 0 || pi.ServicePortName != "" {
+	if spec.PortIdentifier == "all" {
+		spec.PortIdentifier = ""
+	} else if pi.ServicePort > 0 || pi.ServicePortName != "" {
 		// Make spec port identifier unambiguous.
 		spec.ServicePortName = pi.ServicePortName
 		spec.ServicePort = pi.ServicePort
@@ -531,6 +544,10 @@ func (s *session) AddIntercept(c context.Context, ir *rpc.CreateInterceptRequest
 	dlog.Debugf(c, "pi.Protocol = %s", pi.Protocol)
 	spec.Protocol = pi.Protocol
 	spec.ContainerPort = pi.ContainerPort
+	spec.ContainerName = pi.ContainerName
+	if spec.NoDefaultPort {
+		spec.Name = spec.Agent + "/" + pi.ContainerName
+	}
 	spec.PodPorts = pi.PodPorts
 	result = iInfo.InterceptResult()
 
@@ -655,12 +672,22 @@ func (s *session) removeIntercept(c context.Context, ic *intercept) error {
 	ic.wg.Wait()
 
 	dlog.Debugf(c, "telling manager to remove intercept %s", name)
-	c, cancel := client.GetConfig(c).Timeouts().TimeoutContext(c, client.TimeoutTrafficManagerAPI)
+	tos := client.GetConfig(c).Timeouts()
+	cc, cancel := tos.TimeoutContext(c, client.TimeoutTrafficManagerAPI)
 	defer cancel()
-	_, err := s.managerClient.RemoveIntercept(c, &manager.RemoveInterceptRequest2{
+	_, err := s.managerClient.RemoveIntercept(cc, &manager.RemoveInterceptRequest2{
 		Session: s.SessionInfo(),
 		Name:    name,
 	})
+	if err == nil {
+		select {
+		case <-c.Done():
+		case <-ic.finalRemovalDone:
+
+		// Just in case the traffic-manager dies before it sends a new snapshot to our intercept watcher.
+		case <-time.After(tos.Get(client.TimeoutTrafficManagerAPI)):
+		}
+	}
 	return err
 }
 
@@ -754,15 +781,48 @@ func (s *session) GetInterceptInfo(name string) *manager.InterceptInfo {
 }
 
 // GetInterceptSpec returns the InterceptSpec for the given name, or nil if no such spec exists.
-func (s *session) getInterceptByName(name string) (found *intercept) {
+func (s *session) getInterceptByName(name string) *intercept {
 	s.currentInterceptsLock.Lock()
+	defer s.currentInterceptsLock.Unlock()
 	for _, ic := range s.currentIntercepts {
 		if ic.Spec.Name == name {
-			found = ic
-			break
+			return ic
 		}
 	}
-	s.currentInterceptsLock.Unlock()
+
+	if slashIx := strings.IndexByte(name, '/'); slashIx > 0 {
+		container := name[slashIx+1:]
+		name = name[:slashIx]
+		for _, ic := range s.currentIntercepts {
+			if ic.Spec.Name == name && container == ic.Spec.ContainerName {
+				return ic
+			}
+		}
+		return nil
+	}
+
+	// Check if the name uniquely identifies a `replace` by its workload (always uses <workload>/<container>)
+	namePfx := name + "/"
+	var found *intercept
+	for _, ic := range s.currentIntercepts {
+		if strings.HasPrefix(ic.Spec.Name, namePfx) {
+			if found != nil {
+				// Found a second time using prefix, so the prefix isn't unique and hence not valid.
+				return nil
+			}
+			found = ic
+		}
+	}
+	if found != nil {
+		// Name is not unique if it also identifies an ingest with the same workload.
+		s.currentIngests.Range(func(key ingestKey, ig *ingest) bool {
+			if key.workload == name {
+				found = nil
+				return false
+			}
+			return true
+		})
+	}
 	return found
 }
 

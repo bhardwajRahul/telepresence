@@ -15,6 +15,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/agent"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/forwarder"
+	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
 )
 
 const (
@@ -23,7 +24,7 @@ const (
 )
 
 func makeFS(t *testing.T, ctx context.Context) (forwarder.Interceptor, agent.State) {
-	f := forwarder.NewInterceptor(agentconfig.PortAndProto{Proto: core.ProtocolTCP, Port: 1111}, appHost, appPort)
+	f := forwarder.NewInterceptor(agentconfig.PortAndProto{Proto: core.ProtocolTCP, Port: 1111}, tunnel.AgentToProxied, appHost, appPort)
 	go func() {
 		if err := f.Serve(context.Background(), nil); err != nil {
 			dlog.Error(ctx, err)
@@ -40,7 +41,7 @@ func makeFS(t *testing.T, ctx context.Context) (forwarder.Interceptor, agent.Sta
 	s := agent.NewState(c)
 	cn := c.AgentConfig().Containers[0]
 	cnMountPoint := filepath.Join(agentconfig.ExportsMountPoint, filepath.Base(cn.MountPoint))
-	s.AddContainerState(cn.Name, agent.NewContainerState(cnMountPoint, map[string]string{}))
+	s.AddContainerState(cn.Name, agent.NewContainerState(s, cn, cnMountPoint, map[string]string{}))
 	s.AddInterceptState(s.NewInterceptState(f, agent.NewInterceptTarget(cn.Intercepts), cn.Name))
 	return f, s
 }
@@ -81,6 +82,8 @@ func TestState_HandleIntercepts(t *testing.T) {
 				Namespace:      namespace,
 				ServiceName:    serviceName,
 				PortIdentifier: "http",
+				ContainerPort:  8080,
+				Protocol:       string(core.ProtocolTCP),
 				TargetPort:     8080,
 			},
 			Id: "intercept-01",
@@ -94,6 +97,8 @@ func TestState_HandleIntercepts(t *testing.T) {
 				Namespace:      namespace,
 				ServiceName:    serviceName,
 				PortIdentifier: "http",
+				ContainerPort:  8080,
+				Protocol:       string(core.ProtocolTCP),
 				TargetPort:     8080,
 			},
 			Id: "intercept-02",
@@ -115,7 +120,7 @@ func TestState_HandleIntercepts(t *testing.T) {
 	cepts[1].Disposition = rpc.InterceptDispositionType_WAITING
 
 	reviews = s.HandleIntercepts(ctx, cepts)
-	a.Len(reviews, 2)
+	require.Len(t, reviews, 2)
 	a.Equal("", f.InterceptId())
 
 	// Reviews are in the correct order

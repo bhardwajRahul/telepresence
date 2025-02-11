@@ -320,12 +320,5 @@ func writeRequest(w io.Writer, req *http.Request) {
 			fmt.Fprintf(w, "%s: %s\n", key, value)
 		}
 	}
-
-	var body bytes.Buffer
-	io.Copy(&body, req.Body) // nolint:errcheck
-
-	if body.Len() > 0 {
-		fmt.Fprintln(w, "")
-		body.WriteTo(w) // nolint:errcheck
-	}
+	io.Copy(w, req.Body) // nolint:errcheck
 }

@@ -4,11 +4,13 @@ import (
 	"bufio"
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"text/template"
 	"time"
 
+	"github.com/blang/semver/v4"
 	"sigs.k8s.io/yaml"
 )
 
@@ -92,6 +94,23 @@ func MakeReleaseNotes(input string, mdx bool) error {
 		return err
 	}
 	return wr.Flush()
+}
+
+func MakeVariables(input string) error {
+	cl, err := readChangeLog(input)
+	if err != nil {
+		return err
+	}
+	if len(cl.Items) == 0 {
+		return fmt.Errorf("unable to parse release version from %q", input)
+	}
+	v := cl.Items[0].Version
+	sv, err := semver.Parse(v)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("version: \"%s\"\ndlVersion: \"v%s\"\n", sv, sv)
+	return nil
 }
 
 func (t *Release) UnmarshalJSON(data []byte) error {

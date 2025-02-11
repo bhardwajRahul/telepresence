@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net"
 	"net/netip"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/blang/semver/v4"
@@ -16,6 +18,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	empty "google.golang.org/protobuf/types/known/emptypb"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dgroup"
@@ -26,6 +29,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/mutator"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/state"
+	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/dnsproxy"
 	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
 	"github.com/telepresenceio/telepresence/v2/pkg/version"
@@ -53,7 +57,6 @@ type Service interface {
 }
 
 type service struct {
-	ctx                context.Context
 	clock              Clock
 	id                 string
 	state              state.State
@@ -61,6 +64,9 @@ type service struct {
 	configWatcher      config.Watcher
 	activeHttpRequests int32
 	activeGrpcRequests int32
+	serviceNameNs      string
+	serviceNameFQN     string
+	dotClusterDomain   string
 
 	// Possibly extended version of the service. Use when calling interface methods.
 	self Service
@@ -99,10 +105,15 @@ func NewService(ctx context.Context, configWatcher config.Watcher) (Service, *dg
 			dlog.Errorf(ctx, "unable to initialize agent injector: %v", err)
 		}
 	}
-	ret.ctx = ctx
 	// These are context dependent so build them once the pool is up
 	ret.clusterInfo = cluster.NewInfo(ctx)
 	ret.state = state.NewStateFunc(ctx)
+
+	ns := managerutil.GetEnv(ctx).ManagerNamespace
+	ret.dotClusterDomain = "." + ret.clusterInfo.ClusterDomain()
+	ret.serviceNameNs = fmt.Sprintf("%s.%s.", agentmap.ManagerAppName, ns)
+	ret.serviceNameFQN = fmt.Sprintf("%s.%s.svc%s", agentmap.ManagerAppName, ns, ret.dotClusterDomain)
+
 	ret.self = ret
 	g := dgroup.NewGroup(ctx, dgroup.GroupConfig{
 		EnableSignalHandling: true,
@@ -146,9 +157,8 @@ func (s *service) GetAgentImageFQN(ctx context.Context, _ *empty.Empty) (*rpc.Ag
 }
 
 func (s *service) GetAgentConfig(ctx context.Context, request *rpc.AgentConfigRequest) (*rpc.AgentConfigResponse, error) {
-	dlog.Debug(ctx, "GetAgentConfig called")
 	ctx = managerutil.WithSessionInfo(ctx, request.Session)
-	sessionID := request.GetSession().GetSessionId()
+	sessionID := tunnel.SessionID(request.GetSession().GetSessionId())
 	clientInfo := s.state.GetClient(sessionID)
 	if clientInfo == nil {
 		return nil, status.Errorf(codes.NotFound, "Client session %q not found", sessionID)
@@ -185,7 +195,7 @@ func (s *service) GetTelepresenceAPI(ctx context.Context, e *empty.Empty) (*rpc.
 
 // ArriveAsClient establishes a session between a client and the Manager.
 func (s *service) ArriveAsClient(ctx context.Context, client *rpc.ClientInfo) (*rpc.SessionInfo, error) {
-	dlog.Debugf(ctx, "ArriveAsClient called, namespace: %s", client.Namespace)
+	dlog.Debugf(ctx, "Namespace: %s", client.Namespace)
 
 	if !s.State().ManagesNamespace(ctx, client.Namespace) {
 		return nil, status.Error(codes.FailedPrecondition, fmt.Sprintf("namespace %s is not managed", client.Namespace))
@@ -201,7 +211,7 @@ func (s *service) ArriveAsClient(ctx context.Context, client *rpc.ClientInfo) (*
 	SetGauge(s.state.GetConnectActiveStatus(), client.Name, client.InstallId, nil, 1)
 
 	return &rpc.SessionInfo{
-		SessionId:        s.state.AddClient(client, s.clock.Now()),
+		SessionId:        string(s.state.AddClient(client, s.clock.Now())),
 		ManagerInstallId: s.clusterInfo.ID(),
 		InstallId:        &installId,
 	}, nil
@@ -209,20 +219,22 @@ func (s *service) ArriveAsClient(ctx context.Context, client *rpc.ClientInfo) (*
 
 // ArriveAsAgent establishes a session between an agent and the Manager.
 func (s *service) ArriveAsAgent(ctx context.Context, agent *rpc.AgentInfo) (*rpc.SessionInfo, error) {
-	dlog.Debugf(ctx, "ArriveAsAgent %s called", agent.PodName)
-
+	dlog.Debugf(ctx, "Name %s, IP %s", agent.PodName, agent.PodIp)
 	if val := validateAgent(agent); val != "" {
 		return nil, status.Error(codes.InvalidArgument, val)
 	}
-	mutator.GetMap(ctx).Whitelist(agent.PodName, agent.Namespace)
 
 	for _, cn := range agent.Containers {
 		s.removeExcludedEnvVars(cn.Environment)
 	}
-	sessionID := s.state.AddAgent(agent, s.clock.Now())
+
+	sessionID, err := s.state.AddAgent(ctx, agent, s.clock.Now())
+	if err != nil {
+		return nil, err
+	}
 
 	return &rpc.SessionInfo{
-		SessionId:        sessionID,
+		SessionId:        string(sessionID),
 		ManagerInstallId: s.clusterInfo.ID(),
 	}, nil
 }
@@ -233,8 +245,6 @@ func (s *service) ReportMetrics(ctx context.Context, metrics *rpc.TunnelMetrics)
 }
 
 func (s *service) GetClientConfig(ctx context.Context, _ *empty.Empty) (*rpc.CLIConfig, error) {
-	dlog.Debug(ctx, "GetClientConfig called")
-
 	return &rpc.CLIConfig{
 		ConfigYaml: s.configWatcher.GetClientConfigYaml(ctx),
 	}, nil
@@ -242,25 +252,20 @@ func (s *service) GetClientConfig(ctx context.Context, _ *empty.Empty) (*rpc.CLI
 
 // Remain indicates that the session is still valid.
 func (s *service) Remain(ctx context.Context, req *rpc.RemainRequest) (*empty.Empty, error) {
-	// ctx = WithSessionInfo(ctx, req.GetSession())
-	// dlog.Debug(ctx, "Remain called")
-	sessionID := req.GetSession().GetSessionId()
+	sessionID := tunnel.SessionID(req.GetSession().GetSessionId())
 	if ok := s.state.MarkSession(req, s.clock.Now()); !ok {
 		return nil, status.Errorf(codes.NotFound, "Session %q not found", sessionID)
 	}
-
 	s.state.RefreshSessionConsumptionMetrics(sessionID)
-
 	return &empty.Empty{}, nil
 }
 
 // Depart terminates a session.
 func (s *service) Depart(ctx context.Context, session *rpc.SessionInfo) (*empty.Empty, error) {
 	ctx = managerutil.WithSessionInfo(ctx, session)
-	sessionID := session.GetSessionId()
-	dlog.Debug(ctx, "Depart called")
+	sessionID := tunnel.SessionID(session.GetSessionId())
 
-	// There's reason for the caller to wait for this removal to complete.
+	// There's no reason for the caller to wait for this removal to complete.
 	go s.state.RemoveSession(context.WithoutCancel(ctx), sessionID)
 	return &empty.Empty{}, nil
 }
@@ -268,36 +273,34 @@ func (s *service) Depart(ctx context.Context, session *rpc.SessionInfo) (*empty.
 // WatchAgentPods notifies a client of the set of known Agents.
 func (s *service) WatchAgentPods(session *rpc.SessionInfo, stream rpc.Manager_WatchAgentPodsServer) error {
 	ctx := managerutil.WithSessionInfo(stream.Context(), session)
-	dlog.Debug(ctx, "WatchAgentPods called")
-	defer dlog.Debug(ctx, "WatchAgentPods ended")
-
-	clientSession := session.SessionId
+	clientSession := tunnel.SessionID(session.SessionId)
 	clientInfo := s.state.GetClient(clientSession)
 	if clientInfo == nil {
 		return status.Errorf(codes.NotFound, "Client session %q not found", clientSession)
 	}
 	ns := clientInfo.Namespace
 
-	agentsCh := s.state.WatchAgents(ctx, func(_ string, info *rpc.AgentInfo) bool {
+	agentsCh := s.state.WatchAgents(ctx, func(_ tunnel.SessionID, info *state.AgentSession) bool {
 		return info.Namespace == ns
 	})
-	interceptsCh := s.state.WatchIntercepts(ctx, func(_ string, info *rpc.InterceptInfo) bool {
-		return info.ClientSession.SessionId == clientSession
+	interceptsCh := s.state.WatchIntercepts(ctx, func(_ string, info *state.Intercept) bool {
+		return info.ClientSession.SessionId == string(clientSession)
 	})
 	sessionDone, err := s.state.SessionDone(clientSession)
 	if err != nil {
 		return err
 	}
 
-	var interceptInfos map[string]*rpc.InterceptInfo
-	isIntercepted := func(name, namespace string) bool {
+	var interceptInfos map[string]*state.Intercept
+	isIntercepted := func(a *rpc.AgentPodInfo) bool {
 		for _, ii := range interceptInfos {
-			if name == ii.Spec.Agent && namespace == ii.Spec.Namespace {
+			if a.WorkloadName == ii.Spec.Agent && a.Namespace == ii.Spec.Namespace {
 				return true
 			}
 		}
 		return false
 	}
+	m := mutator.GetMap(ctx)
 	var agents []*rpc.AgentPodInfo
 	var agentNames []string
 	for {
@@ -305,40 +308,42 @@ func (s *service) WatchAgentPods(session *rpc.SessionInfo, stream rpc.Manager_Wa
 		case <-sessionDone:
 			// Manager believes this session has ended.
 			return nil
-		case as, ok := <-agentsCh:
+		case agm, ok := <-agentsCh:
 			if !ok {
 				return nil
 			}
-			agm := as.State
-			agents = make([]*rpc.AgentPodInfo, len(agm))
-			agentNames = make([]string, len(agm))
-			i := 0
+			agents = make([]*rpc.AgentPodInfo, 0, len(agm))
+			agentNames = make([]string, 0, len(agm))
 			for _, a := range agm {
+				if m.IsInactive(types.UID(a.PodUid)) {
+					continue
+				}
 				aip, err := netip.ParseAddr(a.PodIp)
 				if err != nil {
 					dlog.Errorf(ctx, "error parsing agent pod ip %q: %v", a.PodIp, err)
 				}
-				agents[i] = &rpc.AgentPodInfo{
+				ap := &rpc.AgentPodInfo{
 					WorkloadName: a.Name,
 					PodName:      a.PodName,
 					Namespace:    a.Namespace,
 					PodIp:        aip.AsSlice(),
 					ApiPort:      a.ApiPort,
-					Intercepted:  isIntercepted(a.Name, a.Namespace),
 				}
-				agentNames[i] = a.Name
-				i++
+				ap.Intercepted = isIntercepted(ap)
+				agents = append(agents, ap)
+				agentNames = append(agentNames, fmt.Sprintf("%s(%s)", ap.PodName, net.IP(ap.PodIp)))
 			}
 		case is, ok := <-interceptsCh:
 			if !ok {
 				return nil
 			}
-			interceptInfos = is.State
-			for i, a := range agents {
-				a.Intercepted = isIntercepted(agentNames[i], a.Namespace)
+			interceptInfos = is
+			for _, ap := range agents {
+				ap.Intercepted = isIntercepted(ap)
 			}
 		}
 		if agents != nil {
+			dlog.Debugf(ctx, "Sending update for %s", agentNames)
 			if err = stream.Send(&rpc.AgentPodInfoSnapshot{Agents: agents}); err != nil {
 				return err
 			}
@@ -349,20 +354,20 @@ func (s *service) WatchAgentPods(session *rpc.SessionInfo, stream rpc.Manager_Wa
 // WatchAgents notifies a client of the set of known Agents in the connected namespace.
 func (s *service) WatchAgents(session *rpc.SessionInfo, stream rpc.Manager_WatchAgentsServer) error {
 	ctx := managerutil.WithSessionInfo(stream.Context(), session)
-	dlog.Debug(ctx, "WatchAgents called")
-	clientInfo := s.state.GetClient(session.SessionId)
+	clientInfo := s.state.GetClient(tunnel.SessionID(session.SessionId))
 	if clientInfo == nil {
 		return status.Errorf(codes.NotFound, "Client session %q not found", session.SessionId)
 	}
 	ns := clientInfo.Namespace
-	return s.watchAgents(ctx, func(_ string, a *rpc.AgentInfo) bool { return a.Namespace == ns }, stream)
+	return s.watchAgents(ctx, func(_ tunnel.SessionID, a *state.AgentSession) bool { return a.Namespace == ns }, stream)
 }
 
 // WatchAgentsNS notifies a client of the set of known Agents in the namespaces given in the request.
 func (s *service) WatchAgentsNS(request *rpc.AgentsRequest, stream rpc.Manager_WatchAgentsNSServer) error {
 	ctx := managerutil.WithSessionInfo(stream.Context(), request.Session)
-	dlog.Debug(ctx, "WatchAgentsNS called")
-	return s.watchAgents(ctx, func(_ string, a *rpc.AgentInfo) bool { return slices.Contains(request.Namespaces, a.Namespace) }, stream)
+	return s.watchAgents(ctx, func(_ tunnel.SessionID, a *state.AgentSession) bool {
+		return slices.Contains(request.Namespaces, a.Namespace)
+	}, stream)
 }
 
 func infosEqual(a, b *rpc.AgentInfo) bool {
@@ -395,7 +400,7 @@ func infosEqual(a, b *rpc.AgentInfo) bool {
 	})
 }
 
-func (s *service) watchAgents(ctx context.Context, includeAgent func(string, *rpc.AgentInfo) bool, stream rpc.Manager_WatchAgentsServer) error {
+func (s *service) watchAgents(ctx context.Context, includeAgent func(tunnel.SessionID, *state.AgentSession) bool, stream rpc.Manager_WatchAgentsServer) error {
 	snapshotCh := s.state.WatchAgents(ctx, includeAgent)
 	sessionDone, err := s.state.SessionDone(managerutil.GetSessionID(ctx))
 	if err != nil {
@@ -406,18 +411,24 @@ func (s *service) watchAgents(ctx context.Context, includeAgent func(string, *rp
 	// creating a lastSnap with one nil entry.
 	lastSnap := make([]*rpc.AgentInfo, 1)
 
+	m := mutator.GetMap(ctx)
 	for {
 		select {
 		case snapshot, ok := <-snapshotCh:
 			if !ok {
 				// The request has been canceled.
-				dlog.Debug(ctx, "WatchAgentsNS request cancelled")
+				dlog.Debug(ctx, "Request cancelled")
 				return nil
 			}
-			agentSessionIDs := slices.Sorted(maps.Keys(snapshot.State))
-			agents := make([]*rpc.AgentInfo, len(agentSessionIDs))
-			for i, agentSessionID := range agentSessionIDs {
-				agents[i] = snapshot.State[agentSessionID]
+
+			// Sort snapshot by sessionID and discard inactive agents.
+			agentSessionIDs := slices.Sorted(maps.Keys(snapshot))
+			agents := make([]*rpc.AgentInfo, 0, len(agentSessionIDs))
+			for _, agentSessionID := range agentSessionIDs {
+				ag := snapshot[agentSessionID]
+				if !m.IsInactive(types.UID(ag.PodUid)) {
+					agents = append(agents, ag.AgentInfo)
+				}
 			}
 			if slices.EqualFunc(agents, lastSnap, infosEqual) {
 				continue
@@ -427,10 +438,10 @@ func (s *service) watchAgents(ctx context.Context, includeAgent func(string, *rp
 				names := make([]string, len(agents))
 				i := 0
 				for _, a := range agents {
-					names[i] = a.Name + "." + a.Namespace
+					names[i] = a.PodName + "." + a.Namespace
 					i++
 				}
-				dlog.Debugf(ctx, "WatchAgentsNS sending update %v", names)
+				dlog.Tracef(ctx, "Sending update %v", names)
 			}
 			resp := &rpc.AgentInfoSnapshot{
 				Agents: agents,
@@ -440,7 +451,7 @@ func (s *service) watchAgents(ctx context.Context, includeAgent func(string, *rp
 			}
 		case <-sessionDone:
 			// Manager believes this session has ended.
-			dlog.Debug(ctx, "WatchAgentsNS session cancelled")
+			dlog.Debug(ctx, "Session cancelled")
 			return nil
 		}
 	}
@@ -450,14 +461,11 @@ func (s *service) watchAgents(ctx context.Context, includeAgent func(string, *rp
 // relevant to that client or agent.
 func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_WatchInterceptsServer) error {
 	ctx := managerutil.WithSessionInfo(stream.Context(), session)
-	sessionID := session.GetSessionId()
-
-	dlog.Debug(ctx, "WatchIntercepts called")
-
+	sessionID := tunnel.SessionID(session.GetSessionId())
 	var sessionDone <-chan struct{}
-	var filter func(id string, info *rpc.InterceptInfo) bool
+	var filter func(id string, info *state.Intercept) bool
 	if sessionID == "" {
-		filter = func(id string, info *rpc.InterceptInfo) bool {
+		filter = func(id string, info *state.Intercept) bool {
 			return info.Disposition != rpc.InterceptDispositionType_REMOVED && !state.IsChildIntercept(info.Spec)
 		}
 	} else {
@@ -467,10 +475,13 @@ func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_W
 		}
 
 		if agent := s.state.GetAgent(sessionID); agent != nil {
-			// sessionID refers to an agent session. Include everything for the agent, including pod-port children.
-			filter = func(id string, info *rpc.InterceptInfo) bool {
+			filter = func(id string, info *state.Intercept) bool {
 				if info.Spec.Namespace != agent.Namespace || info.Spec.Agent != agent.Name {
 					// Don't return intercepts for different agents.
+					return false
+				}
+				if as := s.state.GetAgent(sessionID); as == nil {
+					dlog.Debugf(ctx, "Session no longer active")
 					return false
 				}
 				// Don't return intercepts that aren't in a "agent-owned" state.
@@ -479,21 +490,18 @@ func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_W
 					rpc.InterceptDispositionType_ACTIVE,
 					rpc.InterceptDispositionType_AGENT_ERROR:
 					// agent-owned state: include the intercept
-					dlog.Debugf(ctx, "Intercept %s.%s valid. Disposition: %s", info.Spec.Agent, info.Spec.Namespace, info.Disposition)
 					return true
 				case rpc.InterceptDispositionType_REMOVED:
-					dlog.Debugf(ctx, "Intercept %s.%s valid but removed", info.Spec.Agent, info.Spec.Namespace)
 					return true
 				default:
 					// otherwise: don't return this intercept
-					dlog.Debugf(ctx, "Intercept %s.%s is not in agent-owned state. Disposition: %s", info.Spec.Agent, info.Spec.Namespace, info.Disposition)
 					return false
 				}
 			}
 		} else {
 			// sessionID refers to a client session.
-			filter = func(id string, info *rpc.InterceptInfo) bool {
-				return info.ClientSession.SessionId == sessionID &&
+			filter = func(id string, info *state.Intercept) bool {
+				return info.ClientSession.SessionId == string(sessionID) &&
 					info.Disposition != rpc.InterceptDispositionType_REMOVED &&
 					!state.IsChildIntercept(info.Spec)
 			}
@@ -505,13 +513,13 @@ func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_W
 		select {
 		case snapshot, ok := <-snapshotCh:
 			if !ok {
-				dlog.Debugf(ctx, "WatchIntercepts request cancelled")
+				dlog.Debugf(ctx, "Request cancelled")
 				return nil
 			}
-			dlog.Debugf(ctx, "WatchIntercepts sending update")
-			intercepts := make([]*rpc.InterceptInfo, 0, len(snapshot.State))
-			for _, intercept := range snapshot.State {
-				intercepts = append(intercepts, intercept)
+			dlog.Tracef(ctx, "Sending update")
+			intercepts := make([]*rpc.InterceptInfo, 0, len(snapshot))
+			for _, intercept := range snapshot {
+				intercepts = append(intercepts, intercept.InterceptInfo)
 			}
 			resp := &rpc.InterceptInfoSnapshot{
 				Intercepts: intercepts,
@@ -520,28 +528,22 @@ func (s *service) WatchIntercepts(session *rpc.SessionInfo, stream rpc.Manager_W
 				return intercepts[i].Id < intercepts[j].Id
 			})
 			if err := stream.Send(resp); err != nil {
-				dlog.Debugf(ctx, "WatchIntercepts encountered a write error: %v", err)
+				dlog.Debugf(ctx, "Encountered a write error: %v", err)
 				return err
 			}
 		case <-ctx.Done():
-			dlog.Debugf(ctx, "WatchIntercepts context cancelled")
+			dlog.Debugf(ctx, "Context cancelled")
 			return nil
 		case <-sessionDone:
-			dlog.Debugf(ctx, "WatchIntercepts session cancelled")
+			dlog.Debugf(ctx, "Session cancelled")
 			return nil
 		}
 	}
 }
 
 func (s *service) PrepareIntercept(ctx context.Context, request *rpc.CreateInterceptRequest) (pi *rpc.PreparedIntercept, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = derror.PanicToError(r)
-			dlog.Errorf(ctx, "%+v", err)
-		}
-	}()
 	ctx = managerutil.WithSessionInfo(ctx, request.Session)
-	dlog.Debugf(ctx, "PrepareIntercept %s called", request.InterceptSpec.Name)
+	dlog.Debugf(ctx, "Intercept name %s", request.InterceptSpec.Name)
 	return s.state.PrepareIntercept(ctx, request)
 }
 
@@ -550,20 +552,10 @@ func (s *service) GetKnownWorkloadKinds(ctx context.Context, request *rpc.Sessio
 		return nil, err
 	}
 	ctx = managerutil.WithSessionInfo(ctx, request)
-	dlog.Debugf(ctx, "GetKnownWorkloadKinds called")
 	enabledWorkloadKinds := managerutil.GetEnv(ctx).EnabledWorkloadKinds
 	kinds := make([]rpc.WorkloadInfo_Kind, len(enabledWorkloadKinds))
 	for i, wlKind := range enabledWorkloadKinds {
-		switch wlKind {
-		case workload.DeploymentKind:
-			kinds[i] = rpc.WorkloadInfo_DEPLOYMENT
-		case workload.ReplicaSetKind:
-			kinds[i] = rpc.WorkloadInfo_REPLICASET
-		case workload.StatefulSetKind:
-			kinds[i] = rpc.WorkloadInfo_STATEFULSET
-		case workload.RolloutKind:
-			kinds[i] = rpc.WorkloadInfo_ROLLOUT
-		}
+		kinds[i] = workload.RpcKind(wlKind)
 	}
 	return &rpc.KnownWorkloadKinds{Kinds: kinds}, nil
 }
@@ -571,8 +563,7 @@ func (s *service) GetKnownWorkloadKinds(ctx context.Context, request *rpc.Sessio
 func (s *service) EnsureAgent(ctx context.Context, request *rpc.EnsureAgentRequest) (*rpc.AgentInfoSnapshot, error) {
 	session := request.GetSession()
 	ctx = managerutil.WithSessionInfo(ctx, session)
-	dlog.Debugf(ctx, "EnsureAgent called")
-	sessionID := session.GetSessionId()
+	sessionID := tunnel.SessionID(session.GetSessionId())
 	client := s.state.GetClient(sessionID)
 	if client == nil {
 		return nil, status.Errorf(codes.NotFound, "Client session %q not found", sessionID)
@@ -584,37 +575,26 @@ func (s *service) EnsureAgent(ctx context.Context, request *rpc.EnsureAgentReque
 	if len(as) == 0 {
 		return nil, status.Errorf(codes.Internal, "failed to ensure agent for workload %s: no agents became active", request.Name)
 	}
-	return &rpc.AgentInfoSnapshot{Agents: as}, nil
+	rpcAs := make([]*rpc.AgentInfo, len(as))
+	for i, a := range as {
+		rpcAs[i] = a.AgentInfo
+	}
+	return &rpc.AgentInfoSnapshot{Agents: rpcAs}, nil
 }
 
 // CreateIntercept lets a client create an intercept.
 func (s *service) CreateIntercept(ctx context.Context, ciReq *rpc.CreateInterceptRequest) (*rpc.InterceptInfo, error) {
 	ctx = managerutil.WithSessionInfo(ctx, ciReq.GetSession())
 	spec := ciReq.InterceptSpec
-	dlog.Debugf(ctx, "CreateIntercept %s called", ciReq.InterceptSpec.Name)
+	dlog.Debugf(ctx, "Intercept name %s", ciReq.InterceptSpec.Name)
 
 	if val := validateIntercept(spec); val != "" {
 		return nil, status.Error(codes.InvalidArgument, val)
 	}
 
-	if ciReq.InterceptSpec.Replace {
-		_, err := s.state.PrepareIntercept(ctx, ciReq)
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	client, interceptInfo, err := s.state.AddIntercept(ctx, ciReq)
 	if err != nil {
 		return nil, err
-	}
-
-	if ciReq.InterceptSpec.Replace {
-		err = s.state.AddInterceptFinalizer(interceptInfo.Id, s.state.RestoreAppContainer)
-		if err != nil {
-			// The intercept's been created but we can't finalize it...
-			dlog.Errorf(ctx, "Failed to add finalizer for %s: %v", interceptInfo.Id, err)
-		}
 	}
 
 	SetGauge(s.state.GetInterceptActiveStatus(), client.Name, client.InstallId, &spec.Name, 1)
@@ -635,7 +615,7 @@ func (s *service) MakeInterceptID(_ context.Context, sessionID string, name stri
 	if sessionID == "" {
 		return name, nil
 	} else {
-		if s.state.GetClient(sessionID) == nil {
+		if s.state.GetClient(tunnel.SessionID(sessionID)) == nil {
 			return "", status.Errorf(codes.NotFound, "Client session %q not found", sessionID)
 		}
 		return sessionID + ":" + name, nil
@@ -649,10 +629,10 @@ func (s *service) UpdateIntercept(context.Context, *rpc.UpdateInterceptRequest) 
 // RemoveIntercept lets a client remove an intercept.
 func (s *service) RemoveIntercept(ctx context.Context, riReq *rpc.RemoveInterceptRequest2) (*empty.Empty, error) {
 	ctx = managerutil.WithSessionInfo(ctx, riReq.GetSession())
-	sessionID := riReq.GetSession().GetSessionId()
+	sessionID := tunnel.SessionID(riReq.GetSession().GetSessionId())
 	name := riReq.Name
 
-	dlog.Debugf(ctx, "RemoveIntercept called: %s", name)
+	dlog.Debugf(ctx, "Intercept name %s", name)
 
 	client := s.state.GetClient(sessionID)
 	if client == nil {
@@ -661,7 +641,7 @@ func (s *service) RemoveIntercept(ctx context.Context, riReq *rpc.RemoveIntercep
 
 	SetGauge(s.state.GetInterceptActiveStatus(), client.Name, client.InstallId, &name, 0)
 
-	s.state.RemoveIntercept(ctx, sessionID+":"+name)
+	s.state.RemoveIntercept(ctx, string(sessionID)+":"+name)
 	return &empty.Empty{}, nil
 }
 
@@ -672,7 +652,7 @@ func (s *service) GetIntercept(ctx context.Context, request *rpc.GetInterceptReq
 		return nil, err
 	}
 	if intercept, ok := s.state.GetIntercept(interceptID); ok {
-		return intercept, nil
+		return intercept.InterceptInfo, nil
 	} else {
 		return nil, status.Errorf(codes.NotFound, "Intercept named %q not found", request.Name)
 	}
@@ -681,29 +661,29 @@ func (s *service) GetIntercept(ctx context.Context, request *rpc.GetInterceptReq
 // ReviewIntercept lets an agent approve or reject an intercept.
 func (s *service) ReviewIntercept(ctx context.Context, rIReq *rpc.ReviewInterceptRequest) (*empty.Empty, error) {
 	ctx = managerutil.WithSessionInfo(ctx, rIReq.GetSession())
-	sessionID := rIReq.GetSession().GetSessionId()
+	sessionID := tunnel.SessionID(rIReq.GetSession().GetSessionId())
 	ceptID := rIReq.Id
 
-	if rIReq.Disposition == rpc.InterceptDispositionType_AGENT_ERROR {
-		dlog.Errorf(ctx, "ReviewIntercept called: %s - %s: %s", ceptID, rIReq.Disposition, rIReq.Message)
-	} else {
-		dlog.Debugf(ctx, "ReviewIntercept called: %s - %s", ceptID, rIReq.Disposition)
-	}
-
-	agent := s.state.GetActiveAgent(sessionID)
+	agent := s.state.GetAgent(sessionID)
 	if agent == nil {
 		return &empty.Empty{}, nil
 	}
 
+	if rIReq.Disposition == rpc.InterceptDispositionType_AGENT_ERROR {
+		dlog.Errorf(ctx, "%s - %s: %s", ceptID, rIReq.Disposition, rIReq.Message)
+	} else {
+		dlog.Debugf(ctx, "%s - %s", ceptID, rIReq.Disposition)
+	}
+
 	s.removeExcludedEnvVars(rIReq.Environment)
 
-	intercept := s.state.UpdateIntercept(ceptID, func(intercept *rpc.InterceptInfo) {
+	intercept := s.state.UpdateIntercept(ceptID, func(intercept *state.Intercept) {
 		// Sanity check: The reviewing agent must be an agent for the intercept.
 		if intercept.Spec.Namespace != agent.Namespace || intercept.Spec.Agent != agent.Name {
 			return
 		}
-		if mutator.GetMap(ctx).IsBlacklisted(agent.PodName, agent.Namespace) {
-			dlog.Debugf(ctx, "Pod %s.%s is blacklisted", agent.PodName, agent.Namespace)
+		if mutator.GetMap(ctx).IsInactive(types.UID(agent.PodUid)) {
+			dlog.Debugf(ctx, "Pod %s(%s) is blacklisted", agent.PodName, agent.PodIp)
 			return
 		}
 
@@ -739,24 +719,24 @@ func (s *service) removeExcludedEnvVars(envVars map[string]string) {
 
 func (s *service) Tunnel(server rpc.Manager_TunnelServer) error {
 	ctx := server.Context()
-	stream, err := tunnel.NewServerStream(ctx, server)
+	stream, err := tunnel.NewServerStream(ctx, tunnel.ClientToManager, server)
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "failed to connect stream: %v", err)
+	}
+	if a := s.state.GetAgent(stream.SessionID()); a != nil {
+		// This is actually an AgentToManager tunnel.
+		stream.SetTag(tunnel.AgentToManager)
 	}
 	return s.state.Tunnel(ctx, stream)
 }
 
 func (s *service) WatchDial(session *rpc.SessionInfo, stream rpc.Manager_WatchDialServer) error {
 	ctx := managerutil.WithSessionInfo(stream.Context(), session)
-	dlog.Debugf(ctx, "WatchDial called")
-	lrCh := s.state.WatchDial(session.SessionId)
+	lrCh := s.state.WatchDial(tunnel.SessionID(session.SessionId))
 	for {
 		select {
 		// connection broken
 		case <-ctx.Done():
-			return nil
-		// service stopped
-		case <-s.ctx.Done():
 			return nil
 		case lr := <-lrCh:
 			if lr == nil {
@@ -805,25 +785,101 @@ func hasDomainSuffix(name, suffix string) bool {
 	return name[sfp-1] == '.' && name[sfp:] == suffix
 }
 
-func (s *service) LookupDNS(ctx context.Context, request *rpc.DNSRequest) (*rpc.DNSResponse, error) {
+func (s *service) resolveSelfDNS(svcIP net.IP, request *rpc.DNSRequest) (rrs dnsproxy.RRs) {
+	qType := uint16(request.Type)
+	switch qType {
+	case dns2.TypeA:
+		rrs = dnsproxy.RRs{&dns2.A{
+			Hdr: dns2.RR_Header{
+				Name:   request.Name,
+				Rrtype: qType,
+				Class:  dns2.ClassINET,
+			},
+			A: svcIP.To4(),
+		}}
+	case dns2.TypeAAAA:
+		var ip net.IP
+		if svcIP.To4() == nil {
+			ip = svcIP.To16()
+		}
+		rrs = dnsproxy.RRs{&dns2.AAAA{
+			Hdr: dns2.RR_Header{
+				Name:   request.Name,
+				Rrtype: qType,
+				Class:  dns2.ClassINET,
+			},
+			AAAA: ip,
+		}}
+	case dns2.TypeCNAME:
+		rrs = dnsproxy.RRs{&dns2.CNAME{
+			Hdr: dns2.RR_Header{
+				Name:   request.Name,
+				Rrtype: qType,
+				Class:  dns2.ClassINET,
+			},
+			Target: s.serviceNameFQN,
+		}}
+	}
+	return rrs
+}
+
+func (s *service) LookupDNS(ctx context.Context, request *rpc.DNSRequest) (response *rpc.DNSResponse, err error) {
 	ctx = managerutil.WithSessionInfo(ctx, request.GetSession())
 	qType := uint16(request.Type)
 	qtn := dns2.TypeToString[qType]
-	dlog.Debugf(ctx, "LookupDNS %s %s", request.Name, qtn)
+	var rrs dnsproxy.RRs
+	if dlog.MaxLogLevel(ctx) >= dlog.LogLevelDebug {
+		defer func() {
+			var result string
+			switch {
+			case err != nil:
+				result = err.Error()
+			case len(rrs) == 0:
+				result = dns2.RcodeToString[int(response.RCode)]
+			default:
+				result = rrs.String()
+			}
+			dlog.Debugf(ctx, "LookupDNS: %s %s -> %s", request.Name, qtn, result)
+		}()
+	}
 
-	rrs, rCode, err := s.state.AgentsLookupDNS(ctx, request.GetSession().GetSessionId(), request)
-	if err != nil {
-		dlog.Errorf(ctx, "AgentsLookupDNS %s %s: %v", request.Name, qtn, err)
-	} else if rCode != state.RcodeNoAgents {
-		if len(rrs) == 0 {
-			dlog.Debugf(ctx, "LookupDNS on agents: %s %s -> %s", request.Name, qtn, dns2.RcodeToString[rCode])
-		} else {
-			dlog.Debugf(ctx, "LookupDNS on agents: %s %s -> %s", request.Name, qtn, rrs)
+	if svcIP := s.clusterInfo.ServiceIP(); svcIP != nil && (request.Name == s.serviceNameNs || request.Name == s.serviceNameFQN) {
+		rrs = s.resolveSelfDNS(svcIP, request)
+		if len(rrs) > 0 {
+			return dnsproxy.ToRPC(rrs, dns2.RcodeSuccess)
 		}
 	}
+
+	sessionID := tunnel.SessionID(request.GetSession().GetSessionId())
+	tmNamespace := managerutil.GetEnv(ctx).ManagerNamespace
+	noSearchDomain := s.dotClusterDomain
+	var rCode int
+	switch {
+	case request.Name == "tel2-recursion-check.kube-system.":
+		rCode = state.RcodeNoAgents
+		noSearchDomain = ".kube-system."
+	case hasDomainSuffix(request.Name, tmNamespace):
+		// It's enough to propagate this one to the traffic-manager
+		noSearchDomain = tmNamespace + "."
+		rCode = state.RcodeNoAgents
+	case strings.HasSuffix(request.Name, s.dotClusterDomain):
+		// It's enough to propagate this one to the traffic-manager
+		rCode = state.RcodeNoAgents
+	default:
+		rrs, rCode, err = s.state.AgentsLookupDNS(ctx, sessionID, request)
+		if err != nil {
+			dlog.Errorf(ctx, "AgentsLookupDNS %s %s: %v", request.Name, qtn, err)
+		} else if rCode != state.RcodeNoAgents {
+			if len(rrs) == 0 {
+				dlog.Tracef(ctx, "LookupDNS on agents: %s %s -> %s", request.Name, qtn, dns2.RcodeToString[rCode])
+			} else {
+				dlog.Tracef(ctx, "LookupDNS on agents: %s %s -> %s", request.Name, qtn, rrs)
+			}
+		}
+	}
+
 	if rCode == state.RcodeNoAgents {
-		tmNamespace := managerutil.GetEnv(ctx).ManagerNamespace
-		client := s.state.GetClient(request.GetSession().GetSessionId())
+		client := s.state.GetClient(sessionID)
 		name := request.Name
 		restoreName := false
 		nDots := 0
@@ -834,35 +890,36 @@ func (s *service) LookupDNS(ctx context.Context, request *rpc.DNSRequest) (*rpc.
 				}
 			}
 			if nDots == 1 && client.Namespace != tmNamespace {
-				name += client.Namespace + "."
+				noSearchDomain = client.Namespace + "."
+				name += noSearchDomain
 				restoreName = true
 			}
 		}
-		dlog.Debugf(ctx, "LookupDNS on traffic-manager: %s", name)
-		rrs, rCode, err = dnsproxy.Lookup(ctx, qType, name)
+		dlog.Tracef(ctx, "LookupDNS on traffic-manager: %s", name)
+		rrs, rCode, err = dnsproxy.Lookup(ctx, qType, name, noSearchDomain)
 		if err != nil {
 			// Could still be x.y.<client namespace>, but let's avoid x.<cluster domain>.<client namespace> and x.<client-namespace>.<client namespace>
-			if client != nil && nDots > 1 && client.Namespace != tmNamespace && !hasDomainSuffix(name, s.ClusterInfo().ClusterDomain()) && !hasDomainSuffix(name, client.Namespace) {
+			if client != nil && nDots > 1 && client.Namespace != tmNamespace && !strings.HasSuffix(name, s.dotClusterDomain) && !hasDomainSuffix(name, client.Namespace) {
 				name += client.Namespace + "."
 				restoreName = true
 				dlog.Debugf(ctx, "LookupDNS on traffic-manager: %s", name)
-				rrs, rCode, err = dnsproxy.Lookup(ctx, qType, name)
+				rrs, rCode, err = dnsproxy.Lookup(ctx, qType, name, noSearchDomain)
 			}
 			if err != nil {
-				dlog.Debugf(ctx, "LookupDNS on traffic-manager: %s %s -> %s %s", request.Name, qtn, dns2.RcodeToString[rCode], err)
+				dlog.Tracef(ctx, "LookupDNS on traffic-manager: %s %s -> %s %s", request.Name, qtn, dns2.RcodeToString[rCode], err)
 				return nil, err
 			}
 		}
 		if len(rrs) == 0 {
-			dlog.Debugf(ctx, "LookupDNS on traffic-manager: %s %s -> %s", request.Name, qtn, dns2.RcodeToString[rCode])
+			dlog.Tracef(ctx, "LookupDNS on traffic-manager: %s %s -> %s", request.Name, qtn, dns2.RcodeToString[rCode])
 		} else {
 			if restoreName {
-				dlog.Debugf(ctx, "LookupDNS on traffic-manager: restore %s to %s", name, request.Name)
+				dlog.Tracef(ctx, "LookupDNS on traffic-manager: restore %s to %s", name, request.Name)
 				for _, rr := range rrs {
 					rr.Header().Name = request.Name
 				}
 			}
-			dlog.Debugf(ctx, "LookupDNS on traffic-manager: %s %s -> %s", request.Name, qtn, rrs)
+			dlog.Tracef(ctx, "LookupDNS on traffic-manager: %s %s -> %s", request.Name, qtn, rrs)
 		}
 	}
 	return dnsproxy.ToRPC(rrs, rCode)
@@ -870,18 +927,17 @@ func (s *service) LookupDNS(ctx context.Context, request *rpc.DNSRequest) (*rpc.
 
 func (s *service) AgentLookupDNSResponse(ctx context.Context, response *rpc.DNSAgentResponse) (*empty.Empty, error) {
 	ctx = managerutil.WithSessionInfo(ctx, response.GetSession())
-	dlog.Debugf(ctx, "AgentLookupDNSResponse called %s", response.Request.Name)
+	dlog.Debugf(ctx, "name: %s", response.Request.Name)
 	s.state.PostLookupDNSResponse(ctx, response)
 	return &empty.Empty{}, nil
 }
 
 func (s *service) WatchLookupDNS(session *rpc.SessionInfo, stream rpc.Manager_WatchLookupDNSServer) error {
 	ctx := managerutil.WithSessionInfo(stream.Context(), session)
-	dlog.Debugf(ctx, "WatchLookupDNS called")
-	rqCh := s.state.WatchLookupDNS(session.SessionId)
+	rqCh := s.state.WatchLookupDNS(tunnel.SessionID(session.SessionId))
 	for {
 		select {
-		case <-s.ctx.Done():
+		case <-ctx.Done():
 			return nil
 		case rq := <-rqCh:
 			if rq == nil {
@@ -911,14 +967,18 @@ func (s *service) SetLogLevel(ctx context.Context, request *rpc.LogLevelRequest)
 	return &empty.Empty{}, nil
 }
 
+func (s *service) UninstallAgents(ctx context.Context, request *rpc.UninstallAgentsRequest) (*empty.Empty, error) {
+	ctx = managerutil.WithSessionInfo(ctx, request.GetSessionInfo())
+	dlog.Debugf(ctx, "%s", request.Agents)
+	return &empty.Empty{}, s.state.UninstallAgents(ctx, request)
+}
+
 func (s *service) WatchLogLevel(_ *empty.Empty, stream rpc.Manager_WatchLogLevelServer) error {
-	dlog.Debugf(stream.Context(), "WatchLogLevel called")
 	return s.state.WaitForTempLogLevel(stream)
 }
 
 func (s *service) WatchClusterInfo(session *rpc.SessionInfo, stream rpc.Manager_WatchClusterInfoServer) error {
 	ctx := managerutil.WithSessionInfo(stream.Context(), session)
-	dlog.Debugf(ctx, "WatchClusterInfo called")
 	return s.clusterInfo.Watch(ctx, stream)
 }
 
@@ -935,14 +995,13 @@ func (s *service) WatchWorkloads(request *rpc.WorkloadEventsRequest, stream rpc.
 			dlog.Errorf(ctx, "WatchWorkloads panic: %+v", err)
 			err = status.Error(codes.Internal, err.Error())
 		}
-		dlog.Debugf(ctx, "WatchWorkloads ended")
 	}()
-	dlog.Debugf(ctx, "WatchWorkloads called")
+	dlog.Debugf(ctx, "Namespace %q", request.Namespace)
 
 	if request.SessionInfo == nil {
 		return status.Error(codes.InvalidArgument, "SessionInfo is required")
 	}
-	clientSession := request.SessionInfo.SessionId
+	clientSession := tunnel.SessionID(request.SessionInfo.SessionId)
 	namespace := request.Namespace
 	if namespace == "" {
 		clientInfo := s.state.GetClient(clientSession)

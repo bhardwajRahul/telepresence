@@ -19,6 +19,7 @@ import (
 
 type Interceptor interface {
 	io.Closer
+	Tag() tunnel.Tag
 	InterceptId() string
 	InterceptInfo() *restapi.InterceptInfo
 	Serve(context.Context, chan<- netip.AddrPort) error
@@ -36,6 +37,7 @@ type interceptor struct {
 
 	tCtx           context.Context
 	tCancel        context.CancelFunc
+	tag            tunnel.Tag
 	targetHost     string
 	targetPort     uint16
 	streamProvider tunnel.ClientStreamProvider
@@ -43,12 +45,12 @@ type interceptor struct {
 	intercept *manager.InterceptInfo
 }
 
-func NewInterceptor(from agentconfig.PortAndProto, targetHost string, targetPort uint16) Interceptor {
+func NewInterceptor(from agentconfig.PortAndProto, tag tunnel.Tag, targetHost string, targetPort uint16) Interceptor {
 	switch from.Proto {
 	case core.ProtocolTCP:
-		return newTCP(from.Port, targetHost, targetPort)
+		return newTCP(from.Port, tag, targetHost, targetPort)
 	case core.ProtocolUDP:
-		return newUDP(from.Port, targetHost, targetPort)
+		return newUDP(from.Port, tag, targetHost, targetPort)
 	default:
 		panic(fmt.Errorf("unsupported protocol %s", from.Proto))
 	}
@@ -124,4 +126,8 @@ func (f *interceptor) SetIntercepting(intercept *manager.InterceptInfo) {
 	// Set up new target and lifetime
 	f.tCtx, f.tCancel = context.WithCancel(f.lCtx)
 	f.intercept = intercept
+}
+
+func (f *interceptor) Tag() tunnel.Tag {
+	return f.tag
 }

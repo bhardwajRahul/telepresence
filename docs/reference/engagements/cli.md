@@ -1,27 +1,27 @@
 ---
-title: Configure intercept using CLI
+title: Configure workload engagements using CLI
 ---
 
-# Configuring intercept using CLI
+# Configuring workload engagements using CLI
 
-## Specifying a namespace for an intercept
+## Specifying a namespace for an engagement
 
-The namespace of the intercepted workload is specified during connect using the `--namespace` option.
+The namespace of the engaged workload is specified during connect using the `--namespace` option.
 
 ```shell
 telepresence connect --namespace myns
-telepresence intercept hello --port 9000
+telepresence replace/ingest/intercept hello
 ```
 
 ## Importing environment variables
 
 Telepresence can import the environment variables from the pod that is
-being intercepted, see [this doc](../environment.md) for more details.
+being engaged, see [this doc](../environment.md) for more details.
 
 ## Creating an intercept
 
 The following command will intercept all traffic bound to the service and proxy it to your
-laptop. This includes traffic coming through your ingress controller,  so use this option
+laptop. This includes traffic coming through your ingress controller, so use this option
 carefully as to not disrupt production environments.
 
 ```shell
@@ -292,7 +292,7 @@ port, optionally suffixed with `/TCP` or `/UDP`
 
    ```console
    $ telepresence list
-   echo-no-svc: ready to intercept (traffic-agent not yet installed)
+   deployment echo-no-svc: ready to engage (traffic-agent not yet installed)
    ```
 
 4. Start an intercept handler locally that will receive the incoming traffic. Here's an example using a simple python http service:

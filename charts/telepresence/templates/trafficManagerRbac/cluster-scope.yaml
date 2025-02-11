@@ -25,41 +25,27 @@ rules:
   - ""
   resources:
   - nodes
-  - pods
   - services
   - namespaces
+  - pods
   verbs:
   - list
   - get
   - watch
 - apiGroups:
   - ""
-  resources:
-  - pods/log
-  verbs:
-  - get
 {{- if .agentInjector.enabled }}
-- apiGroups:
-  - ""
   resources:
-  - configmaps
+  - pods/eviction
   verbs:
   - create
 {{- end }}
 - apiGroups:
   - ""
   resources:
-  - configmaps
+  - pods/log
   verbs:
-  - list
   - get
-  - watch
-{{- if .agentInjector.enabled }}
-  - update
-  - delete
-{{- end }}
-  resourceNames:
-  - telepresence-agents
 - apiGroups:
   - "apps"
   resources:
@@ -70,9 +56,6 @@ rules:
   - get
   - list
   - watch
-{{- if .agentInjector.enabled }}
-  - patch
-{{- end }}
 {{- if .workloads.argoRollouts.enabled }}
 - apiGroups:
   - "argoproj.io"
@@ -82,9 +65,6 @@ rules:
   - get
   - list
   - watch
-{{- if .agentInjector.enabled }}
-  - patch
-{{- end }}
 {{- end }}
 - apiGroups:
     - "events.k8s.io"

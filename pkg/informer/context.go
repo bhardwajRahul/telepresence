@@ -21,9 +21,14 @@ func getOpts(ns string) (k8sOpts []informers.SharedInformerOption, argoOpts []ar
 	return k8sOpts, argoOpts
 }
 
-func WithFactory(ctx context.Context, _ string) context.Context {
+func WithFactory(ctx context.Context, ns string) context.Context {
 	if _, ok := ctx.Value(factoryKey{}).(*xsync.MapOf[string, GlobalFactory]); !ok {
 		ctx = context.WithValue(ctx, factoryKey{}, xsync.NewMapOf[string, GlobalFactory]())
+		if ns == "" {
+			// The cluster wide informer must be created when it is requested as the initial informer because it will act as a
+			// proxy for all other requested informers.
+			GetFactory(ctx, ns)
+		}
 	}
 	return ctx
 }
@@ -34,6 +39,12 @@ func GetFactory(ctx context.Context, ns string) GlobalFactory {
 		return nil
 	}
 	gf, _ := fm.LoadOrCompute(ns, func() GlobalFactory {
+		if ns != "" {
+			// Return the cluster wide factory if one exists.
+			if cw, ok := fm.Load(""); ok {
+				return cw
+			}
+		}
 		k8sOpts, argoOpts := getOpts(ns)
 		i := k8sapi.GetJoinedClientSetInterface(ctx)
 		k8sFactory := informers.NewSharedInformerFactoryWithOptions(i, 0, k8sOpts...)

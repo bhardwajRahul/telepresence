@@ -30,18 +30,16 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/datawire/dlib/dcontext"
-	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dgroup"
 	"github.com/datawire/dlib/dlog"
 	"github.com/datawire/dlib/dtime"
-	"github.com/telepresenceio/telepresence/rpc/v2/authenticator"
 	"github.com/telepresenceio/telepresence/rpc/v2/common"
 	"github.com/telepresenceio/telepresence/rpc/v2/connector"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/connector"
 	rootdRpc "github.com/telepresenceio/telepresence/rpc/v2/daemon"
 	"github.com/telepresenceio/telepresence/rpc/v2/manager"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
-	authGrpc "github.com/telepresenceio/telepresence/v2/pkg/authenticator/grpc"
+	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/authenticator/patcher"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/daemon"
@@ -166,12 +164,6 @@ func NewSession(
 	cr := cri.Request()
 	connectStart := time.Now()
 	defer func() {
-		if r := recover(); r != nil {
-			rc = ctx
-			err := derror.PanicToError(r)
-			dlog.Errorf(ctx, "%+v", err)
-			info = connectError(connector.ConnectInfo_DAEMON_FAILED, err)
-		}
 		if info.Error == connector.ConnectInfo_UNSPECIFIED {
 			scout.Report(ctx, "connect",
 				scout.Entry{
@@ -277,11 +269,7 @@ func NewSession(
 			// Root daemon needs this to authenticate with the cluster. Potential exec configurations in the kubeconfig
 			// must be executed by the user, not by root.
 			konfig, err := patcher.CreateExternalKubeConfig(ctx, config.ClientConfig, cluster.Context, func([]string) (string, string, error) {
-				s := userd.GetService(ctx)
-				if _, ok := s.Server().GetServiceInfo()[authenticator.Authenticator_ServiceDesc.ServiceName]; !ok {
-					authGrpc.RegisterAuthenticatorServer(s.Server(), config.ClientConfig)
-				}
-				return client.GetExe(ctx), s.ListenerAddress(ctx), nil
+				return client.GetExe(ctx), userd.GetService(ctx).ListenerAddress(ctx), nil
 			}, nil)
 			if err != nil {
 				return ctx, nil, connectError(rpc.ConnectInfo_DAEMON_FAILED, err)
@@ -487,8 +475,8 @@ func (s *session) Remain(ctx context.Context) error {
 func CheckTrafficManagerService(ctx context.Context, namespace string) error {
 	dlog.Debug(ctx, "checking that traffic-manager exists")
 	coreV1 := k8sapi.GetK8sInterface(ctx).CoreV1()
-	if _, err := coreV1.Services(namespace).Get(ctx, "traffic-manager", meta.GetOptions{}); err != nil {
-		msg := fmt.Sprintf("unable to get service traffic-manager in %s: %v", namespace, err)
+	if _, err := coreV1.Services(namespace).Get(ctx, agentmap.ManagerAppName, meta.GetOptions{}); err != nil {
+		msg := fmt.Sprintf("unable to get service %s in %s: %v", agentmap.ManagerAppName, namespace, err)
 		se := &k8serrors.StatusError{}
 		if errors.As(err, &se) {
 			if se.Status().Code == http.StatusNotFound {
@@ -590,6 +578,7 @@ func (s *session) ApplyConfig(ctx context.Context) error {
 
 // getInfosForWorkloads returns a list of workloads found in the given namespace that fulfils the given filter criteria.
 func (s *session) getInfosForWorkloads(
+	ctx context.Context,
 	namespaces []string,
 	iMap map[string][]*manager.InterceptInfo,
 	gMap map[string][]*rpc.IngestInfo,
@@ -611,8 +600,16 @@ func (s *session) getInfosForWorkloads(
 
 		var ok bool
 		filterMatch := rpc.ListRequest_EVERYTHING
-		if wlInfo.InterceptInfos, ok = iMap[name]; !ok {
-			filterMatch &= ^rpc.ListRequest_INTERCEPTS
+
+		filterMatch &= ^(rpc.ListRequest_REPLACEMENTS | rpc.ListRequest_INTERCEPTS)
+		if wlInfo.InterceptInfos, ok = iMap[name]; ok {
+			for _, ii := range wlInfo.InterceptInfos {
+				if ii.Spec.NoDefaultPort {
+					filterMatch |= rpc.ListRequest_REPLACEMENTS
+				} else {
+					filterMatch |= rpc.ListRequest_INTERCEPTS
+				}
+			}
 		}
 		if wlInfo.IngestInfos, ok = gMap[name]; !ok {
 			filterMatch &= ^rpc.ListRequest_INGESTS
@@ -620,6 +617,7 @@ func (s *session) getInfosForWorkloads(
 		if wlInfo.AgentVersion, ok = sMap[name]; !ok {
 			filterMatch &= ^rpc.ListRequest_INSTALLED_AGENTS
 		}
+		dlog.Debugf(ctx, "filter %d, filterMatch %d", filter, filterMatch)
 		if filter != 0 && filter&filterMatch == 0 {
 			return
 		}
@@ -652,7 +650,7 @@ func (s *session) WatchWorkloads(c context.Context, wr *rpc.WatchWorkloadsReques
 	}()
 
 	send := func() error {
-		ws, err := s.WorkloadInfoSnapshot(c, wr.Namespaces, rpc.ListRequest_EVERYTHING)
+		ws, err := s.WorkloadInfoSnapshot(c, wr.Namespaces, rpc.ListRequest_UNSPECIFIED)
 		if err != nil {
 			return err
 		}
@@ -718,16 +716,11 @@ func (s *session) WorkloadInfoSnapshot(
 
 	var nss []string
 	var sMap map[string]string
-	if filter&(rpc.ListRequest_INTERCEPTS|rpc.ListRequest_INGESTS|rpc.ListRequest_INSTALLED_AGENTS) != 0 {
-		// Special case, we don't care about namespaces in general. Instead, we use the connected namespace
-		nss = []string{s.Namespace}
-	} else {
-		nss = make([]string, 0, len(namespaces))
-		for _, ns := range namespaces {
-			ns = s.ActualNamespace(ns)
-			if ns != "" {
-				nss = append(nss, ns)
-			}
+	nss = make([]string, 0, len(namespaces))
+	for _, ns := range namespaces {
+		ns = s.ActualNamespace(ns)
+		if ns != "" {
+			nss = append(nss, ns)
 		}
 	}
 	if len(nss) == 0 {
@@ -759,7 +752,7 @@ nextIs:
 		return true
 	})
 
-	workloadInfos := s.getInfosForWorkloads(nss, iMap, gMap, sMap, filter)
+	workloadInfos := s.getInfosForWorkloads(ctx, nss, iMap, gMap, sMap, filter)
 	return &rpc.WorkloadInfoSnapshot{Workloads: workloadInfos}, nil
 }
 
@@ -895,6 +888,19 @@ func (s *session) status(c context.Context, initial bool) *rpc.ConnectInfo {
 //
 // Uninstalling all or specific agents require that the client can get and update the agents ConfigMap.
 func (s *session) Uninstall(ctx context.Context, ur *rpc.UninstallRequest) (*common.Result, error) {
+	_, err := s.managerClient.UninstallAgents(ctx, &manager.UninstallAgentsRequest{
+		SessionInfo: s.sessionInfo,
+		Agents:      ur.Agents,
+	})
+	if err != nil {
+		if status.Code(err) == codes.Unimplemented {
+			return s.legacyUninstall(ctx, ur)
+		}
+	}
+	return errcat.ToResult(err), nil
+}
+
+func (s *session) legacyUninstall(ctx context.Context, ur *rpc.UninstallRequest) (*common.Result, error) {
 	api := k8sapi.GetK8sInterface(ctx).CoreV1()
 	loadAgentConfigMap := func(ns string) (*core.ConfigMap, error) {
 		cm, err := api.ConfigMaps(ns).Get(ctx, agentconfig.ConfigMap, meta.GetOptions{})
@@ -1090,21 +1096,6 @@ func (s *session) eachWorkload(namespaces []string, do func(kind manager.Workloa
 	s.workloadsLock.Unlock()
 }
 
-func rpcKind(s string) manager.WorkloadInfo_Kind {
-	switch strings.ToLower(s) {
-	case "deployment":
-		return manager.WorkloadInfo_DEPLOYMENT
-	case "replicaset":
-		return manager.WorkloadInfo_REPLICASET
-	case "statefulset":
-		return manager.WorkloadInfo_STATEFULSET
-	case "rollout":
-		return manager.WorkloadInfo_ROLLOUT
-	default:
-		return manager.WorkloadInfo_UNSPECIFIED
-	}
-}
-
 func (s *session) localWorkloadsWatcher(ctx context.Context, namespace string, synced *sync.WaitGroup) error {
 	defer func() {
 		if synced != nil {
@@ -1133,20 +1124,20 @@ func (s *session) localWorkloadsWatcher(ctx context.Context, namespace string, s
 		fc = informer.GetFactory(ctx, namespace)
 	}
 
-	enabledWorkloadKinds := make([]workload.Kind, len(knownWorkloadKinds.Kinds))
+	enabledWorkloadKinds := make(k8sapi.Kinds, len(knownWorkloadKinds.Kinds))
 	for i, kind := range knownWorkloadKinds.Kinds {
 		switch kind {
 		case manager.WorkloadInfo_DEPLOYMENT:
-			enabledWorkloadKinds[i] = workload.DeploymentKind
+			enabledWorkloadKinds[i] = k8sapi.DeploymentKind
 			workload.StartDeployments(ctx, namespace)
 		case manager.WorkloadInfo_REPLICASET:
-			enabledWorkloadKinds[i] = workload.ReplicaSetKind
+			enabledWorkloadKinds[i] = k8sapi.ReplicaSetKind
 			workload.StartReplicaSets(ctx, namespace)
 		case manager.WorkloadInfo_STATEFULSET:
-			enabledWorkloadKinds[i] = workload.StatefulSetKind
+			enabledWorkloadKinds[i] = k8sapi.StatefulSetKind
 			workload.StartStatefulSets(ctx, namespace)
 		case manager.WorkloadInfo_ROLLOUT:
-			enabledWorkloadKinds[i] = workload.RolloutKind
+			enabledWorkloadKinds[i] = k8sapi.RolloutKind
 			workload.StartRollouts(ctx, namespace)
 			af := fc.GetArgoRolloutsInformerFactory()
 			af.Start(ctx.Done())
@@ -1179,7 +1170,7 @@ func (s *session) localWorkloadsWatcher(ctx context.Context, namespace string, s
 			}
 			for _, we := range wls {
 				w := we.Workload
-				key := workloadInfoKey{kind: rpcKind(w.GetKind()), name: w.GetName()}
+				key := workloadInfoKey{kind: workload.RpcKind(w.GetKind()), name: w.GetName()}
 				if we.Type == workload.EventTypeDelete {
 					delete(workloads, key)
 				} else {
@@ -1245,10 +1236,11 @@ func (s *session) workloadsWatcher(ctx context.Context, namespace string, synced
 						clients[i] = ic.Client
 					}
 				}
-				dlog.Debugf(ctx, "Adding workload %s/%s.%s", key.kind, key.name, namespace)
+				state := workload.StateFromRPC(w.State)
+				dlog.Debugf(ctx, "Adding workload %s/%s.%s %s %s %s", key.kind, key.name, namespace, state, w.AgentState, clients)
 				workloads[key] = workloadInfo{
 					uid:              types.UID(w.Uid),
-					state:            workload.StateFromRPC(w.State),
+					state:            state,
 					agentState:       w.AgentState,
 					interceptClients: clients,
 				}

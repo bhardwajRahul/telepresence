@@ -34,7 +34,7 @@ func leave() *cobra.Command {
 			if err := connect.InitCommand(cmd); err != nil {
 				return err
 			}
-			return removeIngestOrIntercept(cmd.Context(), strings.TrimSpace(args[0]), containerName)
+			return disengage(cmd.Context(), strings.TrimSpace(args[0]), containerName)
 		},
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 			shellCompDir := cobra.ShellCompDirectiveNoFileComp
@@ -46,7 +46,9 @@ func leave() *cobra.Command {
 			}
 			ctx := cmd.Context()
 			userD := daemon.GetUserClient(ctx)
-			resp, err := userD.List(ctx, &connector.ListRequest{Filter: connector.ListRequest_INTERCEPTS | connector.ListRequest_INGESTS})
+			resp, err := userD.List(ctx, &connector.ListRequest{
+				Filter: connector.ListRequest_INTERCEPTS | connector.ListRequest_REPLACEMENTS | connector.ListRequest_INGESTS,
+			})
 			if err != nil {
 				return nil, shellCompDir | cobra.ShellCompDirectiveError
 			}
@@ -72,22 +74,24 @@ func leave() *cobra.Command {
 			return completions, shellCompDir
 		},
 	}
-	cmd.Flags().StringVarP(&containerName, "container", "c", "", "Container name (only relevant for ingest)")
+	cmd.Flags().StringVarP(&containerName, "container", "c", "", "Container name")
 	return cmd
 }
 
-func removeIngestOrIntercept(ctx context.Context, name, container string) error {
+func disengage(ctx context.Context, name, container string) error {
 	userD := daemon.GetUserClient(ctx)
 
 	var ic *manager.InterceptInfo
 	var ig *connector.IngestInfo
 	var env map[string]string
 	var err error
-	if container == "" {
-		ic, err = userD.GetIntercept(ctx, &manager.GetInterceptRequest{Name: name})
-		if err != nil && status.Code(err) != codes.NotFound {
-			return err
-		}
+	icName := name
+	if container != "" {
+		icName += "/" + container
+	}
+	ic, err = userD.GetIntercept(ctx, &manager.GetInterceptRequest{Name: icName})
+	if err != nil && status.Code(err) != codes.NotFound {
+		return err
 	}
 
 	if ic == nil {
@@ -99,8 +103,13 @@ func removeIngestOrIntercept(ctx context.Context, name, container string) error 
 			if status.Code(err) != codes.NotFound {
 				return err
 			}
-			// User probably misspelled the name of the intercept/ingest
-			return errcat.User.Newf("Intercept or ingest named %q not found", name)
+
+			// User probably misspelled the name of the replace/intercept/ingest
+			msg := fmt.Sprintf("Found no replace, intercept, or ingest named %q", name)
+			if container != "" {
+				msg = fmt.Sprintf("%s with container %q", msg, container)
+			}
+			return errcat.User.New(msg)
 		}
 		env = ig.Environment
 	} else {
@@ -118,7 +127,7 @@ func removeIngestOrIntercept(ctx context.Context, name, container string) error 
 	}
 
 	if ic != nil {
-		err = intercept.Result(userD.RemoveIntercept(ctx, &manager.RemoveInterceptRequest2{Name: name}))
+		err = intercept.Result(userD.RemoveIntercept(ctx, &manager.RemoveInterceptRequest2{Name: ic.Spec.Name}))
 	} else if ig != nil {
 		_, err = userD.LeaveIngest(ctx, &connector.IngestIdentifier{
 			WorkloadName:  ig.Workload,

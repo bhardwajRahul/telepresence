@@ -63,10 +63,11 @@ func (pm *ProviderMux) ReportMetrics(ctx context.Context, metrics *manager.Tunne
 	pm.AgentProvider.ReportMetrics(ctx, metrics)
 }
 
-func (pm *ProviderMux) CreateClientStream(ctx context.Context, sessionID string, id tunnel.ConnID, roundTripLatency, dialTimeout time.Duration) (tunnel.Stream, error) {
-	s, err := pm.AgentProvider.CreateClientStream(ctx, sessionID, id, roundTripLatency, dialTimeout)
+func (pm *ProviderMux) CreateClientStream(ctx context.Context, tag tunnel.Tag, sessionID tunnel.SessionID, id tunnel.ConnID, roundTripLatency, dialTimeout time.Duration,
+) (tunnel.Stream, error) {
+	s, err := pm.AgentProvider.CreateClientStream(ctx, tag, sessionID, id, roundTripLatency, dialTimeout)
 	if err == nil && s == nil {
-		s, err = pm.ManagerProvider.CreateClientStream(ctx, sessionID, id, roundTripLatency, dialTimeout)
+		s, err = pm.ManagerProvider.CreateClientStream(ctx, tag, sessionID, id, roundTripLatency, dialTimeout)
 	}
 	return s, err
 }
@@ -107,7 +108,7 @@ func (fs *fwdState) HandleIntercepts(ctx context.Context, cepts []*manager.Inter
 		fs.forwarder.SetStreamProvider(
 			&ProviderMux{
 				AgentProvider:   fs,
-				ManagerProvider: &tunnel.TrafficManagerStreamProvider{Manager: fs.ManagerClient(), AgentSessionID: fs.sessionInfo.SessionId},
+				ManagerProvider: &tunnel.TrafficManagerStreamProvider{Manager: fs.ManagerClient(), AgentSessionID: tunnel.SessionID(fs.sessionInfo.SessionId)},
 			})
 	}
 	fs.forwarder.SetIntercepting(activeIntercept)

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strconv"
 
-	v1 "k8s.io/api/core/v1"
+	core "k8s.io/api/core/v1"
 
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/rpc/v2/manager"
@@ -39,9 +39,11 @@ func NewInterceptTarget(ics []*agentconfig.Intercept) InterceptTarget {
 }
 
 func (cp InterceptTarget) MatchForSpec(spec *manager.InterceptSpec) bool {
-	for _, ic := range cp {
-		if agentconfig.SpecMatchesIntercept(spec, ic) {
-			return true
+	if cnPort := uint16(spec.ContainerPort); cnPort > 0 {
+		for _, ic := range cp {
+			if cnPort == ic.ContainerPort && ic.Protocol == core.Protocol(spec.Protocol) {
+				return true
+			}
 		}
 	}
 	return false
@@ -59,7 +61,7 @@ func (cp InterceptTarget) ContainerPortName() string {
 	return cp[0].ContainerPortName
 }
 
-func (cp InterceptTarget) Protocol() v1.Protocol {
+func (cp InterceptTarget) Protocol() core.Protocol {
 	return cp[0].Protocol
 }
 

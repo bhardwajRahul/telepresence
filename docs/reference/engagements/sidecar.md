@@ -3,16 +3,18 @@ title: Traffic Agent Sidecar
 ---
 # Traffic Agent Sidecar
 
-When intercepting a service, the Telepresence Traffic Manager ensures
-that a Traffic Agent has been injected into the intercepted workload.
+When replacing a container or intercepting a service, the Telepresence Traffic Manager ensures
+that a Traffic Agent has been injected into the targeted workload.
 The injection is triggered by a Kubernetes Mutating Webhook and will
-only happen once. The Traffic Agent is responsible for redirecting
-intercepted traffic to the developer's workstation.
+only happen once. The Traffic Agent is responsible for making the environment and volumes available
+on the developer's workstation, and also for redirecting traffic to it.
 
-The intercept will intercept all `tcp` and/or `udp` traffic to the
-intercepted service and send all of that traffic down to the developer's
-workstation. This means that an intercept will affect all users of
-the intercepted service.
+When replacing a workload container, all traffic intended for it will be rerouted to the local workstation, unless
+limited using the `--port` flag.
+
+When intercepting, all `tcp` and/or `udp` traffic to the targeted port is sent to the developer's workstation.
+
+This means that both a `replace` and an `intercept` will affect all users of the targeted workload.
 
 ## Supported workloads
 
@@ -20,8 +22,8 @@ Kubernetes has various
 [workloads](https://kubernetes.io/docs/concepts/workloads/).
 Currently, Telepresence supports installing a
 Traffic Agent container on `Deployments`, `ReplicaSets`, `StatefulSets`, and `ArgoRollouts`. A Traffic Agent is
-installed the first time a user makes a `telepresence ingest WORKLOAD`, `telepresence intercept WORKLOAD`, or a
-`telepresence connect --proxy-via CIDR=WORKLAOD`.
+installed the first time a user makes a `telepresence replace WORKLOAD`, `telepresence ingest WORKLOAD`,
+`telepresence intercept WORKLOAD`, or a `telepresence connect --proxy-via CIDR=WORKLAOD`.
 
 A Traffic Agent may also be installed up front by adding a `telepresence.getambassador.io/inject-traffic-agent: enabled`
 annotation to the WORKLOADS pod template.
@@ -54,7 +56,7 @@ require a Traffic Agent.
 ### Disable workloads
 
 By default, traffic-manager will observe `Deployments`, `ReplicaSets` and `StatefulSets`.
-Each workload used today adds certain overhead. If you are not intercepting a specific workload type, you can disable it to reduce that overhead.
+Each workload used today adds certain overhead. If you are not engaging a specific workload type, you can disable it to reduce that overhead.
 That can be achieved by setting the Helm chart values `workloads.<workloadType>.enabled=false` when installing the traffic-manager.
 The following are the Helm chart values to disable the workload types:
 

@@ -21,8 +21,6 @@ type Service interface {
 	// that to the pointer. It will panic if type is not implemented.
 	As(ptr any)
 
-	LogCall(context.Context, string, func(context.Context))
-
 	// ListenerAddress returns the address that this service is listening to.
 	ListenerAddress(ctx context.Context) string
 
@@ -36,7 +34,7 @@ type Service interface {
 	FuseFTPMgr() remotefs.FuseFTPManager
 
 	RootSessionInProcess() bool
-	WithSession(context.Context, string, func(context.Context, Session) error) error
+	WithSession(context.Context, func(context.Context, Session) error) error
 
 	PostConnectRequest(context.Context, ConnectRequest) error
 	ReadConnectResponse(context.Context) (*rpc.ConnectInfo, error)
@@ -44,7 +42,7 @@ type Service interface {
 	ManageSessions(context.Context) error
 }
 
-type NewServiceFunc func(context.Context, *dgroup.Group, client.Config, *grpc.Server) (Service, error)
+type NewServiceFunc func(context.Context, context.CancelFunc, *dgroup.Group, client.Config, *grpc.Server) (Service, error)
 
 type newServiceKey struct{}
 

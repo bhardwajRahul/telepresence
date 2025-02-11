@@ -183,7 +183,7 @@ func (th *trafficManager) DoWithSession(ctx context.Context, cr *rpc.ConnectRequ
 		ShutdownOnNonError:   true,
 	})
 
-	srv, err := userd.GetNewServiceFunc(ctx)(ctx, g, client.GetConfig(ctx), grpc.NewServer())
+	srv, err := userd.GetNewServiceFunc(ctx)(ctx, cancel, g, client.GetConfig(ctx), grpc.NewServer())
 	if err != nil {
 		return err
 	}

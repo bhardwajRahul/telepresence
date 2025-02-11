@@ -2,11 +2,11 @@ package vif
 
 import (
 	"context"
+	"time"
 
 	"github.com/hashicorp/go-multierror"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
-	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/pkg/routing"
 	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
@@ -58,13 +58,21 @@ func (vif *TunnelingDevice) Close(ctx context.Context) error {
 
 func (vif *TunnelingDevice) Run(ctx context.Context) (err error) {
 	defer func() {
-		if r := recover(); r != nil {
-			err = derror.PanicToError(r)
-			dlog.Errorf(ctx, "%+v", r)
-		}
 		dlog.Debug(ctx, "vif ended")
 	}()
 
-	vif.stack.Wait()
+	// The stack.Wait gets stuck at times, even though the stack is closed, so we ensure that the
+	// Run terminates anyway here.
+	// See https://github.com/google/gvisor/issues/11456
+	stackDoneCh := make(chan struct{})
+	go func() {
+		vif.stack.Wait()
+		close(stackDoneCh)
+	}()
+	<-ctx.Done()
+	select {
+	case <-stackDoneCh:
+	case <-time.After(2 * time.Second):
+	}
 	return nil
 }

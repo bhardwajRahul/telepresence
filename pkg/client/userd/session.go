@@ -8,6 +8,7 @@ import (
 	core "k8s.io/api/core/v1"
 	typed "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/datawire/dlib/dgroup"
 	"github.com/telepresenceio/telepresence/rpc/v2/common"
@@ -38,6 +39,7 @@ type InterceptInfo interface {
 type KubeConfig interface {
 	GetContext() string
 	GetRestConfig() *rest.Config
+	GetClientConfig() clientcmd.ClientConfig
 }
 
 type NamespaceListener func(context.Context)

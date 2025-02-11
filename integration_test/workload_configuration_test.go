@@ -1,7 +1,6 @@
 package integration_test
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -31,8 +30,6 @@ func (s *workloadConfigurationSuite) disabledWorkloadKind(tp, wl string) {
 	s.ApplyApp(ctx, wl, strings.ToLower(tp)+"/"+wl)
 	defer s.DeleteSvcAndWorkload(ctx, strings.ToLower(tp), wl)
 
-	defer s.uninstallAgents(ctx, wl)
-
 	s.TelepresenceConnect(ctx)
 	defer itest.TelepresenceDisconnectOk(ctx)
 
@@ -45,13 +42,6 @@ func (s *workloadConfigurationSuite) disabledWorkloadKind(tp, wl string) {
 	_, stderr, err := itest.Telepresence(ctx, "intercept", wl)
 	require.Error(err)
 	require.Contains(stderr, fmt.Sprintf("connector.CreateIntercept: workload \"%s.%s\" not found", wl, s.AppNamespace()))
-}
-
-func (s *workloadConfigurationSuite) uninstallAgents(ctx context.Context, wl string) {
-	dfltCtx := itest.WithUser(ctx, "default")
-	itest.TelepresenceOk(dfltCtx, "connect", "--namespace", s.AppNamespace(), "--manager-namespace", s.ManagerNamespace())
-	itest.TelepresenceOk(dfltCtx, "uninstall", wl)
-	itest.TelepresenceDisconnectOk(dfltCtx)
 }
 
 func (s *workloadConfigurationSuite) Test_DisabledReplicaSet() {
@@ -77,15 +67,13 @@ func (s *workloadConfigurationSuite) Test_InterceptsDeploymentWithDisabledReplic
 	s.TelepresenceHelmInstallOK(ctx, true, "--set", "workloads.replicaSets.enabled=false")
 	defer s.TelepresenceHelmInstallOK(ctx, true, "--set", "workloads.replicaSets.enabled=true")
 
-	defer s.uninstallAgents(ctx, wl)
-
 	s.TelepresenceConnect(ctx)
 	defer itest.TelepresenceDisconnectOk(ctx)
 
 	require.Eventually(
 		func() bool {
 			stdout, _, err := itest.Telepresence(ctx, "list")
-			return err == nil && strings.Contains(stdout, fmt.Sprintf("%s: ready to intercept", wl))
+			return err == nil && strings.Contains(stdout, fmt.Sprintf("%s: ready to engage", wl))
 		},
 		6*time.Second, // waitFor
 		2*time.Second, // polling interval
@@ -109,10 +97,8 @@ func (s *workloadConfigurationSuite) Test_InterceptsReplicaSetWithDisabledDeploy
 
 	interceptableWl := s.KubectlOk(ctx, "get", "replicasets", "-l", fmt.Sprintf("app=%s", wl), "-o", "jsonpath={.items[*].metadata.name}")
 
-	s.TelepresenceHelmInstallOK(ctx, true, "--set", "workloads.deployments.enabled=false")
+	s.TelepresenceHelmInstallOK(ctx, true, "--set", "logLevel=trace", "--set", "workloads.deployments.enabled=false")
 	defer s.TelepresenceHelmInstallOK(ctx, true, "--set", "workloads.deployments.enabled=true")
-
-	defer s.uninstallAgents(ctx, interceptableWl)
 
 	s.TelepresenceConnect(ctx)
 	defer itest.TelepresenceDisconnectOk(ctx)
@@ -120,7 +106,7 @@ func (s *workloadConfigurationSuite) Test_InterceptsReplicaSetWithDisabledDeploy
 	require.Eventually(
 		func() bool {
 			stdout, _, err := itest.Telepresence(ctx, "list")
-			return err == nil && strings.Contains(stdout, fmt.Sprintf("%s: ready to intercept", interceptableWl))
+			return err == nil && strings.Contains(stdout, fmt.Sprintf("%s: ready to engage", interceptableWl))
 		},
 		6*time.Second, // waitFor
 		2*time.Second, // polling interval

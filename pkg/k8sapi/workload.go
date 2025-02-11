@@ -11,6 +11,7 @@ import (
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	typedApps "k8s.io/client-go/kubernetes/typed/apps/v1"
 
@@ -25,7 +26,7 @@ type Workload interface {
 	Updated(int64) bool
 }
 
-type UnsupportedWorkloadKindError string
+type UnsupportedWorkloadKindError Kind
 
 func (u UnsupportedWorkloadKindError) Error() string {
 	return fmt.Sprintf("unsupported workload kind: %q", string(u))
@@ -40,18 +41,18 @@ func (u UnsupportedWorkloadKindError) Error() string {
 //  4. Rollouts (Argo Rollouts)
 //
 // The first match is returned.
-func GetWorkload(c context.Context, name, namespace, workloadKind string) (obj Workload, err error) {
-	switch workloadKind {
-	case "Deployment":
+func GetWorkload(c context.Context, name, namespace string, kind Kind) (obj Workload, err error) {
+	switch kind {
+	case DeploymentKind:
 		obj, err = GetDeployment(c, name, namespace)
-	case "ReplicaSet":
+	case ReplicaSetKind:
 		obj, err = GetReplicaSet(c, name, namespace)
-	case "StatefulSet":
+	case StatefulSetKind:
 		obj, err = GetStatefulSet(c, name, namespace)
-	case "Rollout":
+	case RolloutKind:
 		obj, err = GetRollout(c, name, namespace)
 	case "":
-		for _, wk := range []string{"Deployment", "ReplicaSet", "StatefulSet", "Rollout"} {
+		for _, wk := range KnownWorkloadKinds {
 			if obj, err = GetWorkload(c, name, namespace, wk); err == nil {
 				return obj, nil
 			}
@@ -61,7 +62,7 @@ func GetWorkload(c context.Context, name, namespace, workloadKind string) (obj W
 		}
 		err = errors2.NewNotFound(core.Resource("workload"), name+"."+namespace)
 	default:
-		return nil, UnsupportedWorkloadKindError(workloadKind)
+		return nil, UnsupportedWorkloadKindError(kind)
 	}
 	return obj, err
 }
@@ -243,8 +244,15 @@ func (o *deployment) ki(c context.Context) typedApps.DeploymentInterface {
 	return deployments(c, o.Namespace)
 }
 
-func (o *deployment) GetKind() string {
-	return "Deployment"
+func (o *deployment) GetGroupResource() schema.GroupResource {
+	return schema.GroupResource{
+		Group:    o.TypeMeta.GroupVersionKind().Group,
+		Resource: "deployments",
+	}
+}
+
+func (o *deployment) GetKind() Kind {
+	return DeploymentKind
 }
 
 func (o *deployment) Delete(c context.Context) error {
@@ -312,8 +320,15 @@ func (o *rollout) ki(c context.Context) typedArgoRollouts.RolloutInterface {
 	return rollouts(c, o.Namespace)
 }
 
-func (o *rollout) GetKind() string {
-	return "Rollout"
+func (o *rollout) GetGroupResource() schema.GroupResource {
+	return schema.GroupResource{
+		Group:    o.TypeMeta.GroupVersionKind().Group,
+		Resource: "rollouts",
+	}
+}
+
+func (o *rollout) GetKind() Kind {
+	return RolloutKind
 }
 
 func (o *rollout) Delete(c context.Context) error {
@@ -377,8 +392,15 @@ func (o *replicaSet) ki(c context.Context) typedApps.ReplicaSetInterface {
 	return replicaSets(c, o.Namespace)
 }
 
-func (o *replicaSet) GetKind() string {
-	return "ReplicaSet"
+func (o *replicaSet) GetGroupResource() schema.GroupResource {
+	return schema.GroupResource{
+		Group:    o.TypeMeta.GroupVersionKind().Group,
+		Resource: "replicasets",
+	}
+}
+
+func (o *replicaSet) GetKind() Kind {
+	return ReplicaSetKind
 }
 
 func (o *replicaSet) Delete(c context.Context) error {
@@ -442,8 +464,15 @@ func (o *statefulSet) ki(c context.Context) typedApps.StatefulSetInterface {
 	return statefulSets(c, o.Namespace)
 }
 
-func (o *statefulSet) GetKind() string {
-	return "StatefulSet"
+func (o *statefulSet) GetGroupResource() schema.GroupResource {
+	return schema.GroupResource{
+		Group:    o.TypeMeta.GroupVersionKind().Group,
+		Resource: "statefulsets",
+	}
+}
+
+func (o *statefulSet) GetKind() Kind {
+	return StatefulSetKind
 }
 
 func (o *statefulSet) Delete(c context.Context) error {

@@ -2,10 +2,6 @@ package agentconfig
 
 import (
 	"testing"
-
-	"github.com/go-json-experiment/json"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func Test_prefixInterpolated(t *testing.T) {
@@ -72,29 +68,4 @@ func Test_prefixInterpolated(t *testing.T) {
 			}
 		})
 	}
-}
-
-func Test_ReplacePolicy(t *testing.T) {
-	var cn Container
-	require.NoError(t, json.Unmarshal([]byte(`{"replace": 0}`), &cn))
-	assert.False(t, bool(cn.Replace))
-	require.NoError(t, json.Unmarshal([]byte(`{}`), &cn))
-	assert.False(t, bool(cn.Replace))
-	require.NoError(t, json.Unmarshal([]byte(`{"replace":1}`), &cn))
-	assert.True(t, bool(cn.Replace))
-	require.NoError(t, json.Unmarshal([]byte(`{"replace":2}`), &cn))
-	assert.False(t, bool(cn.Replace))
-	require.NoError(t, json.Unmarshal([]byte(`{"replace":false}`), &cn))
-	assert.False(t, bool(cn.Replace))
-	require.NoError(t, json.Unmarshal([]byte(`{"replace":true}`), &cn))
-	assert.True(t, bool(cn.Replace))
-
-	cn.Replace = false
-	data, err := json.Marshal(&cn)
-	require.NoError(t, err)
-	require.Equal(t, string(data), `{}`)
-	cn.Replace = true
-	data, err = json.Marshal(&cn)
-	require.NoError(t, err)
-	require.Equal(t, string(data), `{"replace":1}`)
 }

@@ -5,16 +5,16 @@ import (
 	"fmt"
 
 	"google.golang.org/grpc"
-	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/datawire/dlib/dlog"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/authenticator"
 	"github.com/telepresenceio/telepresence/v2/pkg/authenticator"
+	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 )
 
-func RegisterAuthenticatorServer(srv *grpc.Server, kubeClientConfig clientcmd.ClientConfig) {
+func RegisterAuthenticatorServer(srv *grpc.Server, clientConfigProvider k8sapi.ClientConfigProvider) {
 	rpc.RegisterAuthenticatorServer(srv, &AuthenticatorServer{
-		authenticator: authenticator.NewService(kubeClientConfig),
+		authenticator: authenticator.NewService(clientConfigProvider),
 	})
 }
 

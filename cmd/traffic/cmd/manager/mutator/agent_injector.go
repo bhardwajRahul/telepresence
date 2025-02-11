@@ -20,14 +20,12 @@ import (
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/strings/slices"
 
-	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/v2/pkg/maps"
-	"github.com/telepresenceio/telepresence/v2/pkg/workload"
 )
 
 var podResource = meta.GroupVersionResource{Version: "v1", Group: "", Resource: "pods"} //nolint:gochecknoglobals // constant
@@ -91,13 +89,6 @@ func getPod(req *admission.AdmissionRequest, isDelete bool) (*core.Pod, error) {
 }
 
 func (a *agentInjector) Inject(ctx context.Context, req *admission.AdmissionRequest) (p PatchOps, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = derror.PanicToError(r)
-			dlog.Errorf(ctx, "%+v", err)
-		}
-	}()
-
 	isDelete := req.Operation == admission.Delete
 	if atomic.LoadInt64(&a.terminating) > 0 {
 		dlog.Debugf(ctx, "Skipping webhook for %s.%s because the agent-injector is terminating", req.Name, req.Namespace)
@@ -110,7 +101,7 @@ func (a *agentInjector) Inject(ctx context.Context, req *admission.AdmissionRequ
 	}
 
 	if isDelete {
-		a.agentConfigs.Blacklist(pod.Name, pod.Namespace)
+		a.agentConfigs.Inactivate(pod.UID)
 		return nil, nil
 	}
 
@@ -138,21 +129,7 @@ func (a *agentInjector) Inject(ctx context.Context, req *admission.AdmissionRequ
 			return nil, nil
 		}
 
-		enabledWorkloads := managerutil.GetEnv(ctx).EnabledWorkloadKinds
-		supportedKinds := make([]string, len(enabledWorkloads))
-		for i, wlKind := range enabledWorkloads {
-			switch wlKind {
-			case workload.DeploymentKind:
-				supportedKinds[i] = "Deployment"
-			case workload.ReplicaSetKind:
-				supportedKinds[i] = "ReplicaSet"
-			case workload.StatefulSetKind:
-				supportedKinds[i] = "StatefulSet"
-			case workload.RolloutKind:
-				supportedKinds[i] = "Rollout"
-			}
-		}
-		wl, err := agentmap.FindOwnerWorkload(ctx, k8sapi.Pod(pod), supportedKinds)
+		wl, err := agentmap.FindOwnerWorkload(ctx, k8sapi.Pod(pod), env.EnabledWorkloadKinds)
 		if err != nil {
 			uwkError := k8sapi.UnsupportedWorkloadKindError("")
 			switch {
@@ -166,22 +143,10 @@ func (a *agentInjector) Inject(ctx context.Context, req *admission.AdmissionRequ
 			// Not an error. It just means that the pod is not eligible for intercepts.
 			return nil, nil
 		}
-		scx, err = a.agentConfigs.Get(ctx, wl.GetName(), wl.GetNamespace())
+		scx = a.agentConfigs.Get(wl.GetName(), wl.GetNamespace())
 		switch {
-		case err != nil:
-			dlog.Errorf(ctx, "Failed to retrieve agent config for workload %s.%s: %v", wl.GetName(), wl.GetNamespace(), err)
-			return nil, err
 		case scx == nil:
-			if ia == "enabled" {
-				// A race condition may occur when a workload with "enabled" is applied.
-				// The workload event handler will create the agent config, but the webhook injection call may arrive before
-				// that agent config has been created. When this happens, we must force a second event when the creation
-				// is complete.
-				a.agentConfigs.registerPrematureInjectEvent(wl)
-				dlog.Debugf(ctx, "No agent config has been generated for annotation enabled %s.%s", wl.GetName(), wl.GetNamespace())
-			} else {
-				dlog.Debugf(ctx, "Skipping %s.%s (no agent config)", wl.GetName(), wl.GetNamespace())
-			}
+			dlog.Debugf(ctx, "Skipping %s.%s (no agent config)", wl.GetName(), wl.GetNamespace())
 			return nil, nil
 		case scx.AgentConfig().Manual:
 			dlog.Debugf(ctx, "Skipping webhook where agent is manually injected %s.%s", wl.GetName(), wl.GetNamespace())
@@ -212,19 +177,19 @@ func (a *agentInjector) Inject(ctx context.Context, req *admission.AdmissionRequ
 
 	// Create patch operations to add the traffic-agent sidecar
 	if len(patches) > 0 {
-		dlog.Infof(ctx, "Injecting %d patches into pod %s.%s", len(patches), pod.Name, pod.Namespace)
-		if dlog.MaxLogLevel(ctx) >= dlog.LogLevelDebug {
+		dlog.Debugf(ctx, "Injecting %d patches into pod %s.%s", len(patches), pod.Name, pod.Namespace)
+		if dlog.MaxLogLevel(ctx) >= dlog.LogLevelTrace {
 			cns := strings.Builder{}
 			for i, cn := range pod.Spec.Containers {
 				cns.WriteString(fmt.Sprintf("%d %s\n", i, cn.Name))
 			}
-			dlog.Debugf(ctx, "Containers \n%s", cns.String())
+			dlog.Tracef(ctx, "Containers \n%s", cns.String())
 			if pj, err := json.Marshal(patches, jsontext.WithIndent("  ")); err == nil {
-				dlog.Debugf(ctx, "\n%s", string(pj))
+				dlog.Tracef(ctx, "\n%s", string(pj))
 			}
 		}
 	} else {
-		dlog.Infof(ctx, "Pod %s.%s was left untouched", pod.Name, pod.Namespace)
+		dlog.Debugf(ctx, "Pod %s.%s was left untouched", pod.Name, pod.Namespace)
 	}
 	return patches, nil
 }
@@ -238,7 +203,7 @@ func (a *agentInjector) Uninstall(ctx context.Context) {
 
 func needInitContainer(config *agentconfig.Sidecar) bool {
 	for _, cc := range config.Containers {
-		if !cc.Replace {
+		if cc.Replace == agentconfig.ReplacePolicyIntercept {
 			for _, ic := range cc.Intercepts {
 				if ic.Headless || ic.TargetPortNumeric {
 					return true
@@ -254,7 +219,7 @@ func maybeRemoveAppContainer(pod *core.Pod, config *agentconfig.Sidecar, patches
 	cns := pod.Spec.Containers
 	for i := len(cns) - 1; i >= 0; i-- {
 		for _, cc := range config.Containers {
-			if cc.Name == cns[i].Name && cc.Replace {
+			if cc.Name == cns[i].Name && cc.Replace == agentconfig.ReplacePolicyContainer {
 				patches = append(patches, PatchOperation{
 					Op:   "remove",
 					Path: fmt.Sprintf("/spec/containers/%d", i),
@@ -426,7 +391,7 @@ func addAgentContainer(
 		return patches, replaceAnnotations
 	}
 
-	refPodName := pod.Name + "." + pod.Namespace
+	refPodName := pod.Name + "(" + pod.Status.PodIP + ")"
 	for i := range pod.Spec.Containers {
 		pcn := &pod.Spec.Containers[i]
 		if pcn.Name == agentconfig.ContainerName {
@@ -488,7 +453,7 @@ func addPullSecrets(
 // addTPEnv adds telepresence specific environment variables to all interceptable app containers.
 func addTPEnv(pod *core.Pod, config *agentconfig.Sidecar, env map[string]string, patches PatchOps) PatchOps {
 	agentconfig.EachContainer(pod, config, func(app *core.Container, cc *agentconfig.Container) {
-		if !cc.Replace {
+		if cc.Replace != agentconfig.ReplacePolicyContainer {
 			patches = addContainerTPEnv(pod, app, env, patches)
 		}
 	})
@@ -547,13 +512,13 @@ func addContainerTPEnv(pod *core.Pod, cn *core.Container, env map[string]string,
 // the same replacement on all references to that port from the probes of the container.
 func hidePorts(pod *core.Pod, config *agentconfig.Sidecar, patches PatchOps) PatchOps {
 	agentconfig.EachContainer(pod, config, func(app *core.Container, cc *agentconfig.Container) {
-		if !cc.Replace {
+		if cc.Replace == agentconfig.ReplacePolicyIntercept {
 			for _, ic := range agentconfig.PortUniqueIntercepts(cc) {
 				if ic.Headless || ic.TargetPortNumeric {
 					// Rely on iptables mapping instead of port renames
 					continue
 				}
-				patches = hideContainerPorts(pod, app, bool(cc.Replace), ic.ContainerPortName, patches)
+				patches = hideContainerPorts(pod, app, ic.ContainerPortName, patches)
 			}
 		}
 	})
@@ -562,7 +527,7 @@ func hidePorts(pod *core.Pod, config *agentconfig.Sidecar, patches PatchOps) Pat
 
 // hideContainerPorts  will replace the symbolic name of a container port with a generated name. It will perform
 // the same replacement on all references to that port from the probes of the container.
-func hideContainerPorts(pod *core.Pod, app *core.Container, isReplace bool, portName string, patches PatchOps) PatchOps {
+func hideContainerPorts(pod *core.Pod, app *core.Container, portName string, patches PatchOps) PatchOps {
 	cns := pod.Spec.Containers
 	var containerPath string
 	for i := range cns {
@@ -590,20 +555,18 @@ func hideContainerPorts(pod *core.Pod, app *core.Container, isReplace bool, port
 
 	// A replacing intercept will swap the app-container for one that doesn't have any
 	// probes, so the patch must not contain renames for those.
-	if !isReplace {
-		probes := []*core.Probe{app.LivenessProbe, app.ReadinessProbe, app.StartupProbe}
-		probeNames := []string{"livenessProbe/", "readinessProbe/", "startupProbe/"}
+	probes := []*core.Probe{app.LivenessProbe, app.ReadinessProbe, app.StartupProbe}
+	probeNames := []string{"livenessProbe/", "readinessProbe/", "startupProbe/"}
 
-		for i, probe := range probes {
-			if probe == nil {
-				continue
-			}
-			if h := probe.HTTPGet; h != nil && h.Port.StrVal == portName {
-				hidePort(probeNames[i] + "httpGet/port")
-			}
-			if t := probe.TCPSocket; t != nil && t.Port.StrVal == portName {
-				hidePort(probeNames[i] + "tcpSocket/port")
-			}
+	for i, probe := range probes {
+		if probe == nil {
+			continue
+		}
+		if h := probe.HTTPGet; h != nil && h.Port.StrVal == portName {
+			hidePort(probeNames[i] + "httpGet/port")
+		}
+		if t := probe.TCPSocket; t != nil && t.Port.StrVal == portName {
+			hidePort(probeNames[i] + "tcpSocket/port")
 		}
 	}
 	return patches
@@ -653,7 +616,7 @@ func addPodLabels(_ context.Context, pod *core.Pod, config agentconfig.SidecarEx
 	}
 	if _, ok := pod.Labels[agentconfig.WorkloadKindLabel]; !ok {
 		changed = true
-		lm[agentconfig.WorkloadKindLabel] = config.AgentConfig().WorkloadKind
+		lm[agentconfig.WorkloadKindLabel] = string(config.AgentConfig().WorkloadKind)
 	}
 	if _, ok := pod.Labels[agentconfig.WorkloadEnabledLabel]; !ok {
 		changed = true

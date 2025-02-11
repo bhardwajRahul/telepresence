@@ -28,6 +28,42 @@ items:
     date: (TBD)
     notes:
       - type: feature
+        title: New telepresence replace command.
+        body: |-
+          The new `telepresence replace` command simplifies and clarifies container replacement.
+          
+          Previously, the `--replace` flag within the `telepresence intercept` command was used to replace containers.
+          However, this approach introduced inconsistencies and limitations:
+          
+          * **Confusion:** Using a flag to modify the core function of a command designed for traffic interception led
+            to ambiguity.
+          * **Inaccurate Behavior:** Replacement was not possible when no incoming traffic was intercepted, as the
+            command's design focused on traffic routing.
+          
+          To address these issues, the `--replace` flag within `telepresence intercept` has been deprecated. The new
+          `telepresence replace` command provides a dedicated and consistent method for replacing containers, enhancing
+          clarity and reliability.
+
+          Key differences between `replace` and `intercept`:
+          
+          1. **Scope:** The `replace` command targets and affects an entire container, impacting all its traffic, while
+             an `intercept` targets specific services and/or service/container ports.
+          2. **Port Declarations:** Remote ports specified using the `--port` flag are container ports. 
+          3. **No Default Port:** A `replace` can occur without intercepting any ports.
+          4. **Container State:** During a `replace`, the original container is no longer active within the cluster.
+          
+          The deprecated `--replace` flag still works, but is hidden from the `telepresence intercept` command help, and
+          will print a deprecation warning when used.
+      - type: feature
+        title: No dormant container present during replace.
+        body: |-
+          Telepresence will no longer inject a dormant container during a `telepresence replace` operation. Instead, the
+          Traffic Agent now directly serves as the replacement container, eliminating the need to forward traffic to the
+          original application container. This simplification offers several advantages when using the `--replace` flag:
+          
+          - **Removal of the init-container:** The need for a separate init-container is no longer necessary.
+          - **Elimination of port renames:** Port renames within the intercepted pod are no longer required.
+      - type: feature
         title: One single invocation of the Telepresence intercept command can now intercept multiple ports.
         body: >-
           It is now possible to intercept multiple ports with one single invocation of `telepresence intercept` by just
@@ -50,15 +86,22 @@ items:
           ```
         docs: install/manager#static-versus-dynamic-namespace-selection
       - type: feature
-        title: Removal of the dormant container during intercept with --replace.
-        body: |-
-          During a `telepresence intercept --replace operation`, the previously injected dormant container has been
-          removed. The Traffic Agent now directly serves as the replacement container, eliminating the need to forward
-          traffic to the original application container. This simplification offers several advantages when using the
-          `--replace` flag:
-          
-          - **Removal of the init-container:** The need for a separate init-container is no longer necessary.
-          - **Elimination of port renames:** Port renames within the intercepted pod are no longer required.
+        title: List output includes workload kind.
+        body: >-
+          The output of the `telepresence list` command will now include the workload kind (deployment, replicaset,
+          statefulset, or rollout) in all entries.
+      - type: change
+        title: Trigger the mutating webhook with Kubernetes eviction objects instead of patching workloads.
+        body: >-
+          Instead of patching workloads, or scaling the workloads down to zero and up again, Telepresence will now
+          create policy/v1 Eviction objects to trigger the mutating webhook. This causes a slight change in the
+          traffic-manager RBAC. The `patch` permissions are no longer needed. Instead, the traffic-manager must be
+          able to create "pod/eviction" objects.
+      - type: change
+        title: The telepresence-agents configmap is no longer used.
+        body: >-
+          The traffic-agent configuration was moved into a pod-annotation. This avoids sync problems between the
+          telepresence-agents (which is no no longer present) and the pods.
       - type: change
         title: Drop deprecated current-cluster-id command.
         body: >-
@@ -75,6 +118,37 @@ items:
         body: >-
           macOS based systems will often PTR queries using nameslike `b._dns-sd._udp`, lb._dns-sd._udp, or
           `db-dns-sd._udp`. Those queries are no longer dispatched to the cluster.
+      - type: bugfix
+        title: Using the --namespace option with telepresence causes a deadlock.
+        body: >-
+          Using `telepresence list --namespace <ns> with a namespace different from the one that telepresence was
+          connected to, would cause a deadlock, and then produce an empty list.
+      - type: bugfix
+        title: Fix problem with exclude-suffix being hidden by DNS search path.
+        body: >-
+          In some situations, a name ending with an exclude-suffix like "xyz.com" would be expanded by a search path
+          into "xyz.com.<connected namespace>" and therefore not be excluded. Instead, the name was sent to the cluster
+          to be resolved, causing an unnecessary load on its DNS server.
+  - version: 2.21.3
+    date: 2025-02-06
+    notes:
+      - type: bugfix
+        title: Using the --proxy-via flag would sometimes cause connection timeouts.
+        body: >-
+          Typically, a `telepresence connect --proxy-via <subnet>=<workflow>` would fail with a "deadline exceeded"
+          message when several workloads were present in the namespace, the one targeted by the proxy-via didn't yet
+          have an agent installed, and other workloads had an agent. This was due to a race condition in the logic
+          for the agent-based port-forwards in the root daemon. The conditions causing this race are now eliminated.
+      - type: bugfix
+        title: Fix panic in root daemon when using the "allow conflicting subnets" feature on macOS.
+        body: >-
+          A regression was introduced in version 2.21.0, causing a panic due to an unimplemented method in the
+          TUN-device on macOS based clients.
+      - type: bugfix
+        title: Ensure that annotation enabled traffic-agents are uninstall when uninstalling the traffic-manager.
+        body: >-
+          A traffic-agent injected because the workload had the inject annotation enabled would sometimes not get
+          uninstalled when the traffic-manager was uninstalled.
   - version: 2.21.2
     date: 2025-01-26
     notes:
@@ -135,7 +209,7 @@ items:
           guarantees that the environment variables and mounts propagated to the
           client originate from the specified container. Additionally, if the
           `--replace` option is used, it ensures that this container is replaced.
-        docs: reference/intercepts/container
+        docs: reference/engagements/container
       - type: feature
         title: New telepresence ingest command
         body: >-
@@ -200,7 +274,7 @@ items:
           The Helm chart value `workloads` now supports the kinds `deployments.enabled`, `statefulSets.enabled`, `replicaSets.enabled`.
           and `rollouts.enabled`. All except `rollouts` are enabled by default. The traffic-manager will ignore workloads, and
           Telepresence will not be able to intercept them, if the `enabled` of the corresponding kind is set to `false`.
-        docs: reference/intercepts/sidecar#disable-workloads
+        docs: reference/engagements/sidecar#disable-workloads
       - type: feature
         title: Improved command auto-completion
         body: >-
@@ -374,7 +448,7 @@ items:
           instead of a service port. The new behavior is enabled by adding a <code>telepresence.getambassador.io/inject-container-ports</code>
           annotation where the value is a comma separated list of port identifiers consisting of either the name or the port number of a container
           port, optionally suffixed with `/TCP` or `/UDP`.
-        docs: https://telepresence.io/docs/reference/intercepts/cli#intercepting-without-a-service
+        docs: https://telepresence.io/docs/reference/engagements/cli#intercepting-without-a-service
       - type: feature
         title: Publish the OSS version of the telepresence Helm chart
         body: >-

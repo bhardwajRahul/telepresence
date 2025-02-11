@@ -4,6 +4,7 @@ import (
 	"os"
 
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
+	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 )
 
 type agentInjectorDisabledSuite struct {
@@ -37,6 +38,7 @@ func (s *agentInjectorDisabledSuite) Test_AgentInjectorDisabled() {
 
 	s.ApplyApp(ctx, svc, "deploy/"+svc)
 	defer s.DeleteSvcAndWorkload(ctx, "deploy", svc)
+	s.CapturePodLogs(ctx, svc, "traffic-agent", s.AppNamespace())
 
 	s.TelepresenceConnect(ctx)
 	_, sErr, err := itest.Telepresence(ctx, "intercept", svc)
@@ -56,10 +58,10 @@ func (s *agentInjectorDisabledSuite) Test_VersionWithAgentInjectorDisabled() {
 	ctx := s.Context()
 	rq := s.Require()
 	restartCount := func() int {
-		pods := itest.RunningPods(ctx, "traffic-manager", s.ManagerNamespace())
+		pods := itest.RunningPods(ctx, agentmap.ManagerAppName, s.ManagerNamespace())
 		if len(pods) == 1 {
 			for _, cs := range pods[0].Status.ContainerStatuses {
-				if cs.Name == "traffic-manager" {
+				if cs.Name == agentmap.ManagerAppName {
 					return int(cs.RestartCount)
 				}
 			}

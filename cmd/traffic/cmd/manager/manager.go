@@ -3,10 +3,11 @@ package manager
 import (
 	"context"
 	"fmt"
-	"net/http"
+	"net"
 	"os"
+	"runtime/debug"
 	"slices"
-	"strings"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -27,9 +28,10 @@ import (
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/mutator"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/namespaces"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/state"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
+	"github.com/telepresenceio/telepresence/v2/pkg/grpc/server"
 	"github.com/telepresenceio/telepresence/v2/pkg/informer"
-	"github.com/telepresenceio/telepresence/v2/pkg/ioutil"
 	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/v2/pkg/version"
@@ -64,6 +66,7 @@ func Main(ctx context.Context, _ ...string) error {
 }
 
 func MainWithEnv(ctx context.Context) (err error) {
+	debug.SetTraceback("single")
 	defer runtime.RecoverFromPanic(&err)
 
 	dlog.Infof(ctx, "%s %s [uid:%d,gid:%d]", DisplayName, version.Version, os.Getuid(), os.Getgid())
@@ -106,17 +109,17 @@ func MainWithEnv(ctx context.Context) (err error) {
 	// l := klog.Level(6)
 	// _ = l.Set("6")
 	mgrFactory := false
-	mns := namespaces.Get(ctx)
-	if len(mns) == 0 {
-		ctx = informer.WithFactory(ctx, "")
-	} else {
-		for _, ns := range mns {
-			ctx = informer.WithFactory(ctx, ns)
-		}
-		if !slices.Contains(mns, env.ManagerNamespace) {
-			mgrFactory = true
-			ctx = informer.WithFactory(ctx, env.ManagerNamespace)
-		}
+	mns := namespaces.GetOrGlobal(ctx)
+	global := len(mns) == 1 && mns[0] == ""
+	if global {
+		dlog.Debug(ctx, "Using cluster wide informers")
+	}
+	for _, ns := range mns {
+		ctx = informer.WithFactory(ctx, ns)
+	}
+	if !(global || slices.Contains(mns, env.ManagerNamespace)) {
+		mgrFactory = true
+		ctx = informer.WithFactory(ctx, env.ManagerNamespace)
 	}
 
 	var injectorCertGetter mutator.InjectorCertGetter
@@ -247,11 +250,11 @@ func (s *service) servePrometheus(ctx context.Context) error {
 			"Flag to indicate when an intercept is active. 1 for active, 0 for not active.", append(labels, "workload")),
 	)
 
-	s.state.SetAllClientSessionsFinalizer(func(client *rpc.ClientInfo) {
+	s.state.SetAllClientSessionsFinalizer(func(client *state.ClientSession) {
 		SetGauge(s.state.GetConnectActiveStatus(), client.Name, client.InstallId, nil, 0)
 	})
 
-	s.state.SetAllInterceptsFinalizer(func(client *rpc.ClientInfo, workload *string) {
+	s.state.SetAllInterceptsFinalizer(func(client *state.ClientSession, workload *string) {
 		SetGauge(s.state.GetInterceptActiveStatus(), client.Name, client.InstallId, workload, 0)
 	})
 
@@ -270,39 +273,18 @@ func (s *service) serveHTTP(ctx context.Context) error {
 	env := managerutil.GetEnv(ctx)
 	host := env.ServerHost
 	port := env.ServerPort
+	l, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(int(port))))
+	if err != nil {
+		return err
+	}
+
 	var opts []grpc.ServerOption
 	if mz, ok := env.MaxReceiveSize.AsInt64(); ok {
 		opts = append(opts, grpc.MaxRecvMsgSize(int(mz)))
 	}
-
-	grpcHandler := grpc.NewServer(opts...)
-	httpHandler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ioutil.Printf(w, "Hello World from: %s\n", r.URL.Path)
-	}))
-
-	lg := dlog.StdLogger(ctx, dlog.MaxLogLevel(ctx))
-	addr := iputil.JoinHostPort(host, port)
-	if host == "" {
-		lg.SetPrefix(fmt.Sprintf("grpc-api:%d", port))
-	} else {
-		lg.SetPrefix(fmt.Sprintf("grpc-api %s", addr))
-	}
-	sc := &dhttp.ServerConfig{
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.ProtoMajor == 2 && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
-				atomic.AddInt32(&s.activeGrpcRequests, 1)
-				grpcHandler.ServeHTTP(w, r)
-				atomic.AddInt32(&s.activeGrpcRequests, -1)
-			} else {
-				atomic.AddInt32(&s.activeHttpRequests, 1)
-				httpHandler.ServeHTTP(w, r)
-				atomic.AddInt32(&s.activeHttpRequests, -1)
-			}
-		}),
-		ErrorLog: lg,
-	}
-	s.self.RegisterServers(grpcHandler)
-	return sc.ListenAndServe(ctx, fmt.Sprintf("%s:%d", host, port))
+	svc := server.New(ctx, opts...)
+	s.self.RegisterServers(svc)
+	return server.Serve(ctx, svc, l)
 }
 
 func (s *service) RegisterServers(grpcHandler *grpc.Server) {

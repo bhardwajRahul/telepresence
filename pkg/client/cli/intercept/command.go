@@ -50,9 +50,10 @@ type Command struct {
 	FormattedOutput bool
 	DetailedOutput  bool
 	Silent          bool
+	NoDefaultPort   bool
 }
 
-func (c *Command) AddFlags(cmd *cobra.Command) {
+func (c *Command) AddInterceptFlags(cmd *cobra.Command) {
 	flagSet := cmd.Flags()
 	flagSet.StringVarP(&c.AgentName, "workload", "w", "", "Name of workload (Deployment, ReplicaSet, StatefulSet, Rollout) to intercept, if different from <name>")
 	flagSet.StringSliceVarP(&c.Ports, "port", "p", nil, ``+
@@ -66,13 +67,13 @@ func (c *Command) AddFlags(cmd *cobra.Command) {
 		`e.g. '--address 10.0.0.2'`,
 	)
 
-	flagSet.StringVar(&c.ServiceName, "service", "", "Name of service to intercept. If not provided, we will try to auto-detect one")
+	flagSet.StringVar(&c.ServiceName, "service", "", "Optional name of service to intercept. Sometimes needed to uniquely identify the intercepted port.")
 
 	flagSet.StringVar(&c.ContainerName, "container", "",
-		"Name of container that provides the environment and mounts for the intercept. Defaults to the container matching the targetPort")
+		"Name of container that provides the environment and mounts for the intercept. Defaults to the container matching the first intercepted port.")
 
 	flagSet.StringSliceVar(&c.ToPod, "to-pod", []string{}, ``+
-		`An additional port to forward to the intercepted pod, will available for connections to localhost:PORT. `+
+		`Additional ports to forward to the intercepted pod, will available for connections to localhost:PORT. `+
 		`Use this to, for example, access proxy/helper sidecars in the intercepted pod. The default protocol is TCP. `+
 		`Use <port>/UDP for UDP ports`)
 
@@ -90,9 +91,41 @@ func (c *Command) AddFlags(cmd *cobra.Command) {
 	flagSet.BoolVarP(&c.Replace, "replace", "", false,
 		`Indicates if the traffic-agent should replace application containers in workload pods. `+
 			`The default behavior is for the agent sidecar to be installed alongside existing containers.`)
+	flagSet.Lookup("replace").Deprecated = "Use the replace command."
 
 	_ = cmd.RegisterFlagCompletionFunc("container", ingest.AutocompleteContainer)
 	_ = cmd.RegisterFlagCompletionFunc("service", autocompleteService)
+}
+
+func (c *Command) AddReplaceFlags(cmd *cobra.Command) {
+	flagSet := cmd.Flags()
+	flagSet.StringSliceVarP(&c.Ports, "port", "p", []string{"all"}, ``+
+		`Local ports to forward to. Use <local port>:<identifier> to uniquely identify container ports, where the <identifier> is the port name or number. `+
+		`Use "all" (the default) to forward all ports declared in the replaced container to their corresponding local port. `,
+	)
+
+	flagSet.StringVar(&c.Address, "address", "127.0.0.1", ``+
+		`Local address to forward to, Only accepts IP address as a value,  e.g. '--address 10.0.0.2'`,
+	)
+
+	flagSet.StringVar(&c.ContainerName, "container", "",
+		"Name of container that should be replaced. Can be omitted if the workload only has one container.")
+
+	flagSet.StringSliceVar(&c.ToPod, "to-pod", []string{}, ``+
+		`Additional ports to forward to the pod containing the replaced container, will available for connections to localhost:PORT. `+
+		`Use this to, for example, access proxy/helper sidecars in the pod. The default protocol is TCP. `+
+		`Use <port>/UDP for UDP ports`)
+
+	c.EnvFlags.AddFlags(flagSet)
+	c.MountFlags.AddFlags(flagSet, false)
+	c.DockerFlags.AddFlags(flagSet, "replaced")
+
+	flagSet.StringVar(&c.WaitMessage, "wait-message", "", "Message to print when replace handler has started")
+
+	flagSet.BoolVar(&c.DetailedOutput, "detailed-output", false,
+		`Provide very detailed info about the replace when used together with --output=json or --output=yaml'`)
+
+	_ = cmd.RegisterFlagCompletionFunc("container", ingest.AutocompleteContainer)
 }
 
 func (c *Command) Validate(cmd *cobra.Command, positional []string) error {
@@ -122,10 +155,54 @@ func (c *Command) Validate(cmd *cobra.Command, positional []string) error {
 	return c.DockerFlags.Validate(c.Cmdline)
 }
 
-func (c *Command) Run(cmd *cobra.Command, positional []string) error {
-	if err := c.Validate(cmd, positional); err != nil {
+func (c *Command) ValidateReplace(cmd *cobra.Command, positional []string) error {
+	if len(positional) > 1 && cmd.Flags().ArgsLenAtDash() != 1 {
+		return errcat.User.New("commands to be run with replace must come after options")
+	}
+	c.Name = positional[0]
+	c.AgentName = c.Name
+	c.Cmdline = positional[1:]
+	c.FormattedOutput = output.WantsFormatted(cmd)
+	c.Mechanism = "tcp"
+	c.Replace = true
+	c.NoDefaultPort = true
+
+	if c.ContainerName != "" {
+		c.Name += "/" + c.ContainerName
+	}
+
+	if err := c.MountFlags.Validate(cmd); err != nil {
 		return err
 	}
+	if c.DockerFlags.Mount != "" && !c.MountFlags.Enabled {
+		return errors.New("--docker-mount cannot be used with --mount=false")
+	}
+	for i := range c.Ports {
+		if c.Ports[i] == "all" {
+			// Local port is unset, remote port is "all"
+			c.Ports[i] = ":all"
+		}
+	}
+	return c.DockerFlags.Validate(c.Cmdline)
+}
+
+func (c *Command) Run(cmd *cobra.Command, positional []string) error {
+	err := c.Validate(cmd, positional)
+	if err == nil {
+		err = c.validatedRun(cmd)
+	}
+	return err
+}
+
+func (c *Command) RunReplace(cmd *cobra.Command, positional []string) error {
+	err := c.ValidateReplace(cmd, positional)
+	if err == nil {
+		err = c.validatedRun(cmd)
+	}
+	return err
+}
+
+func (c *Command) validatedRun(cmd *cobra.Command) error {
 	if err := connect.InitCommand(cmd); err != nil {
 		return err
 	}
@@ -199,12 +276,9 @@ func ValidArgs(cmd *cobra.Command, args []string, toComplete string) ([]string, 
 	if err := connect.InitCommand(cmd); err != nil {
 		return nil, cobra.ShellCompDirectiveError
 	}
-	req := connector.ListRequest{
-		Filter: connector.ListRequest_INTERCEPTABLE,
-	}
 	ctx := cmd.Context()
 
-	r, err := daemon.GetUserClient(ctx).List(ctx, &req)
+	r, err := daemon.GetUserClient(ctx).List(ctx, &connector.ListRequest{Filter: connector.ListRequest_UNSPECIFIED})
 	if err != nil {
 		dlog.Debugf(ctx, "unable to get list of interceptable workloads: %v", err)
 		return nil, cobra.ShellCompDirectiveError

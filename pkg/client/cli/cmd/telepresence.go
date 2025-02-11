@@ -135,10 +135,26 @@ func OnlySubcommands(cmd *cobra.Command, args []string) error {
 
 func WithSubCommands(ctx context.Context) context.Context {
 	return MergeSubCommands(ctx,
-		configCmd(), connectCmd(), gatherLogs(), genYAML(), helmCmd(),
-		ingestCmd(), interceptCmd(), kubeauthCmd(), leave(), list(), listContexts(), listNamespaces(), loglevel(), quit(), statusCmd(),
-		dockerRunCmd(), curlCmd(),
-		uninstall(), version(), listNamespaces(), listContexts(),
+		configCmd(),
+		connectCmd(),
+		curlCmd(),
+		dockerRunCmd(),
+		gatherLogs(),
+		genYAML(),
+		helmCmd(),
+		ingestCmd(),
+		interceptCmd(),
+		kubeauthCmd(),
+		leave(),
+		list(),
+		listContexts(),
+		listNamespaces(),
+		loglevel(),
+		quit(),
+		replaceCmd(),
+		statusCmd(),
+		uninstall(),
+		version(),
 	)
 }
 

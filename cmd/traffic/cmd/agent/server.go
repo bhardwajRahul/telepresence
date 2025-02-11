@@ -27,7 +27,7 @@ func (s *state) Version(context.Context, *emptypb.Empty) (*rpc.VersionInfo2, err
 
 func (s *state) Tunnel(server agent.Agent_TunnelServer) error {
 	ctx := server.Context()
-	stream, err := tunnel.NewServerStream(ctx, server)
+	stream, err := tunnel.NewServerStream(ctx, tunnel.ClientToAgent, server)
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "failed to connect stream: %v", err)
 	}
@@ -46,7 +46,7 @@ func (s *state) Tunnel(server agent.Agent_TunnelServer) error {
 	<-endPoint.Done()
 
 	s.ReportMetrics(ctx, &rpc.TunnelMetrics{
-		ClientSessionId: stream.SessionID(),
+		ClientSessionId: string(stream.SessionID()),
 		IngressBytes:    ingressBytes.GetValue(),
 		EgressBytes:     egressBytes.GetValue(),
 	})
@@ -58,9 +58,10 @@ func (s *state) WatchDial(session *rpc.SessionInfo, server agent.Agent_WatchDial
 	dlog.Debugf(ctx, "WatchDial called from client %s", session.SessionId)
 	defer dlog.Debugf(ctx, "WatchDial ended from client %s", session.SessionId)
 	drCh := make(chan *rpc.DialRequest)
-	s.dialWatchers.Store(session.SessionId, drCh)
+	sid := tunnel.SessionID(session.SessionId)
+	s.dialWatchers.Store(sid, drCh)
 	defer func() {
-		s.dialWatchers.Delete(session.SessionId)
+		s.dialWatchers.Delete(sid)
 	}()
 
 	for {
@@ -79,7 +80,8 @@ func (s *state) WatchDial(session *rpc.SessionInfo, server agent.Agent_WatchDial
 	}
 }
 
-func (s *state) CreateClientStream(ctx context.Context, sessionID string, id tunnel.ConnID, roundTripLatency, dialTimeout time.Duration) (tunnel.Stream, error) {
+func (s *state) CreateClientStream(ctx context.Context, _ tunnel.Tag, sessionID tunnel.SessionID, id tunnel.ConnID, roundTripLatency, dialTimeout time.Duration,
+) (tunnel.Stream, error) {
 	dlog.Debugf(ctx, "Creating tunnel to client %s for id %s", sessionID, id)
 	drCh, ok := s.dialWatchers.Load(sessionID)
 	var stCh <-chan tunnel.Stream

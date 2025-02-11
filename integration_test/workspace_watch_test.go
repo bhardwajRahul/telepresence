@@ -43,6 +43,9 @@ func (s *notConnectedSuite) Test_WorkspaceListener() {
 			spec.ServicePort = pi.ServicePort
 			spec.ServicePortName = pi.ServicePortName
 			spec.ServiceUid = pi.ServiceUid
+			spec.ContainerPort = pi.ContainerPort
+			spec.Protocol = pi.Protocol
+			spec.ContainerName = pi.ContainerName
 			if pi.ServiceUid != "" {
 				if pi.ServicePortName != "" {
 					spec.PortIdentifier = pi.ServicePortName

@@ -29,8 +29,6 @@ import (
 
 const (
 	supportedKubeAPIVersion = "1.17.0"
-	agentContainerName      = "traffic-agent"
-	managerAppName          = "traffic-manager"
 )
 
 type Info interface {
@@ -39,6 +37,8 @@ type Info interface {
 
 	// ID of the installed ns
 	ID() string
+
+	ServiceIP() net.IP
 
 	// SetAdditionalAlsoProxy assigns a slice that will be added to the Routing.AlsoProxySubnets slice
 	// when notifications are sent.
@@ -403,6 +403,10 @@ func (oi *info) SetAdditionalAlsoProxy(ctx context.Context, subnets []*rpc.IPNet
 
 func (oi *info) ID() string {
 	return oi.installID
+}
+
+func (oi *info) ServiceIP() net.IP {
+	return oi.InjectorSvcIp
 }
 
 func (oi *info) ClusterDomain() string {

@@ -29,11 +29,12 @@ const (
 
 type device struct {
 	*channel.Endpoint
-	file *os.File
-	ctx  context.Context
-	name string
-	wb   bytes.Buffer
-	wg   sync.WaitGroup
+	file           *os.File
+	ctx            context.Context
+	name           string
+	interfaceIndex uint32
+	wb             bytes.Buffer
+	wg             sync.WaitGroup
 }
 
 func openTun(ctx context.Context) (*device, error) {
@@ -66,27 +67,17 @@ func openTun(ctx context.Context) (*device, error) {
 	if err != nil {
 		return nil, err
 	}
-	mtu, err := getMTU(name)
+	iface, err := net.InterfaceByName(name)
 	if err != nil {
 		return nil, err
 	}
 	return &device{
-		file:     os.NewFile(uintptr(fd), ""),
-		ctx:      ctx,
-		name:     name,
-		Endpoint: channel.New(defaultDevOutQueueLen, mtu, ""),
+		file:           os.NewFile(uintptr(fd), ""),
+		ctx:            ctx,
+		name:           name,
+		interfaceIndex: uint32(iface.Index),
+		Endpoint:       channel.New(defaultDevOutQueueLen, uint32(iface.MTU), ""),
 	}, nil
-}
-
-func getMTU(name string) (mtu uint32, err error) {
-	err = withSocket(unix.AF_INET, func(fd int) error {
-		ifr, err := unix.IoctlGetIfreqMTU(fd, name)
-		if err == nil {
-			mtu = uint32(ifr.MTU)
-		}
-		return err
-	})
-	return mtu, err
 }
 
 // Close closes both the tun-device and the Endpoint. This function overrides the LinkEndpoint.Close so
@@ -104,10 +95,6 @@ func (d *device) addSubnet(_ context.Context, subnet netip.Prefix) error {
 		return err
 	}
 	return routing.Add(1, subnet, dest)
-}
-
-func (d *device) index() uint32 {
-	panic("not implemented")
 }
 
 func (d *device) removeSubnet(_ context.Context, subnet netip.Prefix) error {

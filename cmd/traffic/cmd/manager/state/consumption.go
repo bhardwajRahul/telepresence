@@ -60,27 +60,25 @@ func (m *SessionConsumptionMetrics) SetLastUpdate(t time.Time) {
 	m.lastUpdate.Store(t.UnixNano())
 }
 
-func (s *state) GetSessionConsumptionMetrics(sessionID string) *SessionConsumptionMetrics {
-	if css, ok := s.GetSession(sessionID).(*clientSessionState); ok {
-		return css.ConsumptionMetrics()
+func (s *state) GetSessionConsumptionMetrics(id tunnel.SessionID) *SessionConsumptionMetrics {
+	if cs := s.GetClient(id); cs != nil {
+		return cs.ConsumptionMetrics()
 	}
 	return nil
 }
 
-func (s *state) GetAllSessionConsumptionMetrics() map[string]*SessionConsumptionMetrics {
-	allSCM := make(map[string]*SessionConsumptionMetrics)
-	s.sessions.Range(func(sessionID string, sess SessionState) bool {
-		if css, ok := sess.(*clientSessionState); ok {
-			allSCM[sessionID] = css.ConsumptionMetrics()
-		}
+func (s *state) GetAllSessionConsumptionMetrics() map[tunnel.SessionID]*SessionConsumptionMetrics {
+	allSCM := make(map[tunnel.SessionID]*SessionConsumptionMetrics)
+	s.clients.Range(func(id tunnel.SessionID, cs *ClientSession) bool {
+		allSCM[id] = cs.ConsumptionMetrics()
 		return true
 	})
 	return allSCM
 }
 
 func (s *state) AddSessionConsumptionMetrics(metrics *manager.TunnelMetrics) {
-	cs, ok := s.GetSession(metrics.ClientSessionId).(*clientSessionState)
-	if ok {
+	cs := s.GetClient(tunnel.SessionID(metrics.ClientSessionId))
+	if cs != nil {
 		cm := cs.consumptionMetrics
 		cm.FromClientBytes.Increment(metrics.IngressBytes)
 		cm.ToClientBytes.Increment(metrics.EgressBytes)
@@ -88,10 +86,9 @@ func (s *state) AddSessionConsumptionMetrics(metrics *manager.TunnelMetrics) {
 }
 
 // RefreshSessionConsumptionMetrics refreshes the metrics associated to a specific session.
-func (s *state) RefreshSessionConsumptionMetrics(sessionID string) {
-	css, ok := s.GetSession(sessionID).(*clientSessionState)
-	if !ok {
-		return
+func (s *state) RefreshSessionConsumptionMetrics(sessionID tunnel.SessionID) {
+	cs := s.GetClient(sessionID)
+	if cs != nil {
+		cs.ConsumptionMetrics().AddTimeSpent()
 	}
-	css.ConsumptionMetrics().AddTimeSpent()
 }

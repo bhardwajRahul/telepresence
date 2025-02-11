@@ -12,10 +12,27 @@ import (
 func DescribeIntercepts(ctx context.Context, iis []*manager.InterceptInfo, igs []*rpc.IngestInfo, volumeMountsPrevented error, debug bool) string {
 	sb := strings.Builder{}
 	if len(iis) > 0 {
-		sb.WriteString("intercepted")
+		var nis, ris []*manager.InterceptInfo
 		for _, ii := range iis {
-			sb.WriteByte('\n')
-			describeIntercept(ctx, ii, volumeMountsPrevented, debug, &sb)
+			if ii.Spec.NoDefaultPort {
+				ris = append(ris, ii)
+			} else {
+				nis = append(nis, ii)
+			}
+		}
+		if len(nis) > 0 {
+			sb.WriteString("intercepted")
+			for _, ii := range nis {
+				sb.WriteByte('\n')
+				describeIntercept(ctx, ii, volumeMountsPrevented, debug, &sb)
+			}
+		}
+		if len(ris) > 0 {
+			sb.WriteString("replaced")
+			for _, ii := range ris {
+				sb.WriteByte('\n')
+				describeIntercept(ctx, ii, volumeMountsPrevented, debug, &sb)
+			}
 		}
 	}
 	if len(igs) > 0 {

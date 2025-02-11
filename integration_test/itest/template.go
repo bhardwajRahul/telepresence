@@ -13,15 +13,38 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+type ContainerPort struct {
+	Number   int
+	Name     string
+	Protocol core.Protocol
+}
+
+type ServicePort struct {
+	Number     int
+	Name       string
+	Protocol   core.Protocol
+	TargetPort string
+}
+
 type Generic struct {
 	Name           string
 	Annotations    map[string]string
 	Environment    []core.EnvVar
 	TargetPort     string
+	ServicePorts   []ServicePort
 	ContainerPort  int
+	ContainerPorts []ContainerPort
 	Image          string
 	Registry       string
 	ServiceAccount string
+}
+
+type PersistentVolume struct {
+	// Deployment and service name
+	Name string
+
+	// MountDirectory in the pod
+	MountDirectory string
 }
 
 func OpenTemplate(ctx context.Context, name string, data any) (io.Reader, error) {

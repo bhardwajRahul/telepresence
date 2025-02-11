@@ -34,6 +34,9 @@ export DOCKER_BUILDKIT := 1
 .PHONY: FORCE
 FORCE:
 
+EXTERNAL_FUSEFTP=0
+LINKED_FUSEFTP=0
+
 # Build with CGO_ENABLED=0 on all platforms to ensure that the binary is as
 # portable as possible, but we must make an exception for darwin, because
 # the Go implementation of the DNS resolver doesn't work properly there unless
@@ -41,7 +44,12 @@ FORCE:
 ifeq ($(GOOS),darwin)
 CGO_ENABLED=1
 else
+ifeq ($(GOOS),linux)
+# The winfsp module requires CGO on Linux.
+CGO_ENABLED=$(LINKED_FUSEFTP)
+else
 CGO_ENABLED=0
+endif
 endif
 
 ifeq ($(GOOS),windows)
@@ -51,8 +59,6 @@ else
 BEXE=
 BZIP=
 endif
-
-EMBED_FUSEFTP=1
 
 # Generate: artifacts that get checked in to Git
 # ==============================================
@@ -86,7 +92,7 @@ protoc: protoc-clean $(tools/protoc) $(tools/protoc-gen-go) $(tools/protoc-gen-g
 .PHONY: generate
 generate: ## (Generate) Update generated files that get checked in to Git
 generate: generate-clean
-generate: protoc $(tools/go-mkopensource) $(BUILDDIR)/$(shell go env GOVERSION).src.tar.gz docs-files
+generate: protoc $(tools/go-mkopensource) $(BUILDDIR)/$(shell go env GOVERSION).src.tar.gz
 	cd ./rpc && export GOFLAGS=-mod=mod && go mod tidy && go mod vendor && rm -rf vendor
 	cd ./pkg/vif/testdata/router && export GOFLAGS=-mod=mod && go mod tidy && go mod vendor && rm -rf vendor
 	cd ./tools/src/test-report && export GOFLAGS=-mod=mod && go mod tidy && go mod vendor && rm -rf vendor
@@ -108,12 +114,16 @@ generate: protoc $(tools/go-mkopensource) $(BUILDDIR)/$(shell go env GOVERSION).
 
 	rm -rf vendor
 
+generate: docs-files
+
 .PHONY: generate-clean
 generate-clean: ## (Generate) Delete generated files
 	rm -rf ./rpc/vendor
 	rm -rf ./vendor
 	rm -f DEPENDENCIES.md
 	rm -f DEPENDENCY_LICENSES.md
+	rm -f docs/release-notes.md*
+	rm -f docs/README.md
 
 CHANGELOG.yml: FORCE
 	@# Check if the version is in the x.x.x format (GA release)
@@ -124,7 +134,7 @@ CHANGELOG.yml: FORCE
 		git add CHANGELOG.yml; \
 	fi
 
-docs-files: docs/README.md docs/release-notes.md docs/release-notes.mdx
+docs-files: docs/README.md docs/release-notes.md docs/release-notes.mdx docs/variables.yml
 
 docs/README.md: docs/doc-links.yml $(tools/tocgen)
 	$(tools/tocgen) --input $< > $@
@@ -136,6 +146,10 @@ docs/release-notes.md: CHANGELOG.yml $(tools/relnotesgen)
 
 docs/release-notes.mdx: CHANGELOG.yml $(tools/relnotesgen)
 	$(tools/relnotesgen) --mdx --input $< > $@
+	git add $@
+
+docs/variables.yml: CHANGELOG.yml $(tools/relnotesgen)
+	$(tools/relnotesgen) --variables --input $< > $@
 	git add $@
 
 PKG_VERSION = $(shell go list ./pkg/version)
@@ -161,10 +175,19 @@ else
 	sdkroot=
 endif
 
+BUILD_TAGS=
+build-deps:
+
 ifeq ($(DOCKER_BUILD),1)
+BUILD_TAGS=-tags docker
+else
+ifeq ($(EXTERNAL_FUSEFTP),1)
+BUILD_TAGS=-tags external_fuseftp
 build-deps:
 else
-ifeq ($(EMBED_FUSEFTP),1)
+ifeq ($(LINKED_FUSEFTP),1)
+BUILD_TAGS=-tags linked_fuseftp
+else
 FUSEFTP_VERSION=$(shell go list -m -f {{.Version}} github.com/telepresenceio/go-fuseftp/rpc)
 
 $(BUILDDIR)/fuseftp-$(GOOS)-$(GOARCH)$(BEXE): go.mod
@@ -175,8 +198,7 @@ pkg/client/remotefs/fuseftp.bits: $(BUILDDIR)/fuseftp-$(GOOS)-$(GOARCH)$(BEXE) F
 	cp $< $@
 
 build-deps: pkg/client/remotefs/fuseftp.bits
-else
-build-deps:
+endif
 endif
 endif
 
@@ -208,14 +230,10 @@ $(TELEPRESENCE): build-deps $(BINDIR)/wintun.dll FORCE
 endif
 	mkdir -p $(@D)
 ifeq ($(DOCKER_BUILD),1)
-	CGO_ENABLED=$(CGO_ENABLED) $(sdkroot) go build -tags docker -trimpath -ldflags=-X=$(PKG_VERSION).Version=$(TELEPRESENCE_VERSION) -o $@ ./cmd/telepresence
+	CGO_ENABLED=$(CGO_ENABLED) $(sdkroot) go build $(BUILD_TAGS) -trimpath -ldflags=-X=$(PKG_VERSION).Version=$(TELEPRESENCE_VERSION) -o $@ ./cmd/telepresence
 else
 # -buildmode=pie addresses https://github.com/datawire/telepresence2-proprietary/issues/315
-ifeq ($(EMBED_FUSEFTP),1)
-	CGO_ENABLED=$(CGO_ENABLED) $(sdkroot) go build -tags embed_fuseftp -buildmode=pie -trimpath -ldflags=-X=$(PKG_VERSION).Version=$(TELEPRESENCE_VERSION) -o $@ ./cmd/telepresence
-else
-	CGO_ENABLED=$(CGO_ENABLED) $(sdkroot) go build -buildmode=pie -trimpath -ldflags=-X=$(PKG_VERSION).Version=$(TELEPRESENCE_VERSION) -o $@ ./cmd/telepresence
-endif
+	CGO_ENABLED=$(CGO_ENABLED) $(sdkroot) go build $(BUILD_TAGS) -buildmode=pie -trimpath -ldflags=-X=$(PKG_VERSION).Version=$(TELEPRESENCE_VERSION) -o $@ ./cmd/telepresence
 endif
 
 ifeq ($(GOOS),windows)
@@ -375,7 +393,7 @@ shellscripts += ./packaging/windows-package.sh
 
 lint: lint-rpc lint-go
 
-GOLANGCI_VERSION:=v1.62.2
+GOLANGCI_VERSION:=v1.63.4
 
 lint-go: lint-deps ## (QA) Run the golangci-lint
 	$(eval badimports = $(shell find cmd integration_test pkg -name '*.go' | grep -v '/mocks/' | xargs $(tools/gosimports) --local github.com/datawire/,github.com/telepresenceio/ -l))
@@ -431,11 +449,7 @@ endif
 	# is only used for extensions. Therefore, we want to validate that our tests, and
 	# telepresence, run without requiring any outside dependencies.
 	set -o pipefail
-ifeq ($(EMBED_FUSEFTP),1)
-	TELEPRESENCE_MAX_LOGFILES=300 TELEPRESENCE_LOGIN_DOMAIN=127.0.0.1 CGO_ENABLED=$(CGO_ENABLED) go test -tags embed_fuseftp -failfast -json -timeout=80m ./integration_test/... | $(tools/test-report)
-else
-	TELEPRESENCE_MAX_LOGFILES=300 TELEPRESENCE_LOGIN_DOMAIN=127.0.0.1 CGO_ENABLED=$(CGO_ENABLED) go test -failfast -json -timeout=80m ./integration_test/... | $(tools/test-report)
-endif
+	TELEPRESENCE_MAX_LOGFILES=300 TELEPRESENCE_LOGIN_DOMAIN=127.0.0.1 CGO_ENABLED=$(CGO_ENABLED) go test $(BUILD_TAGS) -failfast -json -timeout=80m ./integration_test/... | $(tools/test-report)
 
 .PHONY: _login
 _login:

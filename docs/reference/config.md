@@ -28,7 +28,7 @@ client:
     userDaemon: debug
   images:
     registry: privateRepo # This overrides the default docker.io/datawire repo
-    agentImage: tel2:$version$ # This overrides the agent image to inject when intercepting
+    agentImage: tel2:$version$ # This overrides the agent image to inject when engaging with a workload
   grpc:
     maxReceiveSize: 10Mi
   dns:
@@ -124,7 +124,7 @@ These are the valid fields for the `client.images` key:
 
 ### Intercept
 
-The `intercept` controls applies to how Telepresence will intercept the communications to the intercepted service.
+The `intercept` controls applies to how Telepresence will intercept the communications to replaced containers and intercepted services.
 
 | Field                 | Description                                                                                                                                    | Type                | Default      |
 |-----------------------|------------------------------------------------------------------------------------------------------------------------------------------------|---------------------|--------------|
@@ -270,7 +270,7 @@ logLevels:
   userDaemon: debug
 images:
   registry: privateRepo # This overrides the default docker.io/datawire repo
-  agentImage: tel2:$version$ # This overrides the agent image to inject when intercepting
+  agentImage: tel2:$version$ # This overrides the agent image to inject when engaging with a workload
 grpc:
   maxReceiveSize: 10Mi
 ```

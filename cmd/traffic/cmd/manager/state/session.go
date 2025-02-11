@@ -17,6 +17,7 @@ import (
 const AgentSessionIDPrefix = "agent:"
 
 type SessionState interface {
+	ID() tunnel.SessionID
 	Active() bool
 	Cancel()
 	AwaitingBidiMapOwnerSessionID(stream tunnel.Stream) string
@@ -35,6 +36,7 @@ type awaitingBidiPipe struct {
 }
 
 type sessionState struct {
+	id                  tunnel.SessionID
 	doneCh              <-chan struct{}
 	cancel              context.CancelFunc
 	lastMarked          int64
@@ -42,14 +44,18 @@ type sessionState struct {
 	dials               chan *rpc.DialRequest
 }
 
+func (s *sessionState) ID() tunnel.SessionID {
+	return s.id
+}
+
 // EstablishBidiPipe registers the given stream as waiting for a matching stream to arrive in a call
 // to Tunnel, sends a DialRequest to the owner of this sessionState, and then waits. When the call
 // arrives, a BidiPipe connecting the two streams is returned.
-func (ss *sessionState) EstablishBidiPipe(ctx context.Context, stream tunnel.Stream) (tunnel.Endpoint, error) {
+func (s *sessionState) EstablishBidiPipe(ctx context.Context, stream tunnel.Stream) (tunnel.Endpoint, error) {
 	// Dispatch directly to agent and let the dial happen there
 	bidiPipeCh := make(chan tunnel.Endpoint)
 	id := stream.ID()
-	ss.awaitingBidiPipeMap.Store(id, awaitingBidiPipe{ctx: ctx, stream: stream, bidiPipeCh: bidiPipeCh})
+	s.awaitingBidiPipeMap.Store(id, awaitingBidiPipe{ctx: ctx, stream: stream, bidiPipeCh: bidiPipeCh})
 
 	// Send dial request to the client/agent
 	dr := &rpc.DialRequest{
@@ -58,9 +64,9 @@ func (ss *sessionState) EstablishBidiPipe(ctx context.Context, stream tunnel.Str
 		DialTimeout:      int64(stream.DialTimeout()),
 	}
 	select {
-	case <-ss.Done():
+	case <-s.Done():
 		return nil, status.Error(codes.Canceled, "session cancelled")
-	case ss.dials <- dr:
+	case s.dials <- dr:
 	}
 
 	// Wait for the client/agent to connect. Allow extra time for the call
@@ -69,15 +75,15 @@ func (ss *sessionState) EstablishBidiPipe(ctx context.Context, stream tunnel.Str
 	select {
 	case <-ctx.Done():
 		return nil, status.Error(codes.DeadlineExceeded, "timeout while establishing bidipipe")
-	case <-ss.Done():
+	case <-s.Done():
 		return nil, status.Error(codes.Canceled, "session cancelled")
 	case bidi := <-bidiPipeCh:
 		return bidi, nil
 	}
 }
 
-func (ss *sessionState) AwaitingBidiMapOwnerSessionID(stream tunnel.Stream) string {
-	if abp, ok := ss.awaitingBidiPipeMap.Load(stream.ID()); ok {
+func (s *sessionState) AwaitingBidiMapOwnerSessionID(stream tunnel.Stream) tunnel.SessionID {
+	if abp, ok := s.awaitingBidiPipeMap.Load(stream.ID()); ok {
 		return abp.stream.SessionID()
 	}
 	return ""
@@ -86,7 +92,7 @@ func (ss *sessionState) AwaitingBidiMapOwnerSessionID(stream tunnel.Stream) stri
 // OnConnect checks if a stream is waiting for the given stream to arrive in order to create a BidiPipe.
 // If that's the case, the BidiPipe is created, started, and returned by both this method and the EstablishBidiPipe
 // method that registered the waiting stream. Otherwise, this method returns nil.
-func (ss *sessionState) OnConnect(
+func (s *sessionState) OnConnect(
 	ctx context.Context,
 	stream tunnel.Stream,
 	counter *int32,
@@ -94,7 +100,7 @@ func (ss *sessionState) OnConnect(
 ) (tunnel.Endpoint, error) {
 	id := stream.ID()
 	// abp is a session corresponding to an end user machine
-	abp, ok := ss.awaitingBidiPipeMap.LoadAndDelete(id)
+	abp, ok := s.awaitingBidiPipeMap.LoadAndDelete(id)
 	if !ok {
 		return nil, nil
 	}
@@ -110,41 +116,38 @@ func (ss *sessionState) OnConnect(
 
 	defer close(abp.bidiPipeCh)
 	select {
-	case <-ss.Done():
+	case <-s.Done():
 		return nil, status.Error(codes.Canceled, "session cancelled")
 	case abp.bidiPipeCh <- bidiPipe:
 		return bidiPipe, nil
 	}
 }
 
-func (ss *sessionState) Active() bool {
-	return true
+func (s *sessionState) Cancel() {
+	s.cancel()
+	close(s.dials)
 }
 
-func (ss *sessionState) Cancel() {
-	ss.cancel()
-	close(ss.dials)
+func (s *sessionState) Dials() <-chan *rpc.DialRequest {
+	return s.dials
 }
 
-func (ss *sessionState) Dials() <-chan *rpc.DialRequest {
-	return ss.dials
+func (s *sessionState) Done() <-chan struct{} {
+	return s.doneCh
 }
 
-func (ss *sessionState) Done() <-chan struct{} {
-	return ss.doneCh
+func (s *sessionState) LastMarked() time.Time {
+	return time.Unix(0, atomic.LoadInt64(&s.lastMarked))
 }
 
-func (ss *sessionState) LastMarked() time.Time {
-	return time.Unix(0, atomic.LoadInt64(&ss.lastMarked))
+func (s *sessionState) SetLastMarked(lastMarked time.Time) {
+	atomic.StoreInt64(&s.lastMarked, lastMarked.UnixNano())
 }
 
-func (ss *sessionState) SetLastMarked(lastMarked time.Time) {
-	atomic.StoreInt64(&ss.lastMarked, lastMarked.UnixNano())
-}
-
-func newSessionState(ctx context.Context, now time.Time) sessionState {
+func newSessionState(ctx context.Context, id tunnel.SessionID, now time.Time) sessionState {
 	ctx, cancel := context.WithCancel(ctx)
 	return sessionState{
+		id:                  id,
 		doneCh:              ctx.Done(),
 		cancel:              cancel,
 		lastMarked:          now.UnixNano(),
@@ -153,53 +156,50 @@ func newSessionState(ctx context.Context, now time.Time) sessionState {
 	}
 }
 
-type clientSessionState struct {
+type ClientSession struct {
+	*rpc.ClientInfo
 	sessionState
 	pool *tunnel.Pool
 
 	consumptionMetrics *SessionConsumptionMetrics
 }
 
-func (css *clientSessionState) ConsumptionMetrics() *SessionConsumptionMetrics {
-	return css.consumptionMetrics
+func (cs *ClientSession) ConsumptionMetrics() *SessionConsumptionMetrics {
+	return cs.consumptionMetrics
 }
 
-func newClientSessionState(ctx context.Context, ts time.Time) *clientSessionState {
-	return &clientSessionState{
-		sessionState: newSessionState(ctx, ts),
-		pool:         tunnel.NewPool(),
-
+func newClientSessionState(ctx context.Context, id tunnel.SessionID, ci *rpc.ClientInfo, ts time.Time) *ClientSession {
+	return &ClientSession{
+		ClientInfo:         ci,
+		sessionState:       newSessionState(ctx, id, ts),
+		pool:               tunnel.NewPool(),
 		consumptionMetrics: NewSessionConsumptionMetrics(),
 	}
 }
 
-type agentSessionState struct {
+type AgentSession struct {
+	*rpc.AgentInfo
 	sessionState
 	dnsRequests  chan *rpc.DNSRequest
-	dnsResponses map[string]chan *rpc.DNSResponse
-	active       atomic.Bool
+	dnsResponses *xsync.MapOf[string, chan *rpc.DNSResponse]
 }
 
-func newAgentSessionState(ctx context.Context, ts time.Time) *agentSessionState {
-	as := &agentSessionState{
-		sessionState: newSessionState(ctx, ts),
+func newAgentSessionState(ctx context.Context, id tunnel.SessionID, ai *rpc.AgentInfo, ts time.Time) *AgentSession {
+	as := &AgentSession{
+		AgentInfo:    ai,
+		sessionState: newSessionState(ctx, id, ts),
 		dnsRequests:  make(chan *rpc.DNSRequest),
-		dnsResponses: make(map[string]chan *rpc.DNSResponse),
+		dnsResponses: xsync.NewMapOf[string, chan *rpc.DNSResponse](),
 	}
-	as.active.Store(true)
 	return as
 }
 
-func (ss *agentSessionState) Active() bool {
-	return ss.active.Load()
-}
-
-func (ss *agentSessionState) Cancel() {
-	ss.active.Store(false)
-	close(ss.dnsRequests)
-	for k, lr := range ss.dnsResponses {
-		delete(ss.dnsResponses, k)
+func (as *AgentSession) Cancel() {
+	close(as.dnsRequests)
+	as.dnsResponses.Range(func(k string, lr chan *rpc.DNSResponse) bool {
+		as.dnsResponses.Delete(k)
 		close(lr)
-	}
-	ss.sessionState.Cancel()
+		return true
+	})
+	as.sessionState.Cancel()
 }

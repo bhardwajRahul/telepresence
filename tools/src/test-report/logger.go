@@ -16,7 +16,7 @@ type Logger struct {
 }
 
 func NewLogger(ctx context.Context, path string) (*Logger, error) {
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return nil, err
 	}

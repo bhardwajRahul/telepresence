@@ -1,4 +1,4 @@
-//go:build embed_fuseftp && !docker
+//go:build !(docker || external_fuseftp || linked_fuseftp)
 
 package remotefs
 

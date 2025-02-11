@@ -39,6 +39,7 @@ import (
 	"github.com/datawire/dtest"
 	telcharts "github.com/telepresenceio/telepresence/v2/charts"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
+	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/socket"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/userd/k8s"
@@ -232,6 +233,8 @@ func (s *cluster) tearDown(ctx context.Context) {
 		ctx = WithWorkingDir(ctx, GetOSSRoot(ctx))
 		_ = Run(ctx, "kubectl", "delete", "-f", filepath.Join("testdata", "k8s", "client_rbac.yaml"))
 		_ = Run(ctx, "kubectl", "delete", "--wait=false", "ns", "-l", "purpose=tp-cli-testing")
+		_ = Run(ctx, "kubectl", "delete", "--wait=false", "pv", "-l", "purpose=tp-cli-testing")
+		_ = Run(ctx, "kubectl", "delete", "--wait=false", "storageclass", "-l", "purpose=tp-cli-testing")
 	}
 }
 
@@ -374,7 +377,7 @@ func (s *cluster) withBasicConfig(c context.Context, t *testing.T) context.Conte
 
 	config.Grpc().MaxReceiveSizeV, _ = resource.ParseQuantity("10Mi")
 	config.Intercept().UseFtp = true
-	config.Routing().RecursionBlockDuration = 5 * time.Millisecond
+	config.Routing().RecursionBlockDuration = 2 * time.Millisecond
 
 	configYaml, err := config.MarshalYAML()
 	require.NoError(t, err)
@@ -510,17 +513,22 @@ func (s *cluster) CapturePodLogs(ctx context.Context, app, container, ns string)
 	}
 	present := struct{}{}
 
-	// Use another logger to avoid errors due to logs arriving after the tests complete.
-	ctx = dlog.WithLogger(ctx, dlog.WrapLogrus(logrus.StandardLogger()))
-	pod := pods[0]
-	key := pod
-	if container != "" {
-		key += "/" + container
+	var pod string
+	for i, key := range pods {
+		if container != "" {
+			key += "/" + container
+		}
+		if _, ok := s.logCapturingPods.LoadOrStore(key, present); !ok {
+			pod = pods[i]
+			break
+		}
 	}
-	if _, ok := s.logCapturingPods.LoadOrStore(key, present); ok {
-		return ""
+	if pod == "" {
+		return "" // All pods already captured
 	}
 
+	// Use another logger to avoid errors due to logs arriving after the tests complete.
+	ctx = dlog.WithLogger(ctx, dlog.WrapLogrus(logrus.StandardLogger()))
 	logFile, err := os.Create(
 		filepath.Join(filelocation.AppUserLogDir(ctx), fmt.Sprintf("%s-%s.log", dtime.Now().Format("20060102T150405"), pod)))
 	if err != nil {
@@ -800,10 +808,10 @@ func (s *cluster) TelepresenceHelmInstall(ctx context.Context, upgrade bool, set
 	if _, _, err = Telepresence(WithUser(ctx, "default"), args...); err != nil {
 		return "", err
 	}
-	if err = RolloutStatusWait(ctx, nss.Namespace, "deploy/traffic-manager"); err != nil {
+	if err = RolloutStatusWait(ctx, nss.Namespace, "deploy/"+agentmap.ManagerAppName); err != nil {
 		return "", err
 	}
-	logFileName := s.self.CapturePodLogs(ctx, "traffic-manager", "", nss.Namespace)
+	logFileName := s.self.CapturePodLogs(ctx, agentmap.ManagerAppName, "", nss.Namespace)
 	return logFileName, nil
 }
 
@@ -827,7 +835,7 @@ func (s *cluster) UninstallTrafficManager(ctx context.Context, managerNamespace 
 	TelepresenceOk(ctx, append([]string{"helm", "uninstall", "--manager-namespace", managerNamespace}, args...)...)
 
 	// Helm uninstall does deletions asynchronously, so let's wait until the deployment is gone
-	assert.Eventually(t, func() bool { return len(RunningPodNames(ctx, "traffic-manager", managerNamespace)) == 0 },
+	assert.Eventually(t, func() bool { return len(RunningPodNames(ctx, agentmap.ManagerAppName, managerNamespace)) == 0 },
 		60*time.Second, 4*time.Second, "traffic-manager deployment was not removed")
 	TelepresenceQuitOk(ctx)
 }
@@ -909,7 +917,7 @@ func TelepresenceOk(ctx context.Context, args ...string) string {
 	stdout, stderr, err := Telepresence(ctx, args...)
 	require.NoError(t, err, "telepresence was unable to run, stdout %s", stdout)
 	if err == nil {
-		if strings.HasPrefix(stderr, "Warning:") && !strings.ContainsRune(stderr, '\n') {
+		if (strings.HasPrefix(stderr, "Warning:") || strings.Contains(stderr, "has been deprecated")) && !strings.ContainsRune(stderr, '\n') {
 			// Accept warnings, but log them.
 			dlog.Warn(ctx, stderr)
 		} else {
@@ -1120,11 +1128,11 @@ func DeleteNamespaces(ctx context.Context, namespaces ...string) {
 	wg.Wait()
 }
 
-// StartLocalHttpEchoServerWithHost is like StartLocalHttpEchoServer but binds to a specific host instead of localhost.
-func StartLocalHttpEchoServerWithHost(ctx context.Context, name string, host string) (int, context.CancelFunc) {
+// StartLocalHttpEchoServerWithAddr is like StartLocalHttpEchoServer but binds to a specific host instead of localhost.
+func StartLocalHttpEchoServerWithAddr(ctx context.Context, name, addr string) (int, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(ctx)
 	lc := net.ListenConfig{}
-	l, err := lc.Listen(ctx, "tcp", net.JoinHostPort(host, "0"))
+	l, err := lc.Listen(ctx, "tcp", addr)
 	require.NoError(getT(ctx), err, "failed to listen on localhost")
 	sc := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1140,9 +1148,9 @@ func StartLocalHttpEchoServerWithHost(ctx context.Context, name string, host str
 		defer cancel()
 		err = sc.Shutdown(ctx)
 		if err != nil {
-			dlog.Errorf(ctx, "http server on %s exited with error: %v", host, err)
+			dlog.Errorf(ctx, "http server on %s exited with error: %v", addr, err)
 		} else {
-			dlog.Errorf(ctx, "http server on %s exited", host)
+			dlog.Errorf(ctx, "http server on %s exited", addr)
 		}
 	}()
 	return l.Addr().(*net.TCPAddr).Port, cancel
@@ -1151,7 +1159,7 @@ func StartLocalHttpEchoServerWithHost(ctx context.Context, name string, host str
 // StartLocalHttpEchoServer starts a local http server that echoes a line with the given name and
 // the current URL path. The port is returned together with function that cancels the server.
 func StartLocalHttpEchoServer(ctx context.Context, name string) (int, context.CancelFunc) {
-	return StartLocalHttpEchoServerWithHost(ctx, name, "localhost")
+	return StartLocalHttpEchoServerWithAddr(ctx, name, "localhost:0")
 }
 
 // PingInterceptedEchoServer assumes that a server has been created using StartLocalHttpEchoServer and

@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -27,15 +28,10 @@ type largeFilesSuite struct {
 	itest.Suite
 	itest.TrafficManager
 	name         string
+	manifests    [][]byte
 	serviceCount int
 	mountPoint   []string
 	largeFiles   []string
-}
-
-type qname struct {
-	Name       string
-	Namespace  string
-	VolumeSize string
 }
 
 func (s *largeFilesSuite) SuiteName() string {
@@ -70,30 +66,42 @@ func (s *largeFilesSuite) ServiceCount() int {
 }
 
 func (s *largeFilesSuite) SetupSuite() {
-	if s.IsCI() || s.LargeFileTestDisabled() {
-		s.T().Skip("Disabled. Test is too demanding for the current setup (requires more CPU or a remote cluster)")
-		return
-	}
 	s.Suite.SetupSuite()
 	ctx := s.Context()
-	require := s.Require()
 	wg := sync.WaitGroup{}
 	wg.Add(s.ServiceCount())
-	k8s := filepath.Join("testdata", "k8s")
+	mfPath := filepath.Join("testdata", "k8s", "hello-pv-volume.goyaml")
+	s.NoError(s.Kubectl(ctx, "apply", "-f", filepath.Join("testdata", "k8s", "local-pvc.yaml")))
+	s.manifests = make([][]byte, s.ServiceCount())
 	for i := 0; i < s.ServiceCount(); i++ {
 		go func(i int) {
 			defer wg.Done()
 			svc := fmt.Sprintf("%s-%d", s.Name(), i)
-			rdr, err := itest.OpenTemplate(ctx, filepath.Join(k8s, "hello-pv-volume.yaml"), &qname{
-				Name:       svc,
-				Namespace:  s.AppNamespace(),
-				VolumeSize: "350Mi", // must cover fileCountPerSvc * fileSize
+			mf, err := itest.ReadTemplate(ctx, mfPath, &itest.PersistentVolume{
+				Name:           svc,
+				MountDirectory: "/home/scratch",
 			})
-			require.NoError(err)
-			require.NoError(s.Kubectl(dos.WithStdin(ctx, rdr), "apply", "-f", "-"))
+			s.NoError(err)
+			s.NoError(s.Kubectl(dos.WithStdin(ctx, bytes.NewReader(mf)), "apply", "-f", "-"))
+			s.manifests[i] = mf
 			s.NoError(itest.RolloutStatusWait(ctx, s.AppNamespace(), "deploy/"+svc))
 		}(i)
 	}
+	wg.Wait()
+}
+
+func (s *largeFilesSuite) TearDownSuite() {
+	ctx := s.Context()
+	wg := sync.WaitGroup{}
+	wg.Add(s.ServiceCount())
+	for i := 0; i < s.ServiceCount(); i++ {
+		go func(i int) {
+			defer wg.Done()
+			s.NoError(s.Kubectl(dos.WithStdin(ctx, bytes.NewReader(s.manifests[i])), "delete", "-f", "-"))
+		}(i)
+	}
+	s.NoError(s.Kubectl(ctx, "delete", "-f", filepath.Join("testdata", "k8s", "local-pvc.yaml")))
+	itest.TelepresenceQuitOk(ctx)
 	wg.Wait()
 }
 
@@ -130,23 +138,6 @@ func (s *largeFilesSuite) leaveIntercepts(ctx context.Context) {
 	for i := 0; i < s.ServiceCount(); i++ {
 		itest.TelepresenceOk(ctx, "leave", fmt.Sprintf("%s-%d", s.Name(), i))
 	}
-}
-
-func (s *largeFilesSuite) TearDownSuite() {
-	ctx := s.Context()
-	k8s := filepath.Join("testdata", "k8s")
-	wg := sync.WaitGroup{}
-	wg.Add(s.ServiceCount())
-	for i := 0; i < s.ServiceCount(); i++ {
-		go func(i int) {
-			defer wg.Done()
-			rdr, err := itest.OpenTemplate(ctx, filepath.Join(k8s, "hello-pv-volume.yaml"), &qname{Name: fmt.Sprintf("%s-%d", s.Name(), i), Namespace: s.AppNamespace()})
-			s.NoError(err)
-			s.NoError(s.Kubectl(dos.WithStdin(ctx, rdr), "delete", "-f", "-"))
-		}(i)
-	}
-	itest.TelepresenceQuitOk(ctx)
-	wg.Wait()
 }
 
 func (s *largeFilesSuite) Test_LargeFileIntercepts_fuseftp() {

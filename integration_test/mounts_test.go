@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -14,11 +15,12 @@ import (
 	"github.com/datawire/dlib/dlog"
 	"github.com/datawire/dlib/dtime"
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
+	"github.com/telepresenceio/telepresence/v2/pkg/dos"
 )
 
 type mountsSuite struct {
 	itest.Suite
-	itest.NamespacePair
+	itest.TrafficManager
 	eksClusterName string
 }
 
@@ -27,10 +29,10 @@ func (s *mountsSuite) SuiteName() string {
 }
 
 func init() {
-	itest.AddConnectedSuite("", func(h itest.NamespacePair) itest.TestingSuite {
+	itest.AddConnectedSuite("", func(h itest.TrafficManager) itest.TestingSuite {
 		return &mountsSuite{
-			Suite:         itest.Suite{Harness: h},
-			NamespacePair: h,
+			Suite:          itest.Suite{Harness: h},
+			TrafficManager: h,
 		}
 	})
 }
@@ -105,14 +107,25 @@ func (s *mountsSuite) Test_MountWrite() {
 	}
 
 	ctx := s.Context()
-	s.ApplyApp(ctx, "hello-w-volumes", "deploy/hello")
-	defer s.DeleteSvcAndWorkload(ctx, "deploy", "hello")
+	k8s := filepath.Join("testdata", "k8s")
+	rq := s.Require()
+	pvcPath := filepath.Join(k8s, "local-pvc.yaml")
+	rq.NoError(s.Kubectl(ctx, "apply", "-f", pvcPath))
+	mf, err := itest.ReadTemplate(ctx, filepath.Join(k8s, "hello-pv-volume.goyaml"), &itest.PersistentVolume{
+		Name:           "hello",
+		MountDirectory: "/data",
+	})
+	rq.NoError(err)
+
+	rq.NoError(s.Kubectl(dos.WithStdin(ctx, bytes.NewReader(mf)), "apply", "-f", "-"))
+	defer func() {
+		rq.NoError(s.Kubectl(dos.WithStdin(ctx, bytes.NewReader(mf)), "delete", "-f", "-"))
+		rq.NoError(s.Kubectl(ctx, "delete", "-f", pvcPath))
+	}()
 
 	mountPoint := filepath.Join(s.T().TempDir(), "mnt")
 	itest.TelepresenceOk(ctx, "intercept", "hello", "--mount", mountPoint, "--port", "80:80")
 	time.Sleep(2 * time.Second)
-
-	rq := s.Require()
 
 	content := "hello world\n"
 	path := filepath.Join(mountPoint, "data", "hello.txt")
@@ -123,8 +136,8 @@ func (s *mountsSuite) Test_MountWrite() {
 	mountPoint = filepath.Join(s.T().TempDir(), "data")
 	itest.TelepresenceOk(ctx, "intercept", "hello", "--mount", mountPoint, "--port", "80:80")
 	defer itest.TelepresenceOk(ctx, "leave", "hello")
+	s.CapturePodLogs(ctx, "hello", "traffic-agent", s.AppNamespace())
 
-	time.Sleep(2 * time.Second)
 	path = filepath.Join(mountPoint, "data", "hello.txt")
 	data, err := os.ReadFile(path)
 	rq.NoError(err)

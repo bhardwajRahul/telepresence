@@ -31,6 +31,7 @@ message AgentInfo {
   string namespace = 7; // namespace of the Workload
   string pod_name = 8;  // Pod name (from metadata.name)
   string pod_ip = 2;    // Pod IP (from status.podIP)
+  string pod_uid = 14;  // Pod UID
   int32 api_port = 9;   // Port number for the agent gRPC API
   int32 sftp_port = 10; // Port number for the agent SFTP server
   int32 ftp_port = 11;  // Port number for the agent FTP server
@@ -176,6 +177,9 @@ message InterceptSpec {
 
   // Whether to replace the running container.
   bool replace = 22;
+
+  // Intercept desire no default port.
+  bool no_default_port = 25;
 }
 
 enum InterceptDispositionType {
@@ -711,6 +715,15 @@ message WorkloadEventsRequest {
   string namespace = 3;
 }
 
+message UninstallAgentsRequest {
+  // The session_info identifies the client connection, and hence the
+  // namespace for the resulting watcher.
+  SessionInfo session_info = 1;
+
+  // The agents to install. Empty means all agents in the connected namespace.
+  repeated string agents = 2;
+}
+
 service Manager {
   // Version returns the version information of the Manager.
   rpc Version(google.protobuf.Empty) returns (VersionInfo2);
@@ -858,4 +871,8 @@ service Manager {
   // connection and responds with a Tunnel. The manager then connects the
   // two tunnels.
   rpc WatchDial(SessionInfo) returns (stream DialRequest);
+
+  // UninstallAgents will uninstall the traffic-agent from the given workloads (or all
+  // workloads if the list is empty).
+  rpc UninstallAgents(UninstallAgentsRequest) returns (google.protobuf.Empty);
 }

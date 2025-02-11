@@ -13,10 +13,10 @@ raw markdown version, more bells and whistles at [telepresence.io](https://telep
 - Core concepts
   - [The developer experience and the inner dev loop](concepts/devloop.md)
   - [Making the remote local: Faster feedback, collaboration and debugging](concepts/faster.md)
-  - [Using Telepresence with Docker](concepts/docker.md)
   - [Intercepts](concepts/intercepts.md)
 - How do I...
   - [Code and debug an application locally](howtos/intercepts.md)
+  - [Using Telepresence with Docker](howtos/docker.md)
   - [Work with large clusters](howtos/large-clusters.md)
   - [Host a cluster in Docker or a VM](howtos/cluster-in-vm.md)
 - Technical reference
@@ -24,13 +24,13 @@ raw markdown version, more bells and whistles at [telepresence.io](https://telep
   - [Client reference](reference/client.md)
   - [Laptop-side configuration](reference/config.md)
   - [Cluster-side configuration](reference/cluster-config.md)
-  - [Using Docker for intercepts](reference/docker-run.md)
+  - [Using Docker for engagements](reference/docker-run.md)
   - [Running Telepresence in a Docker container](reference/inside-container.md)
   - [Environment variables](reference/environment.md)
-  - Intercepts
-    - [Configure intercept using CLI](reference/intercepts/cli.md)
-    - [Traffic Agent Sidecar](reference/intercepts/sidecar.md)
-    - [Target a specific container](reference/intercepts/container.md)
+  - Engagements
+    - [Configure intercept using CLI](reference/engagements/cli.md)
+    - [Traffic Agent Sidecar](reference/engagements/sidecar.md)
+    - [Target a specific container](reference/engagements/container.md)
   - [Volume mounts](reference/volume.md)
   - [DNS resolution](reference/dns.md)
   - [RBAC](reference/rbac.md)

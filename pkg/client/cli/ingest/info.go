@@ -36,7 +36,7 @@ func NewInfo(ctx context.Context, ii *rpc.IngestInfo, mountError error) *Info {
 func (ii *Info) WriteTo(w io.Writer) (int64, error) {
 	kvf := ioutil.DefaultKeyValueFormatter()
 	kvf.Prefix = "   "
-	kvf.Add("Container", ii.Container)
+	kvf.Add("Container name", ii.Container)
 	kvf.Add("Workload kind", ii.WorkloadKind)
 	if m := ii.Mount; m != nil {
 		if m.LocalDir != "" {

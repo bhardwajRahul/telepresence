@@ -217,22 +217,24 @@ func (s *notConnectedSuite) Test_RootdCloudLogLevel() {
 	}, 60*time.Second, 5*time.Second, "Root log level not updated in 20 seconds")
 
 	// Make sure the log level was set back after disconnect
-	rootLog, err = os.Open(rootLogName)
-	require.NoError(err)
-	defer rootLog.Close()
-	scn = bufio.NewScanner(rootLog)
+	s.Eventually(func() bool {
+		rootLog, err = os.Open(rootLogName)
+		require.NoError(err)
+		defer rootLog.Close()
+		scn = bufio.NewScanner(rootLog)
 
-	lines = currentLine
-	currentLine = 0
-	for scn.Scan() && currentLine <= lines {
-		currentLine++
-	}
+		lines = currentLine
+		currentLine = 0
+		for scn.Scan() && currentLine <= lines {
+			currentLine++
+		}
 
-	levelSet := false
-	for scn.Scan() && !levelSet {
-		levelSet = strings.Contains(scn.Text(), `Logging at this level "info"`)
-	}
-	require.True(levelSet, "Root log level not reset after disconnect")
+		levelSet := false
+		for scn.Scan() && !levelSet {
+			levelSet = strings.Contains(scn.Text(), `Logging at this level "info"`)
+		}
+		return levelSet
+	}, 5*time.Second, time.Second, "Root log level not reset after disconnect")
 
 	// Set it to a "real" value to see that the client-side wins
 	ctx = itest.WithConfig(ctx, func(config client.Config) {
@@ -240,7 +242,7 @@ func (s *notConnectedSuite) Test_RootdCloudLogLevel() {
 	})
 	s.TelepresenceConnect(ctx)
 	itest.TelepresenceDisconnectOk(ctx)
-	levelSet = false
+	levelSet := false
 	for scn.Scan() && !levelSet {
 		levelSet = strings.Contains(scn.Text(), `Logging at this level "trace"`)
 	}

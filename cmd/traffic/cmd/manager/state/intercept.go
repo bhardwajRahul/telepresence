@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -21,8 +20,8 @@ import (
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dlog"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/manager"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
@@ -30,7 +29,9 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
+	"github.com/telepresenceio/telepresence/v2/pkg/ioutil"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
+	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
 )
 
 // PrepareIntercept ensures that the given request can be matched against the intercept configuration of
@@ -49,63 +50,151 @@ func (s *state) PrepareIntercept(
 	ctx context.Context,
 	cr *rpc.CreateInterceptRequest,
 ) (pi *rpc.PreparedIntercept, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = derror.PanicToError(r)
-			dlog.Errorf(ctx, "%+v", err)
-		}
-	}()
-
 	interceptError := func(err error) (*rpc.PreparedIntercept, error) {
+		dlog.Errorf(ctx, "PrepareIntercept error %v", err)
 		if _, ok := status.FromError(err); ok {
 			return nil, err
 		}
-		dlog.Errorf(ctx, "PrepareIntercept error %v", err)
 		return &rpc.PreparedIntercept{Error: err.Error(), ErrorCategory: int32(errcat.GetCategory(err))}, nil
 	}
 
 	spec := cr.InterceptSpec
-	wl, err := agentmap.GetWorkload(ctx, spec.Agent, spec.Namespace, spec.WorkloadKind)
-	if err != nil {
-		if k8sErrors.IsNotFound(err) {
-			err = errcat.User.New(err)
+	kind := k8sapi.Kind(spec.WorkloadKind)
+	enabledWorkloadKinds := managerutil.GetEnv(ctx).EnabledWorkloadKinds
+	var wl k8sapi.Workload
+	if kind == "" {
+		for _, ek := range enabledWorkloadKinds {
+			wl, err = agentmap.GetWorkload(ctx, spec.Agent, spec.Namespace, ek)
+			if err == nil {
+				break
+			}
+			if k8sErrors.IsNotFound(err) {
+				continue
+			}
+			dlog.Error(ctx, err)
+			return interceptError(err)
 		}
-		dlog.Error(ctx, err)
+		if wl == nil {
+			// unless there are zero enabled workload kinds, err must be set to a not-found error at this point
+			return interceptError(errcat.User.New(k8sErrors.NewNotFound(core.Resource("workload"), spec.Agent+"."+spec.Namespace)))
+		}
+	} else {
+		if !enabledWorkloadKinds.Contains(kind) {
+			return interceptError(errcat.User.Newf("The %s kind is an not enabled workload kind", kind))
+		}
+		wl, err = agentmap.GetWorkload(ctx, spec.Agent, spec.Namespace, kind)
+		if err != nil {
+			if k8sErrors.IsNotFound(err) {
+				err = errcat.User.New(err)
+			}
+			dlog.Error(ctx, err)
+			return interceptError(err)
+		}
+	}
+
+	var rp agentconfig.ReplacePolicy
+	if spec.Replace {
+		rp = agentconfig.ReplacePolicyContainer
+	} else {
+		rp = agentconfig.ReplacePolicyIntercept
+	}
+
+	ac, _, err := s.ensureAgent(ctx, wl, s.isExtended(spec), true, spec, rp)
+	if err != nil {
 		return interceptError(err)
 	}
 
-	ac, _, err := s.ensureAgent(ctx, wl, s.isExtended(spec), spec)
-	if err != nil {
-		return interceptError(err)
+	pi = &rpc.PreparedIntercept{
+		Namespace:     ac.Namespace,
+		AgentImage:    ac.AgentImage,
+		WorkloadKind:  string(ac.WorkloadKind),
+		ContainerName: spec.ContainerName,
+		ServiceName:   spec.ServiceName,
 	}
-	cn, ic, err := findIntercept(ac, spec)
-	if err != nil {
-		return interceptError(err)
+
+	var cn *agentconfig.Container
+	if spec.NoDefaultPort {
+		if cn, err = findContainer(ac, spec); err == nil {
+			pi.ContainerName = cn.Name
+			pi.ServiceName = ""
+			if spec.PortIdentifier == "all" {
+				prepareAllContainerPorts(cn, pi)
+			} else if spec.PortIdentifier != "" {
+				err = s.preparePorts(ac, cn, cr, pi)
+			}
+		}
+	} else {
+		err = s.preparePorts(ac, nil, cr, pi)
 	}
+
+	if err != nil {
+		return interceptError(errcat.User.New(err))
+	}
+	return pi, nil
+}
+
+func prepareAllContainerPorts(cn *agentconfig.Container, pi *rpc.PreparedIntercept) {
+	pics := agentconfig.PortUniqueIntercepts(cn)
+	if ni := len(pics); ni > 0 {
+		// Put the first port in the intercept itself
+		i0 := pics[0]
+		pi.ContainerPort = int32(i0.ContainerPort)
+		pi.Protocol = string(i0.Protocol)
+		if ni > 1 {
+			// Put the remaining ports in PodPorts with a 1:1 mapping to target port on the client.
+			pi.PodPorts = make([]string, ni-1)
+			for i := 1; i < ni; i++ {
+				ic := pics[i]
+				pi.PodPorts[i-1] = fmt.Sprintf("%d:%d/%s", ic.ContainerPort, ic.ContainerPort, ic.Protocol)
+			}
+		}
+	}
+}
+
+func (s *state) preparePorts(ac *agentconfig.Sidecar, cn *agentconfig.Container, cr *rpc.CreateInterceptRequest, pi *rpc.PreparedIntercept) (err error) {
+	spec := cr.InterceptSpec
+	portID := agentconfig.PortIdentifier(spec.PortIdentifier)
+	containerOnly := cn != nil
+
+	var ic *agentconfig.Intercept
+	if containerOnly {
+		ic, err = findContainerIntercept(ac, cn, portID)
+	} else {
+		cn, ic, err = findIntercept2(ac, pi.ServiceName, pi.ContainerName, portID)
+	}
+	if err != nil {
+		return err
+	}
+
 	uniqueContainerPorts := make(map[agentconfig.PortAndProto]struct{})
 	uniqueContainerPorts[agentconfig.PortAndProto{Proto: ic.Protocol, Port: ic.ContainerPort}] = struct{}{}
 
 	var podPorts []string
 	if len(spec.PodPorts) > 0 {
-		podPorts = make([]string, len(spec.PodPorts))
 		uniqueTargets := make(map[agentconfig.PortAndProto]struct{})
 		uniqueTargets[agentconfig.PortAndProto{Proto: ic.Protocol, Port: uint16(spec.TargetPort)}] = struct{}{}
+		podPorts = make([]string, len(spec.PodPorts))
 		for i, pms := range spec.PodPorts {
 			pm := agentconfig.PortMapping(pms)
-			_, pmIc, err := findIntercept2(ac, spec.ServiceName, spec.ContainerName, pm.From())
+			var pmIc *agentconfig.Intercept
+			if containerOnly {
+				pmIc, err = findContainerIntercept(ac, cn, pm.From())
+			} else {
+				_, pmIc, err = findIntercept2(ac, spec.ServiceName, spec.ContainerName, pm.From())
+			}
 			if err != nil {
-				return interceptError(err)
+				return err
 			}
 
 			to := pm.To()
 			if _, ok := uniqueTargets[to]; ok {
-				return interceptError(errcat.User.Newf("multiple port definitions targeting %s", to))
+				return fmt.Errorf("multiple port definitions targeting %s", to)
 			}
 			uniqueTargets[to] = struct{}{}
 
 			from := agentconfig.PortAndProto{Proto: pmIc.Protocol, Port: pmIc.ContainerPort}
 			if _, ok := uniqueContainerPorts[from]; ok {
-				return interceptError(errcat.User.Newf("multiple port definitions using container port %s", from))
+				return fmt.Errorf("multiple port definitions using container port %s", from)
 			}
 			uniqueContainerPorts[from] = struct{}{}
 
@@ -115,7 +204,7 @@ func (s *state) PrepareIntercept(
 	}
 
 	// Validate that there's no port conflict with other intercepts using the same agent.
-	otherIcs := s.intercepts.LoadAllMatching(func(s string, info *rpc.InterceptInfo) bool {
+	otherIcs := s.intercepts.LoadMatching(func(s string, info *Intercept) bool {
 		return info.Disposition == rpc.InterceptDispositionType_ACTIVE && info.Spec.Agent == ac.AgentName && info.Spec.Namespace == ac.Namespace
 	})
 
@@ -133,32 +222,24 @@ func (s *state) PrepareIntercept(
 							client = cps[3]
 						}
 					}
-					return interceptError(errcat.User.Newf("container port %d is already intercepted by %s, intercept %s", cp.Port, client, name))
+					return fmt.Errorf("container port %d is already intercepted by %s, intercept %s", cp.Port, client, name)
 				}
 			}
 		}
 	}
-
-	return &rpc.PreparedIntercept{
-		Namespace:       ac.Namespace,
-		ServiceUid:      string(ic.ServiceUID),
-		ServicePortName: ic.ServicePortName,
-		ContainerName:   cn.Name,
-		Protocol:        string(ic.Protocol),
-		ContainerPort:   int32(ic.ContainerPort),
-		ServicePort:     int32(ic.ServicePort),
-		AgentImage:      ac.AgentImage,
-		WorkloadKind:    ac.WorkloadKind,
-		PodPorts:        podPorts,
-	}, nil
+	pi.ContainerName = cn.Name
+	pi.ServiceUid = string(ic.ServiceUID)
+	pi.ServicePortName = ic.ServicePortName
+	pi.Protocol = string(ic.Protocol)
+	pi.ContainerPort = int32(ic.ContainerPort)
+	pi.ServicePort = int32(ic.ServicePort)
+	pi.PodPorts = podPorts
+	return nil
 }
 
-func (s *state) AddIntercept(ctx context.Context, cir *rpc.CreateInterceptRequest) (*rpc.ClientInfo, *rpc.InterceptInfo, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+func (s *state) AddIntercept(ctx context.Context, cir *rpc.CreateInterceptRequest) (*ClientSession, *rpc.InterceptInfo, error) {
 	clientSession := cir.Session
-	sessionID := clientSession.SessionId
+	sessionID := tunnel.SessionID(clientSession.SessionId)
 	client := s.GetClient(sessionID)
 	if client == nil {
 		return nil, nil, status.Errorf(codes.NotFound, "session %q not found", sessionID)
@@ -166,7 +247,26 @@ func (s *state) AddIntercept(ctx context.Context, cir *rpc.CreateInterceptReques
 
 	spec := cir.InterceptSpec
 	interceptID := fmt.Sprintf("%s:%s", sessionID, spec.Name)
-	ret, is, err := s.addIntercept(interceptID, cir)
+
+	wl, err := agentmap.GetWorkload(ctx, spec.Agent, spec.Namespace, k8sapi.Kind(spec.WorkloadKind))
+	if err != nil {
+		code := codes.Internal
+		if k8sErrors.IsNotFound(err) {
+			code = codes.NotFound
+		}
+		return nil, nil, status.Error(code, err.Error())
+	}
+
+	rp := agentconfig.ReplacePolicyIntercept
+	if spec.Replace {
+		rp = agentconfig.ReplacePolicyContainer
+	}
+	_, _, err = s.ensureAgent(ctx, wl, s.isExtended(spec), false, spec, rp)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	is, err := s.addIntercept(interceptID, cir)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -185,8 +285,8 @@ func (s *state) AddIntercept(ctx context.Context, cir *rpc.CreateInterceptReques
 		pmSpec.PodPorts = nil
 		pmSpec.LocalPorts = nil
 
-		// This intercept targets a pod-port (container port) directly. The name of the container
-		// is not necessary, because container ports must be unique within the pod.
+		// This intercept targets a pod-port (container port) directly. A container name
+		// is not necessary because container ports must be unique within the pod.
 		pmSpec.ServiceUid = ""
 		pmSpec.ServicePortName = ""
 		pmSpec.ServicePort = 0
@@ -199,66 +299,67 @@ func (s *state) AddIntercept(ctx context.Context, cir *rpc.CreateInterceptReques
 		pmSpec.Client = fmt.Sprintf("child %s %s %s", pm, spec.Name, spec.Client)
 
 		pmInterceptID := fmt.Sprintf("%s:%s", sessionID, pmSpec.Name)
-		_, _, err = s.addIntercept(pmInterceptID, pmCir)
+		_, err = s.addIntercept(pmInterceptID, pmCir)
 		if err != nil {
 			return nil, nil, err
 		}
 
 		// Add finalizer to the interceptState of the parent intercept.
 		is.addFinalizer(func(_ context.Context, _ *rpc.InterceptInfo) error {
-			if _, loaded := s.intercepts.LoadAndDelete(pmInterceptID); loaded {
-				s.interceptStates.Delete(pmInterceptID)
-			}
+			s.intercepts.LoadAndDelete(pmInterceptID)
 			return nil
 		})
 	}
-	return client, ret, nil
+	err = s.AddInterceptFinalizer(interceptID, s.restoreAppContainer)
+	if err != nil {
+		dlog.Errorf(ctx, "Failed to add finalizer for %s: %v", interceptID, err)
+	}
+	return client, is.InterceptInfo, nil
 }
 
 func IsChildIntercept(spec *rpc.InterceptSpec) bool {
 	return strings.HasPrefix(spec.Client, "child ")
 }
 
-func (s *state) addIntercept(id string, cir *rpc.CreateInterceptRequest) (*rpc.InterceptInfo, *interceptState, error) {
-	cept := s.self.NewInterceptInfo(id, cir)
+func (s *state) addIntercept(id string, cir *rpc.CreateInterceptRequest) (*Intercept, error) {
+	is := s.self.NewInterceptInfo(id, cir)
 
-	// Wrap each potential-state-change in a
+	// Wrap each potential-state-change in an
 	//
 	//     if cept.Disposition == rpc.InterceptDispositionType_WAITING { … }
 	//
 	// so that we don't need to worry about different state-changes stomping on each-other.
-	if cept.Disposition == rpc.InterceptDispositionType_WAITING {
-		if errCode, errMsg := s.checkAgentsForIntercept(cept); errCode != 0 {
-			cept.Disposition = errCode
-			cept.Message = errMsg
+	if is.Disposition == rpc.InterceptDispositionType_WAITING {
+		if errCode, errMsg := s.checkAgentsForIntercept(is); errCode != 0 {
+			is.Disposition = errCode
+			is.Message = errMsg
 		}
 	}
 
-	if existingValue, hasConflict := s.intercepts.LoadOrStore(id, cept); hasConflict {
+	if existingValue, hasConflict := s.intercepts.LoadOrStore(id, is); hasConflict {
 		if existingValue.Disposition != rpc.InterceptDispositionType_REMOVED {
-			return nil, nil, status.Errorf(codes.AlreadyExists, "Intercept named %q already exists", cept.Spec.Name)
+			return nil, status.Errorf(codes.AlreadyExists, "Intercept named %q already exists", is.Spec.Name)
 		}
-		s.intercepts.Store(id, cept)
+		s.intercepts.Store(id, is)
 	}
-
-	is := newInterceptState(id)
-	s.interceptStates.Store(id, is)
-	return cept, is, nil
+	return is, nil
 }
 
-func (s *state) NewInterceptInfo(interceptID string, ciReq *rpc.CreateInterceptRequest) *rpc.InterceptInfo {
-	return &rpc.InterceptInfo{
-		Spec:          ciReq.InterceptSpec,
-		Disposition:   rpc.InterceptDispositionType_WAITING,
-		Message:       "Waiting for Agent approval",
-		Id:            interceptID,
-		ClientSession: ciReq.Session,
-		ModifiedAt:    timestamppb.Now(),
+func (s *state) NewInterceptInfo(interceptID string, ciReq *rpc.CreateInterceptRequest) *Intercept {
+	return &Intercept{
+		InterceptInfo: &rpc.InterceptInfo{
+			Spec:          ciReq.InterceptSpec,
+			Disposition:   rpc.InterceptDispositionType_WAITING,
+			Message:       "Waiting for Agent approval",
+			Id:            interceptID,
+			ClientSession: ciReq.Session,
+			ModifiedAt:    timestamppb.Now(),
+		},
 	}
 }
 
 func (s *state) AddInterceptFinalizer(interceptID string, finalizer InterceptFinalizer) error {
-	is, ok := s.interceptStates.Load(interceptID)
+	is, ok := s.intercepts.Load(interceptID)
 	if !ok {
 		return status.Errorf(codes.NotFound, "no such intercept %s", interceptID)
 	}
@@ -268,14 +369,14 @@ func (s *state) AddInterceptFinalizer(interceptID string, finalizer InterceptFin
 
 // getAgentsInterceptedByClient returns the session IDs for each agent that are currently
 // intercepted by the client with the given client session ID.
-func (s *state) getAgentsInterceptedByClient(clientSessionID string) map[string]*rpc.AgentInfo {
-	intercepts := s.intercepts.LoadAllMatching(func(_ string, ii *rpc.InterceptInfo) bool {
-		return ii.ClientSession.SessionId == clientSessionID
+func (s *state) getAgentsInterceptedByClient(clientSessionID tunnel.SessionID) map[tunnel.SessionID]*AgentSession {
+	intercepts := s.intercepts.LoadMatching(func(_ string, ii *Intercept) bool {
+		return ii.ClientSession.SessionId == string(clientSessionID)
 	})
 	if len(intercepts) == 0 {
 		return nil
 	}
-	return s.agents.LoadAllMatching(func(_ string, ai *rpc.AgentInfo) bool {
+	return s.LoadMatchingAgents(func(_ tunnel.SessionID, ai *AgentSession) bool {
 		for _, ii := range intercepts {
 			if ai.Name == ii.Spec.Agent && ai.Namespace == ii.Spec.Namespace {
 				return true
@@ -285,7 +386,7 @@ func (s *state) getAgentsInterceptedByClient(clientSessionID string) map[string]
 	})
 }
 
-func (s *state) EnsureAgent(ctx context.Context, n, ns string) (as []*rpc.AgentInfo, err error) {
+func (s *state) EnsureAgent(ctx context.Context, n, ns string) (as []*AgentSession, err error) {
 	var wl k8sapi.Workload
 	wl, err = agentmap.GetWorkload(ctx, n, ns, "")
 	if err != nil {
@@ -294,7 +395,7 @@ func (s *state) EnsureAgent(ctx context.Context, n, ns string) (as []*rpc.AgentI
 		}
 		return nil, err
 	}
-	_, as, err = s.ensureAgent(ctx, wl, false, nil)
+	_, as, err = s.ensureAgent(ctx, wl, false, false, nil, agentconfig.ReplacePolicyInactive)
 	return as, err
 }
 
@@ -303,14 +404,14 @@ func (s *state) ValidateCreateAgent(context.Context, k8sapi.Workload, agentconfi
 }
 
 // sortAgents will sort the given AgentInfo based on pod name.
-func sortAgents(as []*rpc.AgentInfo) {
+func sortAgents(as []*AgentSession) {
 	sort.Slice(as, func(i, j int) bool {
 		return as[i].PodName < as[j].PodName
 	})
 }
 
-func (s *state) ensureAgent(parentCtx context.Context, wl k8sapi.Workload, extended bool, spec *rpc.InterceptSpec) (
-	ac *agentconfig.Sidecar, as []*rpc.AgentInfo, err error,
+func (s *state) ensureAgent(parentCtx context.Context, wl k8sapi.Workload, extended, dryRun bool, spec *rpc.InterceptSpec, rp agentconfig.ReplacePolicy) (
+	ac *agentconfig.Sidecar, as []*AgentSession, err error,
 ) {
 	if agentmap.TrafficManagerSelector.Matches(labels.Set(wl.GetLabels())) {
 		msg := fmt.Sprintf("deployment %s.%s is the Telepresence Traffic Manager. It can not have a traffic-agent", wl.GetName(), wl.GetNamespace())
@@ -319,27 +420,37 @@ func (s *state) ensureAgent(parentCtx context.Context, wl k8sapi.Workload, exten
 	}
 
 	if !managerutil.AgentInjectorEnabled(parentCtx) {
-		sce, err := mutator.GetMap(parentCtx).Get(parentCtx, wl.GetName(), wl.GetNamespace())
+		cfgJSON, ok := wl.GetPodTemplate().Annotations[agentconfig.ConfigAnnotation]
+		if !ok {
+			msg := fmt.Sprintf("agent-injector is disabled and no agent has been added manually for %s.%s", wl.GetName(), wl.GetNamespace())
+			return nil, nil, status.Error(codes.FailedPrecondition, msg)
+		}
+		sce, err := agentconfig.UnmarshalJSON(cfgJSON)
 		if err != nil {
 			return nil, nil, err
 		}
-		if sce != nil {
-			ac = sce.AgentConfig()
-			am := s.agents.LoadAllMatching(func(_ string, ai *rpc.AgentInfo) bool {
-				return ai.Name == ac.AgentName && ai.Namespace == ac.Namespace
-			})
-			as = make([]*rpc.AgentInfo, len(am))
-			i := 0
-			for _, found := range am {
-				as[i] = found
-				i++
-			}
-			sortAgents(as)
-			return ac, as, nil
+		ac = sce.AgentConfig()
+		am := s.LoadMatchingAgents(func(_ tunnel.SessionID, ai *AgentSession) bool {
+			return ai.Name == ac.AgentName && ai.Namespace == ac.Namespace
+		})
+		as = make([]*AgentSession, len(am))
+		i := 0
+		for _, found := range am {
+			as[i] = found
+			i++
 		}
-		msg := fmt.Sprintf("agent-injector is disabled and no agent has been added manually for %s.%s", wl.GetName(), wl.GetNamespace())
-		return nil, nil, status.Error(codes.FailedPrecondition, msg)
+		sortAgents(as)
+		return ac, as, nil
 	}
+
+	if dryRun {
+		sce, err := s.getOrCreateAgentConfig(parentCtx, wl, extended, dryRun, spec, rp)
+		if err != nil {
+			return nil, nil, err
+		}
+		return sce.AgentConfig(), nil, nil
+	}
+
 	ctx, cancel := context.WithTimeout(parentCtx, managerutil.GetEnv(parentCtx).AgentArrivalTimeout)
 	defer cancel()
 
@@ -348,17 +459,20 @@ func (s *state) ensureAgent(parentCtx context.Context, wl k8sapi.Workload, exten
 		return nil, nil, err
 	}
 
-	sce, err := s.getOrCreateAgentConfig(ctx, wl, extended, spec, false)
+	sce, err := s.getOrCreateAgentConfig(ctx, wl, extended, dryRun, spec, rp)
 	if err != nil {
 		return nil, nil, err
 	}
+	err = mutator.GetMap(ctx).EvictPodsWithAgentConfigMismatch(ctx, sce)
+	if err != nil {
+		dlog.Errorf(ctx, "failed to inactivate pods: %v", err)
+		return nil, nil, err
+	}
 	ac = sce.AgentConfig()
-	if as, err = s.waitForAgents(ctx, ac.AgentName, ac.Namespace, failedCreateCh); err != nil {
+	if as, err = s.waitForAgents(ctx, ac, failedCreateCh); err != nil {
 		// If no agent arrives, then drop its entry from the configmap. This ensures that there
 		// are no false positives the next time an intercept is attempted.
-		if dropErr := s.dropAgentConfig(parentCtx, wl); dropErr != nil {
-			dlog.Errorf(ctx, "failed to remove configmap entry for %s.%s: %v", wl.GetName(), wl.GetNamespace(), dropErr)
-		}
+		s.dropAgentConfig(parentCtx, wl)
 		return nil, nil, err
 	}
 	sortAgents(as)
@@ -382,78 +496,41 @@ func (s *state) ValidateAgentImage(agentImage string, extended bool) (err error)
 func (s *state) dropAgentConfig(
 	ctx context.Context,
 	wl k8sapi.Workload,
-) error {
-	return mutator.GetMap(ctx).Delete(ctx, wl.GetName(), wl.GetNamespace())
+) {
+	mutator.GetMap(ctx).Delete(wl.GetName(), wl.GetNamespace())
 }
 
-func (s *state) RestoreAppContainer(ctx context.Context, ii *rpc.InterceptInfo) (err error) {
+func (s *state) restoreAppContainer(ctx context.Context, ii *rpc.InterceptInfo) (err error) {
 	dlog.Debugf(ctx, "Restoring app container for %s", ii.Id)
 	spec := ii.Spec
 	n := spec.Agent
 	ns := spec.Namespace
 	mm := mutator.GetMap(ctx)
-	return mm.Update(ctx, ns, func(cm *core.ConfigMap) (changed bool, err error) {
-		y, ok := cm.Data[n]
-		if !ok {
-			return false, nil
+	_, err = mm.Update(n, ns, func(sce agentconfig.SidecarExt) (ext agentconfig.SidecarExt, err error) {
+		if sce == nil {
+			return nil, nil
 		}
-		sce, err := unmarshalConfigMapEntry(y, n, ns)
+		var cn *agentconfig.Container
+		if spec.NoDefaultPort {
+			cn, err = findContainer(sce.AgentConfig(), spec)
+		} else {
+			cn, _, err = findIntercept(sce.AgentConfig(), spec)
+		}
 		if err != nil {
-			return false, err
+			return nil, nil
 		}
-		cn, _, err := findIntercept(sce.AgentConfig(), spec)
-		if !(err == nil && cn.Replace) {
-			return false, nil
+		if cn.Replace == agentconfig.ReplacePolicyInactive {
+			return nil, nil
 		}
-		cn.Replace = false
+		cn.Replace = agentconfig.ReplacePolicyInactive
 
 		// The pods for this workload will be killed once the new updated sidecar
-		// reaches the configmap. We remove them now, so that they don't continue to
+		// reaches the configmap. We inactivate them now, so that they don't continue to
 		// review intercepts.
-		for sessionID, ai := range s.getAgentsByName(n, ns) {
-			if as, ok := s.GetSession(sessionID).(*agentSessionState); ok {
-				as.active.Store(false)
-			}
-			mm.Blacklist(ai.PodName, ns)
-		}
-		return updateSidecar(sce, cm, n)
+		err = mm.EvictPodsWithAgentConfigMismatch(ctx, sce)
+		return sce, err
 	})
-}
-
-func updateSidecar(sce agentconfig.SidecarExt, cm *core.ConfigMap, n string) (bool, error) {
-	yml, err := sce.Marshal()
-	if err != nil {
-		return false, err
-	}
-	oldYaml := cm.Data[n]
-	newYaml := string(yml)
-	if oldYaml != newYaml {
-		cm.Data[n] = newYaml
-		return true, nil
-	}
-	return false, nil
-}
-
-func (s *state) waitForAgentDepartures(ctx context.Context, wl k8sapi.Workload) error {
-	filter := func(s string, info *rpc.AgentInfo) bool {
-		return info.Kind == wl.GetKind() && info.Name == wl.GetName() && info.Namespace == wl.GetNamespace()
-	}
-	if len(s.agents.LoadAllMatching(filter)) == 0 {
-		return nil
-	}
-	dlog.Debugf(ctx, "Waiting for deleted %s.%s agents to depart", wl.GetName(), wl.GetNamespace())
-	agCh := s.agents.SubscribeSubset(ctx, filter)
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case as, ok := <-agCh:
-			if ok && len(as.State) > 0 {
-				continue
-			}
-		}
-		return nil
-	}
+	return err
 }
 
 func (s *state) GetOrGenerateAgentConfig(ctx context.Context, name, namespace string) (agentconfig.SidecarExt, error) {
@@ -465,15 +542,31 @@ func (s *state) GetOrGenerateAgentConfig(ctx context.Context, name, namespace st
 		}
 		return nil, status.Error(code, err.Error())
 	}
-	return s.getOrCreateAgentConfig(ctx, wl, false, nil, true)
+	return s.getOrCreateAgentConfig(ctx, wl, false, true, nil, agentconfig.ReplacePolicyInactive)
+}
+
+func (s *state) createAgentConfig(ctx context.Context, wl k8sapi.Workload, agentImage string) (sce agentconfig.SidecarExt, err error) {
+	var gc agentmap.GeneratorConfig
+	if gc, err = agentmap.GeneratorConfigFunc(agentImage); err != nil {
+		return nil, err
+	}
+	dlog.Debugf(ctx, "generating new agent config for %s.%s", wl.GetName(), wl.GetNamespace())
+	if sce, err = gc.Generate(ctx, wl, nil); err != nil {
+		return nil, err
+	}
+	if err = s.self.ValidateCreateAgent(ctx, wl, sce); err != nil {
+		return nil, err
+	}
+	return sce, nil
 }
 
 func (s *state) getOrCreateAgentConfig(
 	ctx context.Context,
 	wl k8sapi.Workload,
 	extended bool,
-	spec *rpc.InterceptSpec,
 	dryRun bool,
+	spec *rpc.InterceptSpec,
+	rp agentconfig.ReplacePolicy,
 ) (sce agentconfig.SidecarExt, err error) {
 	enabled, err := checkInterceptAnnotations(wl)
 	if err != nil {
@@ -487,74 +580,51 @@ func (s *state) getOrCreateAgentConfig(
 	if err = s.self.ValidateAgentImage(agentImage, extended); err != nil {
 		return nil, err
 	}
-	err = mutator.GetMap(ctx).Update(ctx, wl.GetNamespace(), func(cm *core.ConfigMap) (changed bool, err error) {
-		doUpdate := false
-		y, cmFound := cm.Data[wl.GetName()]
-		if cmFound {
-			if sce, err = unmarshalConfigMapEntry(y, wl.GetName(), wl.GetNamespace()); err != nil {
-				return false, err
-			}
-			ac := sce.AgentConfig()
+	mm := mutator.GetMap(ctx)
+	if dryRun {
+		sce = mm.Get(wl.GetName(), wl.GetNamespace())
+		if sce == nil {
+			sce, err = s.createAgentConfig(ctx, wl, agentImage)
+		}
+		return sce, err
+	}
+
+	return mm.Update(wl.GetName(), wl.GetNamespace(), func(sce agentconfig.SidecarExt) (agentconfig.SidecarExt, error) {
+		var ac *agentconfig.Sidecar
+		if sce != nil {
+			ac = sce.AgentConfig()
 			// If the agentImage has changed, and the extended image is requested, then update
-			if ac.AgentImage != agentImage && extended {
+			if ac.AgentImage != agentImage {
 				ac.AgentImage = agentImage
-				doUpdate = true
 			}
+			dlog.Debugf(ctx, "found existing agent config for %s.%s", wl.GetName(), wl.GetNamespace())
 		} else {
-			if cm.Data == nil {
-				cm.Data = make(map[string]string)
-			}
-			var gc agentmap.GeneratorConfig
-			if gc, err = agentmap.GeneratorConfigFunc(agentImage); err != nil {
-				return false, err
-			}
-			if sce, err = gc.Generate(ctx, wl, nil); err != nil {
-				return false, err
-			}
-
-			// If we don't have an entry for the workload in the config-map, then all current agents for that
-			// workload are invalid, and we'll have to wait for them to be removed.
-			if err = s.waitForAgentDepartures(ctx, wl); err != nil {
-				return false, err
-			}
-			doUpdate = true
-		}
-
-		ac := sce.AgentConfig()
-		if spec != nil {
-			cn, _, err := findIntercept(ac, spec)
+			sce, err = s.createAgentConfig(ctx, wl, agentImage)
 			if err != nil {
-				return false, err
+				return nil, err
 			}
-			if cn.Replace != agentconfig.ReplacePolicy(spec.Replace) {
-				cn.Replace = agentconfig.ReplacePolicy(spec.Replace)
-				doUpdate = true
-			}
-		}
-		if dryRun {
-			return false, nil
+			ac = sce.AgentConfig()
 		}
 
-		if doUpdate {
-			if cmFound {
-				// The pods for this workload be killed once the new updated sidecar
-				// reaches the configmap. We remove them now, so that they don't continue to
-				// review intercepts.
-				for sessionID := range s.getAgentsByName(wl.GetName(), wl.GetNamespace()) {
-					if as, ok := s.GetSession(sessionID).(*agentSessionState); ok {
-						as.active.Store(false)
-					}
-				}
+		if spec != nil {
+			var cn *agentconfig.Container
+			if spec.NoDefaultPort {
+				cn, err = findContainer(ac, spec)
 			} else {
-				if err = s.self.ValidateCreateAgent(ctx, wl, sce); err != nil {
-					return false, err
-				}
+				cn, _, err = findIntercept(ac, spec)
 			}
-			return updateSidecar(sce, cm, wl.GetName())
+			if err != nil {
+				return nil, err
+			}
+			cn.Replace = rp
 		}
-		return false, nil
+
+		if dryRun {
+			dlog.Debugf(ctx, "dry run for getOrCreateAgentConfig %s.%s returns", wl.GetName(), wl.GetNamespace())
+			return sce, nil
+		}
+		return sce, nil
 	})
-	return sce, err
 }
 
 func checkInterceptAnnotations(wl k8sapi.Workload) (bool, error) {
@@ -565,7 +635,7 @@ func checkInterceptAnnotations(wl k8sapi.Workload) (bool, error) {
 	}
 
 	webhookEnabled := true
-	manuallyManaged := a[mutator.ManualInjectAnnotation] == "true"
+	manuallyManaged := a[agentconfig.ManualInjectAnnotation] == "true"
 	ia := a[mutator.InjectAnnotation]
 	switch ia {
 	case "":
@@ -576,7 +646,7 @@ func checkInterceptAnnotations(wl k8sapi.Workload) (bool, error) {
 	default:
 		return false, errcat.User.Newf(
 			"%s is not a valid value for the %s.%s/%s annotation",
-			ia, wl.GetName(), wl.GetNamespace(), mutator.ManualInjectAnnotation)
+			ia, wl.GetName(), wl.GetNamespace(), agentconfig.ManualInjectAnnotation)
 	}
 
 	if !manuallyManaged {
@@ -594,7 +664,7 @@ func checkInterceptAnnotations(wl k8sapi.Workload) (bool, error) {
 	if an == nil {
 		return false, errcat.User.Newf(
 			"annotation %s.%s/%s=true but pod has no traffic-agent container",
-			wl.GetName(), wl.GetNamespace(), mutator.ManualInjectAnnotation)
+			wl.GetName(), wl.GetNamespace(), agentconfig.ManualInjectAnnotation)
 	}
 	return true, nil
 }
@@ -624,7 +694,7 @@ func watchFailedInjectionEvents(ctx context.Context, name, namespace string) (<-
 				if !ok {
 					return
 				}
-				// Using a negated Before when comparing the timestamps here is relevant. They will often be equal and still relevant
+				// Using negated Before when comparing the timestamps here is relevant. They will often be equal and still relevant
 				if e, ok := eo.Object.(*events.Event); ok &&
 					!e.CreationTimestamp.Time.Before(start) &&
 					!strings.HasPrefix(e.Note, "(combined from similar events):") {
@@ -640,9 +710,11 @@ func watchFailedInjectionEvents(ctx context.Context, name, namespace string) (<-
 	return ec, nil
 }
 
-func (s *state) waitForAgents(ctx context.Context, name, namespace string, failedCreateCh <-chan *events.Event) ([]*rpc.AgentInfo, error) {
+func (s *state) waitForAgents(ctx context.Context, ac *agentconfig.Sidecar, failedCreateCh <-chan *events.Event) ([]*AgentSession, error) {
+	name := ac.AgentName
+	namespace := ac.Namespace
 	dlog.Debugf(ctx, "Waiting for agent %s.%s", name, namespace)
-	snapshotCh := s.WatchAgents(ctx, func(sessionID string, agent *rpc.AgentInfo) bool {
+	snapshotCh := s.WatchAgents(ctx, func(_ tunnel.SessionID, agent *AgentSession) bool {
 		return agent.Name == name && agent.Namespace == namespace
 	})
 	failedContainerRx := regexp.MustCompile(`restarting failed container (\S+) in pod ([0-9A-Za-z_-]+)_` + namespace)
@@ -659,7 +731,7 @@ func (s *state) waitForAgents(ctx context.Context, name, namespace string, faile
 			}
 			msg := fe.Note
 			// Terminate directly on known fatal events. No need for the user to wait for a timeout
-			// when one of these are encountered.
+			// when one of those is encountered.
 			switch fe.Reason {
 			case "BackOff":
 				// The traffic-agent container was injected, but it fails to start
@@ -706,16 +778,17 @@ func (s *state) waitForAgents(ctx context.Context, name, namespace string, faile
 				// The request has been canceled.
 				return nil, status.Error(codes.Canceled, fmt.Sprintf("channel closed while waiting for agent %s.%s to arrive", name, namespace))
 			}
-			if len(snapshot.State) == 0 {
+			if len(snapshot) == 0 {
 				continue
 			}
-			as := make([]*rpc.AgentInfo, 0, len(snapshot.State))
-			for _, a := range snapshot.State {
-				if mm.IsBlacklisted(a.PodName, a.Namespace) {
-					dlog.Debugf(ctx, "Pod %s.%s is blacklisted", a.PodName, a.Namespace)
+			as := make([]*AgentSession, 0, len(snapshot))
+			for _, a := range snapshot {
+				if mm.IsInactive(types.UID(a.PodUid)) {
+					dlog.Debugf(ctx, "Agent %s(%s) is blacklisted", a.PodName, a.PodIp)
 				} else {
-					dlog.Debugf(ctx, "Agent %s.%s is ready", a.Name, a.Namespace)
+					dlog.Debugf(ctx, "Agent %s(%s) is ready", a.PodName, a.PodIp)
 					as = append(as, a)
+					break
 				}
 			}
 			if len(as) > 0 {
@@ -727,7 +800,7 @@ func (s *state) waitForAgents(ctx context.Context, name, namespace string, faile
 				v = "timed out"
 			}
 			bf := &strings.Builder{}
-			fmt.Fprintf(bf, "request %s while waiting for agent %s.%s to arrive", v, name, namespace)
+			ioutil.Printf(bf, "request %s while waiting for agent %s.%s to arrive", v, name, namespace)
 			if len(fes) > 0 {
 				bf.WriteString(": Events that may be relevant:\n")
 				writeEventList(bf, fes)
@@ -765,18 +838,28 @@ func writeEventList(bf *strings.Builder, es []*events.Event) {
 	typeLen += 3
 	reasonLen += 3
 	objectLen += 3
-	fmt.Fprintf(bf, "%-*s%-*s%-*s%-*s%s\n", ageLen, "AGE", typeLen, "TYPE", reasonLen, "REASON", objectLen, "OBJECT", "MESSAGE")
+	ioutil.Printf(bf, "%-*s%-*s%-*s%-*s%s\n", ageLen, "AGE", typeLen, "TYPE", reasonLen, "REASON", objectLen, "OBJECT", "MESSAGE")
 	for _, e := range es {
-		fmt.Fprintf(bf, "%-*s%-*s%-*s%-*s%s\n", ageLen, age(e), typeLen, e.Type, reasonLen, e.Reason, objectLen, object(e), e.Note)
+		ioutil.Printf(bf, "%-*s%-*s%-*s%-*s%s\n", ageLen, age(e), typeLen, e.Type, reasonLen, e.Reason, objectLen, object(e), e.Note)
 	}
 }
 
-func unmarshalConfigMapEntry(y string, name, namespace string) (agentconfig.SidecarExt, error) {
-	scx, err := agentconfig.UnmarshalYAML([]byte(y))
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse entry for %s in ConfigMap %s.%s: %w", name, agentconfig.ConfigMap, namespace, err)
+// findContainer finds the container configuration that matches the given InterceptSpec.
+func findContainer(ac *agentconfig.Sidecar, spec *rpc.InterceptSpec) (foundCN *agentconfig.Container, err error) {
+	if spec.ContainerName == "" {
+		if len(ac.Containers) == 1 {
+			return ac.Containers[0], nil
+		}
+		return nil, errcat.User.Newf("%s %s.%s has more than one container",
+			ac.WorkloadKind, ac.WorkloadName, ac.Namespace)
 	}
-	return scx, nil
+	for _, cn := range ac.Containers {
+		if spec.ContainerName == cn.Name {
+			return cn, nil
+		}
+	}
+	return nil, errcat.User.Newf("%s %s.%s has no container named %s",
+		ac.WorkloadKind, ac.WorkloadName, ac.Namespace, spec.ContainerName)
 }
 
 // findIntercept finds the intercept configuration that matches the given InterceptSpec's service/service port or container port.
@@ -854,36 +937,12 @@ func findIntercept2(ac *agentconfig.Sidecar, serviceName, containerName string, 
 	return nil, nil, errcat.User.Newf("%s %s.%s has no interceptable port%s", ac.WorkloadKind, ac.WorkloadName, ac.Namespace, ss)
 }
 
-type InterceptFinalizer func(ctx context.Context, interceptInfo *rpc.InterceptInfo) error
-
-type interceptState struct {
-	sync.Mutex
-	lastInfoCh  chan *rpc.InterceptInfo
-	finalizers  []InterceptFinalizer
-	interceptID string
-}
-
-func newInterceptState(interceptID string) *interceptState {
-	is := &interceptState{
-		lastInfoCh:  make(chan *rpc.InterceptInfo),
-		interceptID: interceptID,
-	}
-	return is
-}
-
-func (is *interceptState) addFinalizer(finalizer InterceptFinalizer) {
-	is.Lock()
-	defer is.Unlock()
-	is.finalizers = append(is.finalizers, finalizer)
-}
-
-func (is *interceptState) terminate(ctx context.Context, interceptInfo *rpc.InterceptInfo) {
-	is.Lock()
-	defer is.Unlock()
-	for i := len(is.finalizers) - 1; i >= 0; i-- {
-		f := is.finalizers[i]
-		if err := f(ctx, interceptInfo); err != nil {
-			dlog.Errorf(ctx, "finalizer for intercept %s failed: %v", interceptInfo.Id, err)
+// findContainerIntercept finds the intercept configuration that matches container port.
+func findContainerIntercept(ac *agentconfig.Sidecar, cn *agentconfig.Container, pi agentconfig.PortIdentifier) (*agentconfig.Intercept, error) {
+	for _, ic := range cn.Intercepts {
+		if agentconfig.IsInterceptForContainer(pi, ic) {
+			return ic, nil
 		}
 	}
+	return nil, errcat.User.Newf("%s %s.%s has no container port matching %s", ac.WorkloadKind, ac.WorkloadName, ac.Namespace, pi)
 }

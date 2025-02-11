@@ -279,9 +279,9 @@ message ListRequest {
   enum Filter {
     UNSPECIFIED = 0;
     INTERCEPTS = 1;
-    INGESTS = 2;
-    INSTALLED_AGENTS = 4;
-    INTERCEPTABLE = 8;
+    REPLACEMENTS = 2;
+    INGESTS = 4;
+    INSTALLED_AGENTS = 8;
     EVERYTHING = 15;
   }
   Filter filter = 1;

@@ -16,11 +16,11 @@ import (
 
 type bridgeMounter struct {
 	localPort     uint16
-	sessionID     string
+	sessionID     tunnel.SessionID
 	managerClient manager.ManagerClient
 }
 
-func NewBridgeMounter(sessionID string, managerClient manager.ManagerClient, localPort uint16) Mounter {
+func NewBridgeMounter(sessionID tunnel.SessionID, managerClient manager.ManagerClient, localPort uint16) Mounter {
 	return &bridgeMounter{
 		localPort:     localPort,
 		sessionID:     sessionID,
@@ -71,7 +71,7 @@ func (m *bridgeMounter) dispatchToTunnel(ctx context.Context, conn net.Conn, pod
 
 	tos := client2.GetConfig(ctx).Timeouts()
 	ctx, cancel := context.WithCancel(ctx)
-	s, err := tunnel.NewClientStream(ctx, ms, id, m.sessionID, tos.PrivateRoundtripLatency, tos.PrivateEndpointDial)
+	s, err := tunnel.NewClientStream(ctx, tunnel.ClientToFileServer, ms, id, m.sessionID, tos.PrivateRoundtripLatency, tos.PrivateEndpointDial)
 	if err != nil {
 		cancel()
 		return fmt.Errorf("failed to create stream: %v", err)

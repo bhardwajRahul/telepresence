@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,9 +17,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dgroup"
-	"github.com/datawire/dlib/dhttp"
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/rpc/v2/common"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/daemon"
@@ -29,6 +28,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/client/socket"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
 	"github.com/telepresenceio/telepresence/v2/pkg/filelocation"
+	"github.com/telepresenceio/telepresence/v2/pkg/grpc/server"
 	"github.com/telepresenceio/telepresence/v2/pkg/log"
 	"github.com/telepresenceio/telepresence/v2/pkg/pprof"
 	"github.com/telepresenceio/telepresence/v2/pkg/proc"
@@ -147,16 +147,7 @@ func (s *Service) Status(context.Context, *emptypb.Empty) (*rpc.DaemonStatus, er
 
 func (s *Service) Quit(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
 	dlog.Debug(ctx, "Received gRPC Quit")
-	if !s.sessionLock.TryRLock() {
-		// A running session is blocking with a write-lock. Give it some time to quit, then kill it
-		time.Sleep(2 * time.Second)
-		if !s.sessionLock.TryRLock() {
-			s.quit()
-			return &emptypb.Empty{}, nil
-		}
-	}
-	defer s.sessionLock.RUnlock()
-	s.cancelSessionReadLocked()
+	s.cancelSession()
 	s.quit()
 	return &emptypb.Empty{}, nil
 }
@@ -233,25 +224,15 @@ func (s *Service) WaitForNetwork(ctx context.Context, e *emptypb.Empty) (*emptyp
 	return &emptypb.Empty{}, err
 }
 
-func (s *Service) cancelSessionReadLocked() {
-	if s.sessionCancel != nil {
-		s.sessionCancel()
-	}
-}
-
 func (s *Service) cancelSession() {
-	if !atomic.CompareAndSwapInt32(&s.sessionQuitting, 0, 1) {
-		return
+	if atomic.CompareAndSwapInt32(&s.sessionQuitting, 0, 1) {
+		if s.sessionCancel != nil {
+			s.sessionCancel()
+		}
+		s.session = nil
+		s.sessionCancel = nil
+		atomic.StoreInt32(&s.sessionQuitting, 0)
 	}
-	s.sessionLock.RLock()
-	s.cancelSessionReadLocked()
-	s.sessionLock.RUnlock()
-
-	s.sessionLock.Lock()
-	s.session = nil
-	s.sessionCancel = nil
-	atomic.StoreInt32(&s.sessionQuitting, 0)
-	s.sessionLock.Unlock()
 }
 
 func (s *Service) WithSession(f func(context.Context, *Session) error) error {
@@ -305,7 +286,6 @@ func (s *Service) manageSessions(c context.Context) error {
 	// terminates this function, it terminates the whole process.
 	wg := sync.WaitGroup{}
 	defer wg.Wait()
-	c, s.quit = context.WithCancel(c)
 
 	for {
 		// Wait for a connection request
@@ -360,7 +340,16 @@ func (s *Service) startSession(parentCtx context.Context, oi *rpc.NetworkConfig,
 	s.sessionContext = ctx
 	s.sessionCancel = func() {
 		cancel()
-		<-session.Done()
+		select {
+		case <-session.Done():
+		case <-time.After(5 * time.Second):
+			// Something is wrong. The session doesn't die.
+			if dlog.MaxLogLevel(ctx) >= dlog.LogLevelDebug {
+				buf := make([]byte, 1024*1024)
+				n := runtime.Stack(buf, true)
+				dlog.Debug(ctx, string(buf[:n]))
+			}
+		}
 	}
 	_ = client.ReloadDaemonLogLevel(ctx, true)
 	reply.status.OutboundConfig = s.session.getNetworkConfig(ctx)
@@ -373,15 +362,7 @@ func (s *Service) startSession(parentCtx context.Context, oi *rpc.NetworkConfig,
 	wg.Add(1)
 	go func() {
 		defer func() {
-			if r := recover(); r != nil {
-				s.sessionLock.TryLock()
-				s.sessionLock.Unlock()
-				dlog.Errorf(ctx, "%+v", derror.PanicToError(r))
-			}
-			s.sessionLock.Lock()
-			s.session = nil
-			s.sessionCancel = nil
-			s.sessionLock.Unlock()
+			s.cancelSession()
 			_ = client.ReloadDaemonLogLevel(parentCtx, true)
 			wg.Done()
 		}()
@@ -394,39 +375,22 @@ func (s *Service) startSession(parentCtx context.Context, oi *rpc.NetworkConfig,
 	case err := <-initErrCh:
 		if err != nil {
 			reply.err = err
-			s.cancelSessionReadLocked()
+			s.cancelSession()
 		}
 	}
 	return reply
 }
 
 func (s *Service) serveGrpc(c context.Context, l net.Listener) error {
-	defer func() {
-		// Error recovery.
-		if perr := derror.PanicToError(recover()); perr != nil {
-			dlog.Errorf(c, "%+v", perr)
-		}
-	}()
-
 	var opts []grpc.ServerOption
 	cfg := client.GetConfig(c)
 	if mz := cfg.Grpc().MaxReceiveSize(); mz > 0 {
 		opts = append(opts, grpc.MaxRecvMsgSize(int(mz)))
 	}
-	svc := grpc.NewServer(opts...)
+	c, s.quit = context.WithCancel(c)
+	svc := server.New(c, opts...)
 	rpc.RegisterDaemonServer(svc, s)
-
-	sc := &dhttp.ServerConfig{
-		Handler: svc,
-	}
-	dlog.Info(c, "gRPC server started")
-	err := sc.Serve(c, l)
-	if err != nil {
-		dlog.Errorf(c, "gRPC server ended with: %v", err)
-	} else {
-		dlog.Debug(c, "gRPC server ended")
-	}
-	return err
+	return server.Serve(c, svc, l)
 }
 
 // run is the main function when executing as the daemon.
@@ -492,7 +456,7 @@ func run(cmd *cobra.Command, args []string) error {
 	vif.InitLogger(c)
 
 	g := dgroup.NewGroup(c, dgroup.GroupConfig{
-		SoftShutdownTimeout:  2 * time.Second,
+		SoftShutdownTimeout:  5 * time.Second,
 		EnableSignalHandling: true,
 		ShutdownOnNonError:   true,
 	})

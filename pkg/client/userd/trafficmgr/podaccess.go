@@ -19,6 +19,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/client/remotefs"
 	"github.com/telepresenceio/telepresence/v2/pkg/forwarder"
 	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
+	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
 )
 
 type podAccess struct {
@@ -27,7 +28,7 @@ type podAccess struct {
 	ctx context.Context
 
 	// wg is the group to wait for after a call to cancel
-	wg sync.WaitGroup
+	wg *sync.WaitGroup
 
 	localPorts       []string
 	workload         string
@@ -138,7 +139,7 @@ func (pa *podAccess) workerPortForward(ctx context.Context, port string, wg *syn
 		dlog.Errorf(ctx, "malformed extra port %q: %v", port, err)
 		return
 	}
-	f := forwarder.NewInterceptor(pp, pa.podIP, pp.Port)
+	f := forwarder.NewInterceptor(pp, tunnel.ClientToAgent, pa.podIP, pp.Port)
 	err = f.Serve(ctx, nil)
 	if err != nil && ctx.Err() == nil {
 		dlog.Errorf(ctx, "port-forwarder failed with %v", err)
@@ -202,7 +203,7 @@ func (lpf *podAccessTracker) privateStart(pa *podAccess) {
 	ctx, cancel := context.WithCancel(pa.ctx)
 	lp := &podAccessSync{workload: pa.workload, cancelPod: cancel}
 	if pa.shouldMount() {
-		pa.startMount(ctx, &pa.wg, &lp.wg)
+		pa.startMount(ctx, pa.wg, &lp.wg)
 	}
 	if pa.shouldForward() {
 		pa.startForwards(ctx, &lp.wg)

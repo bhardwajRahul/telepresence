@@ -18,6 +18,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/forwarder"
 	"github.com/telepresenceio/telepresence/v2/pkg/proc"
 	"github.com/telepresenceio/telepresence/v2/pkg/shellquote"
+	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
 	"github.com/telepresenceio/telepresence/v2/pkg/vif"
 )
 
@@ -135,7 +136,7 @@ func (s *Server) runOverridingServer(c context.Context, dev vif.Device) error {
 					return nil
 				}
 				go func() {
-					if err = forwarder.ForwardUDP(c, pc.(*net.UDPConn), dnsResolverAddr); err != nil {
+					if err = forwarder.ForwardUDP(c, tunnel.ClientToDNS, pc.(*net.UDPConn), dnsResolverAddr); err != nil {
 						dlog.Error(c, err)
 					}
 				}()

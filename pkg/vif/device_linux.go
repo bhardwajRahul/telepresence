@@ -19,6 +19,7 @@ const devicePath = "/dev/net/tun"
 type device struct {
 	fd             int
 	name           string
+	endPoint       stack.LinkEndpoint
 	interfaceIndex uint32
 }
 
@@ -98,10 +99,6 @@ func (d *device) removeSubnet(ctx context.Context, pfx netip.Prefix) error {
 	return netlink.AddrDel(link, addr)
 }
 
-func (d *device) index() uint32 {
-	return d.interfaceIndex
-}
-
 func (d *device) getMTU() (mtu uint32, err error) {
 	err = withSocket(unix.AF_INET, func(fd int) error {
 		ifr, err := unix.NewIfreq(d.name)
@@ -121,14 +118,20 @@ func (d *device) createLinkEndpoint() (stack.LinkEndpoint, error) {
 	if err != nil {
 		return nil, err
 	}
-	return fdbased.New(&fdbased.Options{
+	ep, err := fdbased.New(&fdbased.Options{
 		FDs:                []int{d.fd},
 		MTU:                mtu,
 		PacketDispatchMode: fdbased.RecvMMsg,
 	})
+	if err != nil {
+		return nil, err
+	}
+	d.endPoint = ep
+	return ep, nil
 }
 
 func (d *device) Close() {
+	d.endPoint.Close()
 	_ = unix.Close(d.fd)
 }
 

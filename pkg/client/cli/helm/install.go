@@ -20,6 +20,7 @@ import (
 	"github.com/datawire/dlib/dlog"
 	"github.com/datawire/dlib/dtime"
 	"github.com/telepresenceio/telepresence/rpc/v2/connector"
+	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/userd/k8s"
 	"github.com/telepresenceio/telepresence/v2/pkg/dos"
@@ -30,7 +31,7 @@ import (
 
 const (
 	helmDriver                = "secrets"
-	trafficManagerReleaseName = "traffic-manager"
+	trafficManagerReleaseName = agentmap.ManagerAppName
 	crdReleaseName            = "telepresence-crds"
 )
 

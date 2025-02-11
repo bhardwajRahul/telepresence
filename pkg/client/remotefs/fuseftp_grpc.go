@@ -1,3 +1,5 @@
+//go:build !(linked_fuseftp || docker)
+
 package remotefs
 
 import (

@@ -22,6 +22,6 @@ func interceptCmd() *cobra.Command {
 		RunE:              ic.Run,
 		ValidArgsFunction: intercept.ValidArgs,
 	}
-	ic.AddFlags(cmd)
+	ic.AddInterceptFlags(cmd)
 	return cmd
 }

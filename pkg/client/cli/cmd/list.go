@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
@@ -19,14 +20,18 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/ioutil"
 )
 
+const (
+	includeIntercepts = iota
+	includeIngests
+	includeReplacements
+)
+
 type listCommand struct {
-	onlyIntercepts    bool
-	onlyIngests       bool
-	onlyAgents        bool
-	onlyInterceptable bool
-	debug             bool
-	namespace         string
-	watch             bool
+	inclusions [3]bool
+	onlyAgents bool
+	debug      bool
+	namespace  string
+	watch      bool
 }
 
 func list() *cobra.Command {
@@ -43,12 +48,17 @@ func list() *cobra.Command {
 		ValidArgsFunction: cobra.NoFileCompletions,
 	}
 	flags := cmd.Flags()
-	flags.BoolVarP(&s.onlyIntercepts, "intercepts", "i", false, "intercepts only")
-	flags.BoolVarP(&s.onlyIngests, "ingests", "g", false, "ingests only")
+	flags.BoolVarP(&s.inclusions[includeIntercepts], "intercepts", "i", false, "intercepts")
+	flags.BoolVarP(&s.inclusions[includeIngests], "ingests", "g", false, "ingests")
+	flags.BoolVarP(&s.inclusions[includeReplacements], "replacements", "r", false, "replacements")
 	flags.BoolVarP(&s.onlyAgents, "agents", "a", false, "with installed agents only")
-	flags.BoolVarP(&s.onlyInterceptable, "only-interceptable", "o", true, "interceptable workloads only")
 	flags.BoolVar(&s.debug, "debug", false, "include debugging information")
 	flags.StringVarP(&s.namespace, "namespace", "n", "", "If present, the namespace scope for this CLI request")
+
+	flags.BoolP("only-interceptable", "o", false, "")
+	of := flags.Lookup("only-interceptable")
+	of.Hidden = true
+	of.Deprecated = "Redundant since all workloads are eligible for ingest, intercept, or replace"
 
 	flags.BoolVarP(&s.watch, "watch", "w", false, "watch a namespace. --agents and --intercepts are disabled if this flag is set")
 	wf := flags.Lookup("watch")
@@ -90,18 +100,21 @@ func (s *listCommand) list(cmd *cobra.Command, _ []string) error {
 	stdout := cmd.OutOrStdout()
 	ctx := cmd.Context()
 	userD := daemon.GetUserClient(ctx)
-	var filter connector.ListRequest_Filter
-	switch {
-	case s.onlyIntercepts:
-		filter = connector.ListRequest_INTERCEPTS
-	case s.onlyIngests:
-		filter = connector.ListRequest_INGESTS
-	case s.onlyAgents:
+	filter := connector.ListRequest_UNSPECIFIED
+	for i := range s.inclusions {
+		if s.inclusions[i] {
+			switch i {
+			case includeIntercepts:
+				filter |= connector.ListRequest_INTERCEPTS
+			case includeReplacements:
+				filter |= connector.ListRequest_REPLACEMENTS
+			case includeIngests:
+				filter |= connector.ListRequest_INGESTS
+			}
+		}
+	}
+	if filter == connector.ListRequest_UNSPECIFIED && s.onlyAgents {
 		filter = connector.ListRequest_INSTALLED_AGENTS
-	case s.onlyInterceptable:
-		filter = connector.ListRequest_INTERCEPTABLE
-	default:
-		filter = connector.ListRequest_EVERYTHING
 	}
 
 	cfg := client.GetConfig(ctx)
@@ -176,12 +189,12 @@ func (s *listCommand) printList(ctx context.Context, workloads []*connector.Work
 			return "progressing..."
 		}
 		if workload.AgentVersion != "" {
-			return "ready to intercept (traffic-agent already installed)"
+			return "ready to engage (traffic-agent already installed)"
 		}
 		if workload.NotInterceptableReason != "" {
-			return "not interceptable (traffic-agent not installed): " + workload.NotInterceptableReason
+			return "unable to engage (traffic-agent not installed): " + workload.NotInterceptableReason
 		} else {
-			return "ready to intercept (traffic-agent not yet installed)"
+			return "ready to engage (traffic-agent not yet installed)"
 		}
 	}
 
@@ -198,10 +211,17 @@ func (s *listCommand) printList(ctx context.Context, workloads []*connector.Work
 			}
 			ns = depNs
 		}
+		typeLen := 0
+
 		nameLen := 0
 		for _, dep := range workloads {
-			n := dep.Name
+			n := dep.WorkloadResourceType
 			nl := len(n)
+			if nl > typeLen {
+				typeLen = nl
+			}
+			n = dep.Name
+			nl = len(n)
 			if includeNs {
 				nl += len(dep.Namespace) + 1
 			}
@@ -210,11 +230,12 @@ func (s *listCommand) printList(ctx context.Context, workloads []*connector.Work
 			}
 		}
 		for _, workload := range workloads {
+			t := workload.WorkloadResourceType
 			n := workload.Name
 			if includeNs {
 				n += "." + workload.Namespace
 			}
-			ioutil.Printf(stdout, "%-*s: %s\n", nameLen, n, state(workload))
+			ioutil.Printf(stdout, "%-*s %-*s: %s\n", typeLen, strings.ToLower(t), nameLen, n, state(workload))
 		}
 	}
 }

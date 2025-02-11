@@ -48,13 +48,8 @@ func NewStack(ctx context.Context, dev stack.LinkEndpoint, streamCreator tunnel.
 	return s, nil
 }
 
-const (
-	myWindowScale    = 6
-	maxReceiveWindow = 1 << (myWindowScale + 14) // 1MiB
-)
-
 // maxInFlight specifies the max number of in-flight connection attempts.
-const maxInFlight = 512
+const maxInFlight = 1024
 
 // keepAliveIdle is used as the very first alive interval. Subsequent intervals
 // use keepAliveInterval.
@@ -181,7 +176,7 @@ func setTCPHandler(ctx context.Context, s *stack.Stack, streamCreator tunnel.Str
 	mo := tcpip.TCPModerateReceiveBufferOption(true)
 	s.SetTransportProtocolOption(tcp.ProtocolNumber, &mo)
 
-	f := tcp.NewForwarder(s, maxReceiveWindow, maxInFlight, func(fr *tcp.ForwarderRequest) {
+	f := tcp.NewForwarder(s, 0, maxInFlight, func(fr *tcp.ForwarderRequest) {
 		forwardTCP(ctx, streamCreator, fr)
 	})
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, f.HandlePacket)

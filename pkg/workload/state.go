@@ -23,22 +23,54 @@ const (
 func deploymentState(d *appsv1.Deployment) State {
 	conds := d.Status.Conditions
 	sort.Slice(conds, func(i, j int) bool {
-		return conds[i].LastTransitionTime.Compare(conds[j].LastTransitionTime.Time) > 0
+		ci := conds[i]
+		cj := conds[j]
+
+		// Put all false statuses last in the list
+		if ci.Status == core.ConditionFalse {
+			return false
+		}
+		if cj.Status == core.ConditionFalse {
+			return true
+		}
+
+		if cmp := ci.LastUpdateTime.Compare(cj.LastUpdateTime.Time); cmp != 0 {
+			return cmp > 0
+		}
+		// Transition time is rounded to seconds, so if they are equal, we need to prioritize
+		// using the Type. This isn't ideal, but it is what it is.
+
+		// Failure beats the rest
+		if ci.Type == appsv1.DeploymentReplicaFailure {
+			return true
+		}
+		if cj.Type == appsv1.DeploymentReplicaFailure {
+			return false
+		}
+
+		// Available beats Progressing
+		if ci.Type == appsv1.DeploymentAvailable {
+			return true
+		}
+		if cj.Type == appsv1.DeploymentAvailable {
+			return false
+		}
+
+		// Statuses are exactly equal. This shouldn't happen.
+		return true
 	})
 	for _, c := range conds {
+		if c.Status != core.ConditionTrue {
+			// Only false will follow after this
+			break
+		}
 		switch c.Type {
 		case appsv1.DeploymentProgressing:
-			if c.Status == core.ConditionTrue {
-				return StateProgressing
-			}
+			return StateProgressing
 		case appsv1.DeploymentAvailable:
-			if c.Status == core.ConditionTrue {
-				return StateAvailable
-			}
+			return StateAvailable
 		case appsv1.DeploymentReplicaFailure:
-			if c.Status == core.ConditionTrue {
-				return StateFailure
-			}
+			return StateFailure
 		}
 	}
 	if len(conds) == 0 {

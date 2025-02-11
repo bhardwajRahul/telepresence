@@ -125,7 +125,7 @@ func TalkToManager(ctx context.Context, address string, info *rpc.AgentInfo, sta
 		return err
 	}
 	wg.Go("dialWait", func(ctx context.Context) error {
-		return tunnel.DialWaitLoop(ctx, tunnel.ManagerProvider(manager), dialerStream, session.SessionId)
+		return tunnel.DialWaitLoop(ctx, tunnel.ManagerToAgent, tunnel.ManagerProvider(manager), dialerStream, tunnel.SessionID(session.SessionId))
 	})
 
 	// Deal with log-level changes
@@ -234,7 +234,7 @@ func lookupDNSWaitLoop(ctx context.Context, manager rpc.ManagerClient, session *
 func lookupDNSAndRespond(ctx context.Context, manager rpc.ManagerClient, session *rpc.SessionInfo, lr *rpc.DNSRequest) {
 	qType := uint16(lr.Type)
 	tqn := dns2.TypeToString[qType]
-	rrs, rCode, err := dnsproxy.Lookup(ctx, qType, lr.Name)
+	rrs, rCode, err := dnsproxy.Lookup(ctx, qType, lr.Name, "")
 	if err != nil {
 		dlog.Errorf(ctx, "LookupDNS %s %s: %v", lr.Name, tqn, err)
 		return

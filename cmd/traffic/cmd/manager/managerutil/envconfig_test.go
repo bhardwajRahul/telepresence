@@ -13,7 +13,6 @@ import (
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
-	"github.com/telepresenceio/telepresence/v2/pkg/workload"
 )
 
 func TestEnvconfig(t *testing.T) {
@@ -55,7 +54,7 @@ func TestEnvconfig(t *testing.T) {
 		PodCIDRStrategy:              "auto",
 		PodIP:                        netip.AddrFrom4([4]byte{203, 0, 113, 18}),
 		ServerPort:                   8081,
-		EnabledWorkloadKinds:         []workload.Kind{workload.DeploymentKind, workload.StatefulSetKind, workload.ReplicaSetKind},
+		EnabledWorkloadKinds:         []k8sapi.Kind{k8sapi.DeploymentKind, k8sapi.StatefulSetKind, k8sapi.ReplicaSetKind},
 		MaxNamespaceSpecificWatchers: 10,
 	}
 

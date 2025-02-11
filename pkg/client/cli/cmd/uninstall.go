@@ -7,7 +7,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/rpc/v2/connector"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/ann"
@@ -82,11 +81,6 @@ func (u *uninstallCommand) run(cmd *cobra.Command, args []string) error {
 }
 
 func validWorkloads(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-	defer func() {
-		if r := recover(); r != nil {
-			dlog.Errorf(cmd.Context(), "%+v", derror.PanicToError(r))
-		}
-	}()
 	// Trace level is used here, because we generally don't want to log expansion attempts
 	// in the cli.log
 	dlog.Tracef(cmd.Context(), "toComplete = %s, args = %v", toComplete, args)

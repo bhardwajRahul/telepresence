@@ -19,9 +19,10 @@ type tcp struct {
 	interceptor
 }
 
-func newTCP(listenPort uint16, targetHost string, targetPort uint16) Interceptor {
+func newTCP(listenPort uint16, tag tunnel.Tag, targetHost string, targetPort uint16) Interceptor {
 	return &tcp{
 		interceptor: interceptor{
+			tag:        tag,
 			listenPort: listenPort,
 			targetHost: targetHost,
 			targetPort: targetPort,
@@ -157,13 +158,13 @@ func (f *tcp) interceptConn(ctx context.Context, conn net.Conn, iCept *manager.I
 	return f.rerouteConn(
 		ctx,
 		conn,
-		iCept.ClientSession.SessionId,
+		tunnel.SessionID(iCept.ClientSession.SessionId),
 		netip.AddrPortFrom(iputil.Parse(spec.TargetHost), uint16(spec.TargetPort)),
 		time.Duration(spec.RoundtripLatency),
 		time.Duration(spec.DialTimeout))
 }
 
-func (f *tcp) rerouteConn(ctx context.Context, conn net.Conn, clientSession string, dst netip.AddrPort, latency, timeout time.Duration) error {
+func (f *tcp) rerouteConn(ctx context.Context, conn net.Conn, clientSession tunnel.SessionID, dst netip.AddrPort, latency, timeout time.Duration) error {
 	srcAddr := conn.RemoteAddr()
 	dlog.Debugf(ctx, "Accept got connection from %s", srcAddr)
 	defer dlog.Debugf(ctx, "Done serving connection from %s", srcAddr)
@@ -178,7 +179,7 @@ func (f *tcp) rerouteConn(ctx context.Context, conn net.Conn, clientSession stri
 	f.mu.Lock()
 	sp := f.streamProvider
 	f.mu.Unlock()
-	s, err := sp.CreateClientStream(ctx, clientSession, id, latency, timeout)
+	s, err := sp.CreateClientStream(ctx, tunnel.AgentToClient, clientSession, id, latency, timeout)
 	if err != nil {
 		cancel()
 		return err
@@ -194,7 +195,7 @@ func (f *tcp) rerouteConn(ctx context.Context, conn net.Conn, clientSession stri
 	<-d.Done()
 
 	sp.ReportMetrics(ctx, &manager.TunnelMetrics{
-		ClientSessionId: clientSession,
+		ClientSessionId: string(clientSession),
 		IngressBytes:    ingressBytes.GetValue(),
 		EgressBytes:     egressBytes.GetValue(),
 	})

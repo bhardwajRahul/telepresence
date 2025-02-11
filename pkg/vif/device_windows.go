@@ -17,7 +17,6 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
-	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dlog"
 )
 
@@ -36,12 +35,6 @@ type device struct {
 }
 
 func openTun(ctx context.Context) (td *device, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = derror.PanicToError(r)
-			dlog.Errorf(ctx, "%+v", err)
-		}
-	}()
 	interfaceFmt := "tel%d"
 	ifaceNumber := 0
 	ifaces, err := net.Interfaces()
@@ -128,10 +121,6 @@ func (d *device) Close() {
 
 func (d *device) getLUID() winipcfg.LUID {
 	return winipcfg.LUID(d.dev.(*tun.NativeTun).LUID())
-}
-
-func (d *device) index() uint32 {
-	return d.interfaceIndex
 }
 
 func (d *device) addSubnet(_ context.Context, subnet netip.Prefix) error {

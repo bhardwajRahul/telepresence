@@ -7,6 +7,7 @@ import (
 
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
+	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 )
 
 func (s *notConnectedSuite) Test_Uninstall() {
@@ -17,7 +18,7 @@ func (s *notConnectedSuite) Test_Uninstall() {
 
 	names := func() (string, error) {
 		return itest.KubectlOut(ctx, s.ManagerNamespace(),
-			"get", "svc,deploy", "traffic-manager",
+			"get", "svc,deploy", agentmap.ManagerAppName,
 			"--ignore-not-found",
 			"-o", "jsonpath={.items[*].metadata.name}")
 	}
@@ -34,7 +35,7 @@ func (s *notConnectedSuite) Test_Uninstall() {
 
 	s.Eventually(func() bool {
 		stdout, _, err = itest.Telepresence(ctx, "list", "--agents")
-		return err == nil && strings.Contains(stdout, jobname+": ready to intercept (traffic-agent already installed)")
+		return err == nil && strings.Contains(stdout, jobname+": ready to engage (traffic-agent already installed)")
 	}, 30*time.Second, 3*time.Second)
 
 	stdout = itest.TelepresenceOk(ctx, "helm", "uninstall", "-n", s.ManagerNamespace())

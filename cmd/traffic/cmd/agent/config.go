@@ -3,11 +3,14 @@ package agent
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
@@ -22,22 +25,25 @@ type Config interface {
 	HasMounts(ctx context.Context) bool
 	PodName() string
 	PodIP() string
+	PodUID() types.UID
 }
 
 type config struct {
 	sidecarExt agentconfig.SidecarExt
 	podName    string
 	podIP      string
+	podUID     types.UID
 }
 
 func LoadConfig(ctx context.Context) (Config, error) {
-	bs, err := dos.ReadFile(ctx, filepath.Join(agentconfig.ConfigMountPoint, agentconfig.ConfigFile))
-	if err != nil {
-		return nil, fmt.Errorf("unable to open agent ConfigMap: %w", err)
+	cfgTight, ok := dos.LookupEnv(ctx, agentconfig.EnvAgentConfig)
+	if !ok {
+		return nil, errors.New("unable to retrieve agent ConfigMap entry")
 	}
 
+	var err error
 	c := config{}
-	c.sidecarExt, err = agentconfig.UnmarshalYAML(bs)
+	c.sidecarExt, err = agentconfig.UnmarshalJSON(cfgTight)
 	if err != nil {
 		return nil, fmt.Errorf("unable to decode agent ConfigMap: %w", err)
 	}
@@ -49,14 +55,29 @@ func LoadConfig(ctx context.Context) (Config, error) {
 	if sc.ManagerPort == 0 {
 		sc.ManagerPort = 8081
 	}
-	c.podName = dos.Getenv(ctx, "_TEL_AGENT_NAME")
-	c.podIP = dos.Getenv(ctx, "_TEL_AGENT_POD_IP")
+	c.podName, ok = dos.LookupEnv(ctx, "_TEL_AGENT_NAME")
+	if !ok {
+		return nil, errors.New("missing NAME")
+	}
+	c.podIP, ok = dos.LookupEnv(ctx, "_TEL_AGENT_POD_IP")
+	if !ok {
+		return nil, errors.New("missing POD_IP")
+	}
+	podUID, ok := dos.LookupEnv(ctx, "_TEL_AGENT_POD_UID")
+	if !ok {
+		return nil, errors.New("missing POD_UID")
+	}
+	c.podUID = types.UID(podUID)
 	for _, cn := range sc.Containers {
 		if err := addAppMounts(ctx, cn); err != nil {
 			return nil, err
 		}
 	}
 	return &c, nil
+}
+
+func (c *config) PodUID() types.UID {
+	return c.podUID
 }
 
 func (c *config) HasMounts(ctx context.Context) bool {

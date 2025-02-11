@@ -32,6 +32,7 @@ type Info struct {
 	ServiceUID    string            `json:"service_uid,omitempty"     yaml:"service_uid,omitempty"`
 	ServicePortID string            `json:"service_port_id,omitempty" yaml:"service_port_id,omitempty"` // ServicePortID is deprecated. Use PortID
 	PortID        string            `json:"port_id,omitempty"         yaml:"port_id,omitempty"`
+	ContainerName string            `json:"container_name,omitempty"  yaml:"container_name,omitempty"`
 	ContainerPort int32             `json:"container_port,omitempty"  yaml:"container_port,omitempty"`
 	Protocol      string            `json:"protocol,omitempty"        yaml:"protocol,omitempty"`
 	Environment   map[string]string `json:"environment,omitempty"     yaml:"environment,omitempty"`
@@ -40,6 +41,7 @@ type Info struct {
 	Metadata      map[string]string `json:"metadata,omitempty"        yaml:"metadata,omitempty"`
 	HttpFilter    []string          `json:"http_filter,omitempty"     yaml:"http_filter,omitempty"`
 	Global        bool              `json:"global,omitempty"          yaml:"global,omitempty"`
+	Replace       bool              `json:"replace,omitempty"         yaml:"replace,omitempty"`
 	PreviewURL    string            `json:"preview_url,omitempty"     yaml:"preview_url,omitempty"`
 	Ingress       *Ingress          `json:"ingress,omitempty"         yaml:"ingress,omitempty"`
 	PodIP         string            `json:"pod_ip,omitempty"          yaml:"pod_ip,omitempty"`
@@ -89,6 +91,7 @@ func NewInfo(ctx context.Context, ii *manager.InterceptInfo, ro bool, mountError
 		Mount:         m,
 		ServiceUID:    spec.ServiceUid,
 		PortID:        spec.PortIdentifier,
+		ContainerName: spec.ContainerName,
 		ContainerPort: spec.ContainerPort,
 		Protocol:      spec.Protocol,
 		PodIP:         ii.PodIp,
@@ -97,6 +100,7 @@ func NewInfo(ctx context.Context, ii *manager.InterceptInfo, ro bool, mountError
 		Metadata:      ii.Metadata,
 		HttpFilter:    spec.MechanismArgs,
 		Global:        spec.Mechanism == "tcp",
+		Replace:       spec.NoDefaultPort, // spec.Replace can't be used because it's set by deprecated --replace flag
 		PreviewURL:    PreviewURL(ii.PreviewDomain),
 		Ingress:       NewIngress(ii.PreviewSpec),
 	}
@@ -110,7 +114,11 @@ func NewInfo(ctx context.Context, ii *manager.InterceptInfo, ro bool, mountError
 func (ii *Info) WriteTo(w io.Writer) (int64, error) {
 	kvf := ioutil.DefaultKeyValueFormatter()
 	kvf.Prefix = "   "
-	kvf.Add("Intercept name", ii.Name)
+	if ii.Replace {
+		kvf.Add("Container name", ii.ContainerName)
+	} else {
+		kvf.Add("Intercept name", ii.Name)
+	}
 	kvf.Add("State", func() string {
 		msg := ""
 		if manager.InterceptDispositionType_value[ii.Disposition] > int32(manager.InterceptDispositionType_WAITING) {
@@ -132,7 +140,7 @@ func (ii *Info) WriteTo(w io.Writer) (int64, error) {
 	pkv := ioutil.DefaultKeyValueFormatter()
 	pkv.Indent = ""
 	pkv.Separator = " -> "
-	if ii.PortID != "" {
+	if ii.ContainerPort != 0 {
 		pm, _ := agentconfig.NewPortIdentifier(ii.Protocol, strconv.Itoa(int(ii.ContainerPort)))
 		pkv.Add(pm.String(), fmt.Sprintf("%d %s", ii.TargetPort, ii.Protocol))
 	}
@@ -141,7 +149,11 @@ func (ii *Info) WriteTo(w io.Writer) (int64, error) {
 		to := pm.To()
 		pkv.Add(pm.From().String(), fmt.Sprintf("%d %s", to.Port, to.Proto))
 	}
-	kvf.Add("Intercepting", fmt.Sprintf("%s -> %s\n%s", ii.PodIP, ii.TargetHost, pkv))
+	key := "Intercepting"
+	if ii.Replace {
+		key = "Port forwards"
+	}
+	kvf.Add(key, fmt.Sprintf("%s -> %s\n%s", ii.PodIP, ii.TargetHost, pkv))
 
 	if !ii.Global {
 		kvf.Add("Intercepting", func() string {
