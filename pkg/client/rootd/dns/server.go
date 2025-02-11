@@ -151,7 +151,7 @@ func NewServer(config *client.DNS, clusterLookup Resolver) *Server {
 		config.ExcludeSuffixes = DefaultExcludeSuffixes
 	}
 	if config.LookupTimeout <= 0 {
-		config.LookupTimeout = 8 * time.Second
+		config.LookupTimeout = 4 * time.Second
 	}
 	return &Server{
 		DNS:            *config,
@@ -687,6 +687,10 @@ func (s *Server) resolveThruCache(q *dns.Question) (answer dnsproxy.RRs, rCode i
 		answer = copyRRs(answer, []uint16{q.Qtype})
 		atomic.StoreInt32(&dv.currentQType, int32(dns.TypeNone))
 		dv.close()
+		if rCode != dns.RcodeSuccess && rCode != dns.RcodeNameError {
+			// We don't cache other types of errors, because they might be caused by recoverable network glitches.
+			s.cache.Delete(key)
+		}
 	}()
 	return s.resolve(s.ctx, q)
 }
