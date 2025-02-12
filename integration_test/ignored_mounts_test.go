@@ -67,9 +67,8 @@ func (s *mountsSuite) Test_IgnoredMounts() {
 			}
 			ctx := s.Context()
 			s.ApplyTemplate(ctx, filepath.Join("testdata", "k8s", "hello-w-volumes.goyaml"), &tpl)
-			defer func() {
-				s.DeleteSvcAndWorkload(ctx, "deploy", "hello")
-			}()
+			defer s.DeleteSvcAndWorkload(ctx, "deploy", "hello")
+
 			require := s.Require()
 			stdout := itest.TelepresenceOk(ctx, "intercept", "hello", "--output", "json", "--detailed-output", "--port", fmt.Sprintf("%d:%d", localPort, tt.svcPort))
 			defer itest.TelepresenceOk(ctx, "leave", "hello")

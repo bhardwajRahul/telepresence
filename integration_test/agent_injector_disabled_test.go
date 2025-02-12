@@ -38,7 +38,6 @@ func (s *agentInjectorDisabledSuite) Test_AgentInjectorDisabled() {
 
 	s.ApplyApp(ctx, svc, "deploy/"+svc)
 	defer s.DeleteSvcAndWorkload(ctx, "deploy", svc)
-	s.CapturePodLogs(ctx, svc, "traffic-agent", s.AppNamespace())
 
 	s.TelepresenceConnect(ctx)
 	_, sErr, err := itest.Telepresence(ctx, "intercept", svc)

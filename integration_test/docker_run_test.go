@@ -36,6 +36,8 @@ func (s *singleServiceSuite) Test_DockerRun_HostDaemon() {
 			"--docker-run", "--port", "9070:8080", "--", "--rm", "-v", abs+":/usr/src/app", tag)
 		if len(stderr) > 0 {
 			dlog.Debugf(ctx, "stderr = %q", stderr)
+		} else {
+			s.CapturePodLogs(ctx, svc, "traffic-agent", s.AppNamespace())
 		}
 	}
 
@@ -50,12 +52,12 @@ func (s *singleServiceSuite) Test_DockerRun_HostDaemon() {
 		s.Eventually(
 			// condition
 			func() bool {
-				out, err := itest.Output(ctx, "curl", "--silent", "--max-time", "1", svc)
+				out, err := itest.Output(ctx, "curl", "--silent", "--max-time", "1", "http://"+svc)
+				dlog.Info(ctx, out)
 				if err != nil {
 					dlog.Error(ctx, err)
 					return false
 				}
-				dlog.Info(ctx, out)
 				return expectedOutput.MatchString(out)
 			},
 			10*time.Second, // waitFor
@@ -168,6 +170,8 @@ func (s *dockerDaemonSuite) Test_DockerRun_DockerDaemon() {
 		}
 		if err != nil {
 			dlog.Error(ctx, err.Error())
+		} else {
+			s.CapturePodLogs(ctx, svc, "traffic-agent", s.AppNamespace())
 		}
 	}
 
@@ -182,13 +186,13 @@ func (s *dockerDaemonSuite) Test_DockerRun_DockerDaemon() {
 		s.Eventually(
 			// condition
 			func() bool {
-				out := itest.TelepresenceOk(ctx, "curl", "--silent", "--max-time", "1", svc)
+				so, _, err := itest.Telepresence(ctx, "curl", "--silent", "--max-time", "1", "http://"+svc)
+				dlog.Info(ctx, so)
 				if err != nil {
-					dlog.Errorf(ctx, "%s:%v", out, err)
+					dlog.Error(ctx, err)
 					return false
 				}
-				dlog.Info(ctx, out)
-				return expectedOutput.MatchString(out)
+				return expectedOutput.MatchString(so)
 			},
 			10*time.Second, // waitFor
 			2*time.Second,  // polling interval
@@ -264,10 +268,7 @@ func (s *dockerDaemonSuite) Test_DockerRun_DockerDaemon() {
 
 func (s *dockerDaemonSuite) Test_DockerRun_VolumePresent() {
 	ctx := s.Context()
-	s.KubectlOk(ctx, "create", "serviceaccount", testIamServiceAccount)
-	defer s.KubectlOk(ctx, "delete", "serviceaccount", testIamServiceAccount)
-
-	s.ApplyApp(ctx, "hello-w-volumes", "deploy/hello")
+	s.ApplyTemplate(ctx, filepath.Join("testdata", "k8s", "hello-w-volumes.goyaml"), nil)
 	defer s.DeleteSvcAndWorkload(ctx, "deploy", "hello")
 
 	s.TelepresenceConnect(ctx, "--docker")

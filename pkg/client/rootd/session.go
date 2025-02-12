@@ -404,13 +404,8 @@ func (s *Session) clusterLookup(ctx context.Context, q *dns2.Question) (dnsproxy
 	})
 	if err != nil {
 		s.dnsFailures++
-		rCode := dns2.RcodeServerFailure
-		switch status.Code(err) {
-		case codes.Unavailable, codes.DeadlineExceeded:
-			rCode = dns2.RcodeNameError
-			err = nil
-		}
-		return nil, rCode, err
+		dlog.Errorf(ctx, "Lookup %s %q: %v", dns2.TypeToString[q.Qtype], q.Name, err)
+		return nil, dns2.RcodeServerFailure, err
 	}
 	answer, rCode, err := dnsproxy.FromRPC(r)
 	if err != nil {

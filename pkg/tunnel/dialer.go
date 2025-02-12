@@ -383,7 +383,7 @@ func DialWaitLoop(
 	dialStream rpc.Manager_WatchDialClient,
 	sessionID SessionID,
 ) error {
-	// create ctx to cleanup leftover dialRespond if waitloop dies
+	// create ctx to clean up leftover dialRespond if waitloop dies
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	for ctx.Err() == nil {
@@ -395,11 +395,11 @@ func DialWaitLoop(
 		if ctx.Err() != nil {
 			return nil
 		}
-		if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || status.Code(err) == codes.NotFound {
+		if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
 			return nil
 		}
 		switch status.Code(err) {
-		case codes.NotFound, codes.Unavailable:
+		case codes.Canceled, codes.NotFound, codes.Unavailable:
 			return nil
 		}
 		return fmt.Errorf("dial request stream recv: %w", err)

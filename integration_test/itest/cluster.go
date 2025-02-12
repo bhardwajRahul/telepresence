@@ -361,8 +361,8 @@ func (s *cluster) withBasicConfig(c context.Context, t *testing.T) context.Conte
 	to.PrivateIntercept = 30 * time.Second
 	to.PrivateProxyDial = 30 * time.Second
 	to.PrivateRoundtripLatency = 5 * time.Second
-	to.PrivateTrafficManagerAPI = 120 * time.Second
-	to.PrivateTrafficManagerConnect = 180 * time.Second
+	to.PrivateTrafficManagerAPI = 45 * time.Second
+	to.PrivateTrafficManagerConnect = 30 * time.Second
 	to.PrivateConnectivityCheck = 0
 
 	images := config.Images()

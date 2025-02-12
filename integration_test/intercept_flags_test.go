@@ -44,16 +44,14 @@ func (s *interceptFlagSuite) SetupSuite() {
 	s.Suite.SetupSuite()
 	ctx := s.Context()
 	s.serviceName = "hello"
-	s.KubectlOk(ctx, "create", "serviceaccount", testIamServiceAccount)
-	s.ApplyApp(ctx, "hello-w-volumes", "deploy/"+s.serviceName)
+	s.ApplyTemplate(ctx, filepath.Join("testdata", "k8s", "hello-w-volumes.goyaml"), nil)
 	s.TelepresenceConnect(ctx)
 }
 
 func (s *interceptFlagSuite) TearDownSuite() {
 	ctx := s.Context()
 	itest.TelepresenceQuitOk(ctx)
-	s.DeleteSvcAndWorkload(ctx, "deploy", s.serviceName)
-	s.KubectlOk(ctx, "delete", "serviceaccount", testIamServiceAccount)
+	defer s.DeleteSvcAndWorkload(ctx, "deploy", s.serviceName)
 }
 
 // Test_ContainerReplace tests that:
