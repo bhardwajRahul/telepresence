@@ -182,13 +182,13 @@ func (s *dockerDaemonSuite) Test_DockerRun_DockerDaemon() {
 		s.Eventually(
 			// condition
 			func() bool {
-				out := itest.TelepresenceOk(ctx, "curl", "--silent", "--max-time", "1", svc)
+				so, se, err := itest.Telepresence(ctx, "curl", "--silent", "--max-time", "1", svc)
 				if err != nil {
-					dlog.Errorf(ctx, "%s:%v", out, err)
+					dlog.Errorf(ctx, "stdout %q, stderr %q: %v", so, se, err)
 					return false
 				}
-				dlog.Info(ctx, out)
-				return expectedOutput.MatchString(out)
+				dlog.Info(ctx, so)
+				return expectedOutput.MatchString(so)
 			},
 			10*time.Second, // waitFor
 			2*time.Second,  // polling interval
