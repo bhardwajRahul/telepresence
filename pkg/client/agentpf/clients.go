@@ -453,10 +453,23 @@ func (s *clients) WaitForIP(ctx context.Context, timeout time.Duration, ip netip
 		return make(chan struct{}), false
 	})
 	if ok {
-		return s.waitWithTimeout(ctx, timeout, waitOn)
+		if err := s.waitWithTimeout(ctx, timeout, waitOn); err != nil {
+			return err
+		}
 	}
-	// No chan created because the agent already exists
-	return nil
+	// Ensure that the client we're waiting for is ready.
+	var cl *client
+	s.clients.Range(func(k string, ac *client) bool {
+		if acIP, ok := netip.AddrFromSlice(ac.info.PodIp); ok && ip == acIP {
+			cl = ac
+			return false
+		}
+		return true
+	})
+	if cl == nil {
+		return status.Error(codes.NotFound, "no client available")
+	}
+	return cl.ensureConnect(ctx)
 }
 
 func (s *clients) WaitForWorkload(ctx context.Context, timeout time.Duration, name string) error {
