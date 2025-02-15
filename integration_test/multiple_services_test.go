@@ -33,6 +33,9 @@ func init() {
 }
 
 func (s *multipleServicesSuite) Test_LargeRequest() {
+	if !(s.ManagerIsVersion(">2.21.x") && s.ClientIsVersion(">2.21.x")) {
+		s.T().Skip("Not part of compatibility tests. TUN-device isn't stable enough versions <2.22.0")
+	}
 	// This particular cannot run with recursion detection, because it will trigger on the very high concurrency.
 	ctx := s.Context()
 	itest.TelepresenceQuitOk(ctx)
@@ -116,7 +119,7 @@ func (s *multipleServicesSuite) Test_LargeRequest() {
 func (s *multipleServicesSuite) Test_List() {
 	stdout := itest.TelepresenceOk(s.Context(), "-n", s.AppNamespace(), "list")
 	for i := 0; i < s.ServiceCount(); i++ {
-		s.Regexp(fmt.Sprintf(`%s-%d\s*: ready to engage`, s.Name(), i), stdout)
+		s.Regexp(fmt.Sprintf(`%s-%d\s*: ready to engage|intercept`, s.Name(), i), stdout)
 	}
 }
 
