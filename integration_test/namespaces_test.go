@@ -33,9 +33,9 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: {{.Name}}
-{{- with .Labels }}
   labels:
     purpose: tp-cli-testing
+{{- with .Labels }}
 {{ toYaml . | nindent 4 }}
 {{- end }}`
 
