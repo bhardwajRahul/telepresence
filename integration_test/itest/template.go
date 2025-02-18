@@ -29,6 +29,7 @@ type ServicePort struct {
 type Generic struct {
 	Name           string
 	Annotations    map[string]string
+	Labels         map[string]string
 	Environment    []core.EnvVar
 	TargetPort     string
 	ServicePorts   []ServicePort

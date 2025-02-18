@@ -29,6 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 	core "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/labels"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/clientcmd/api"
@@ -1089,7 +1090,11 @@ func WithKubeConfig(ctx context.Context, cfg *api.Config) context.Context {
 }
 
 func RunningPods(ctx context.Context, svc, ns string) []core.Pod {
-	out, err := KubectlOut(ctx, ns, "get", "pods", "-o", "json", "--field-selector", "status.phase==Running", "-l", "app="+svc)
+	return RunningPodsSelector(ctx, ns, labels.SelectorFromSet(map[string]string{"app": svc}))
+}
+
+func RunningPodsSelector(ctx context.Context, ns string, selector labels.Selector) []core.Pod {
+	out, err := KubectlOut(ctx, ns, "get", "pods", "-o", "json", "--field-selector", "status.phase==Running", "-l", selector.String())
 	if err != nil {
 		getT(ctx).Log(err.Error())
 		return nil
