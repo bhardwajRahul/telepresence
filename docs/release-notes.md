@@ -72,6 +72,12 @@ namespaceSelector:
 The output of the `telepresence list` command will now include the workload kind (deployment, replicaset, statefulset, or rollout) in all entries.
 </div>
 
+## <div style="display:flex;"><img src="images/change.png" alt="change" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">Make the DNS recursion check configurable and turn it off by default.</div></div>
+<div style="margin-left: 15px">
+
+Very few systems experience a DNS recursion lookup problem. It can only occur when the cluster runs locally and the cluster's DNS is configured to somehow use DNS server that is started by Telepresence. The check is therefore now configurable through the client setting `dns.recursionCheck`, and it is `false` by default.
+</div>
+
 ## <div style="display:flex;"><img src="images/change.png" alt="change" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">Trigger the mutating webhook with Kubernetes eviction objects instead of patching workloads.</div></div>
 <div style="margin-left: 15px">
 
