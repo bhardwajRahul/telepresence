@@ -76,7 +76,7 @@ func (s *Server) Worker(c context.Context, dev vif.Device, configureDNS func(net
 			return err
 		}
 		s.processSearchPaths(g, s.updateRouterDNS, dev)
-		return s.Run(c, make(chan struct{}), []net.PacketConn{listener}, pool, s.resolveInCluster)
+		return s.Run(c, make(chan struct{}), []net.PacketConn{listener}, pool)
 	})
 	return g.Wait()
 }

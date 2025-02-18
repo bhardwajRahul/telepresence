@@ -67,7 +67,7 @@ func (s *Server) tryResolveD(c context.Context, dev vif.Device, configureDNS fun
 			initDone <- struct{}{}
 			return errResolveDNotConfigured
 		}
-		return s.Run(c, initDone, listeners, nil, s.resolveInCluster)
+		return s.Run(c, initDone, listeners, nil)
 	})
 
 	g.Go("SanityCheck", func(c context.Context) error {

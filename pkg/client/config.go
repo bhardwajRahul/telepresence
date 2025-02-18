@@ -1111,6 +1111,7 @@ type DNS struct {
 	Excludes        []string      `json:"excludes"`
 	Mappings        DNSMappings   `json:"mappings"`
 	LookupTimeout   time.Duration `json:"lookupTimeout"`
+	RecursionCheck  bool          `json:"recursionCheck"`
 }
 
 // DNSSnake is the same as DNS but with snake_case json/yaml names.
@@ -1123,6 +1124,7 @@ type DNSSnake struct {
 	Excludes        []string      `json:"excludes"`
 	Mappings        DNSMappings   `json:"mappings"`
 	LookupTimeout   time.Duration `json:"lookup_timeout"`
+	RecursionCheck  bool          `json:"recursion_check"`
 }
 
 func (d *DNS) ToRPC() *daemon.DNSConfig {
@@ -1133,6 +1135,7 @@ func (d *DNS) ToRPC() *daemon.DNSConfig {
 		IncludeSuffixes: d.IncludeSuffixes,
 		Excludes:        d.Excludes,
 		LookupTimeout:   durationpb.New(d.LookupTimeout),
+		RecursionCheck:  d.RecursionCheck,
 		Error:           d.Error,
 	}
 	if len(d.Mappings) > 0 {
@@ -1156,6 +1159,7 @@ func (d *DNS) ToSnake() *DNSSnake {
 		Excludes:        d.Excludes,
 		Mappings:        d.Mappings,
 		LookupTimeout:   d.LookupTimeout,
+		RecursionCheck:  d.RecursionCheck,
 		Error:           d.Error,
 	}
 }
@@ -1180,6 +1184,7 @@ func DNSFromRPC(s *daemon.DNSConfig) *DNS {
 		IncludeSuffixes: s.IncludeSuffixes,
 		Excludes:        s.Excludes,
 		Mappings:        MappingsFromRPC(s.Mappings),
+		RecursionCheck:  s.RecursionCheck,
 		Error:           s.Error,
 	}
 	if ip, ok := netip.AddrFromSlice(s.LocalIp); ok {
