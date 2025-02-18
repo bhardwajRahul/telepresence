@@ -130,6 +130,9 @@ func (is *installSuite) Test_UpgradeRetainsValues() {
 }
 
 func (is *installSuite) Test_HelmTemplateInstall() {
+	if !(is.ManagerVersion().EQ(version.Structured) && is.ClientVersion().EQ(version.Structured)) {
+		is.T().Skip("Not part of compatibility tests. PackageHelmChart assumes current version.")
+	}
 	ctx := is.Context()
 	require := is.Require()
 
