@@ -291,9 +291,9 @@ push-client-image: client-image ## (Build) Push the client container image to $(
 push-images: push-tel2-image push-client-image
 
 .PHONY: helm-chart
-helm-chart: $(BUILDDIR)/telepresence-chart.tgz
+helm-chart: $(BUILDDIR)/telepresence-oss-chart.tgz
 
-$(BUILDDIR)/telepresence-chart.tgz: $(wildcard charts/telepresence/**/*)
+$(BUILDDIR)/telepresence-oss-chart.tgz: $(wildcard charts/telepresence-oss/**/*)
 	mkdir -p $(BUILDDIR)
 	go run packaging/helmpackage.go -o $@ -v $(TELEPRESENCE_SEMVER)
 

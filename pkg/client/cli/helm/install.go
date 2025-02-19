@@ -32,7 +32,6 @@ import (
 const (
 	helmDriver                = "secrets"
 	trafficManagerReleaseName = agentmap.ManagerAppName
-	crdReleaseName            = "telepresence-crds"
 )
 
 var GetValuesFunc = GetValues //nolint:gochecknoglobals // extension point
@@ -52,7 +51,6 @@ type Request struct {
 	ReuseValues     bool
 	ResetValues     bool
 	CreateNamespace bool
-	Crds            bool
 	NoHooks         bool
 	Version         string
 }
@@ -115,10 +113,6 @@ func (hr *Request) Run(ctx context.Context, cr *connector.ConnectRequest) error 
 	}
 
 	updatedResource := "Traffic Manager"
-	if hr.Crds {
-		updatedResource = "Telepresence CRDs"
-	}
-
 	ioutil.Printf(dos.Stdout(ctx), "\n%s %s successfully\n", updatedResource, msg)
 	return nil
 }
@@ -323,18 +317,12 @@ func isInstalled(
 }
 
 func EnsureTrafficManager(ctx context.Context, clientGetter genericclioptions.RESTClientGetter, namespace string, req *Request) (err error) {
-	if req.Crds {
-		dlog.Debug(ctx, "loading build-in helm chart")
-		err = ensureIsInstalled(ctx, clientGetter, true, crdReleaseName, namespace, req)
-	} else {
-		err = ensureIsInstalled(ctx, clientGetter, false, trafficManagerReleaseName, namespace, req)
-	}
-	return err
+	return ensureIsInstalled(ctx, clientGetter, trafficManagerReleaseName, namespace, req)
 }
 
 // EnsureTrafficManager ensures the traffic manager is installed.
 func ensureIsInstalled(
-	ctx context.Context, clientGetter genericclioptions.RESTClientGetter, crd bool,
+	ctx context.Context, clientGetter genericclioptions.RESTClientGetter,
 	releaseName, namespace string, req *Request,
 ) error {
 	cleanFailedState := func(helmConfig *action.Configuration) error {
@@ -399,13 +387,10 @@ func ensureIsInstalled(
 	version := getTrafficManagerVersion(vals)
 
 	var chrt *chart.Chart
-	switch {
-	case crd:
-		chrt, err = loadCRDChart(version)
-	case req.Version != "":
+	if req.Version != "" {
 		version = req.Version
 		chrt, err = pullCoreChart(ctx, helmConfig, "oci://ghcr.io/telepresenceio/telepresence-oss", version)
-	default:
+	} else {
 		chrt, err = loadCoreChart(version)
 	}
 	if err != nil {
@@ -434,19 +419,10 @@ func ensureIsInstalled(
 func DeleteTrafficManager(
 	ctx context.Context, clientGetter genericclioptions.RESTClientGetter, namespace string, errOnFail bool, req *Request,
 ) error {
-	if !req.Crds {
-		err := ensureIsDeleted(ctx, clientGetter, trafficManagerReleaseName, namespace, errOnFail, req)
-		if err != nil {
-			return err
-		}
-		return nil
-	}
-
-	err := ensureIsDeleted(ctx, clientGetter, crdReleaseName, namespace, errOnFail, req)
+	err := ensureIsDeleted(ctx, clientGetter, trafficManagerReleaseName, namespace, errOnFail, req)
 	if err != nil {
 		return err
 	}
-
 	return nil
 }
 

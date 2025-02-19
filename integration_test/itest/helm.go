@@ -26,12 +26,12 @@ import (
 )
 
 func (s *cluster) PackageHelmChart(ctx context.Context) (string, error) {
-	filename := filepath.Join(getT(ctx).TempDir(), "telepresence-chart.tgz")
+	filename := filepath.Join(getT(ctx).TempDir(), telcharts.TelepresenceChartName+"-chart.tgz")
 	fh, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0o666)
 	if err != nil {
 		return "", err
 	}
-	if err := telcharts.WriteChart(telcharts.DirTypeTelepresence, fh, "telepresence", s.self.ManagerVersion().String()); err != nil {
+	if err := telcharts.WriteChart(telcharts.DirTypeTelepresence, fh, telcharts.TelepresenceChartName, s.self.ManagerVersion().String()); err != nil {
 		_ = fh.Close()
 		return "", err
 	}

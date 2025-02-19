@@ -58,7 +58,6 @@ func helmInstall() *cobra.Command {
 	flags.BoolVar(&ha.CreateNamespace, "create-namespace", true, "create a namespace for the traffic-manager if not present")
 	flags.StringVar(&ha.Version, "version", "", "the telepresence version if different from the client's version. May be a range (e.g. ^2.21.0)")
 	ha.addValueSettingFlags(flags)
-	ha.addCRDsFlags(flags)
 	uf := flags.Lookup("upgrade")
 	uf.Hidden = true
 	uf.Deprecated = `Use "telepresence helm upgrade" instead of "telepresence helm install --upgrade"`
@@ -81,7 +80,6 @@ func helmUpgrade() *cobra.Command {
 
 	flags := cmd.Flags()
 	ha.addValueSettingFlags(flags)
-	ha.addCRDsFlags(flags)
 	flags.BoolVarP(&ha.NoHooks, "no-hooks", "", false, "disable pre/post upgrade hooks")
 	flags.BoolVarP(&ha.ResetValues, "reset-values", "", false, "when upgrading, reset the values to the ones built into the chart")
 	flags.BoolVarP(&ha.ReuseValues, "reuse-values", "", false,
@@ -108,12 +106,6 @@ func (ha *HelmCommand) addValueSettingFlags(flags *pflag.FlagSet) {
 	}
 }
 
-func (ha *HelmCommand) addCRDsFlags(flags *pflag.FlagSet) {
-	if HelmExtendFlagsFunc != nil {
-		HelmExtendFlagsFunc(flags)
-	}
-}
-
 func helmUninstall() *cobra.Command {
 	ha := &HelmCommand{
 		Request: helm.Request{
@@ -128,7 +120,6 @@ func helmUninstall() *cobra.Command {
 	}
 	flags := cmd.Flags()
 	flags.BoolVarP(&ha.NoHooks, "no-hooks", "", false, "prevent hooks from running during uninstallation")
-	ha.addCRDsFlags(flags)
 	ha.rq = daemon.InitRequest(cmd)
 	return cmd
 }

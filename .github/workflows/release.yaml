@@ -77,7 +77,7 @@ jobs:
           docker buildx build --platform=linux/amd64,linux/arm64 --build-arg TELEPRESENCE_VERSION=${{env.TELEPRESENCE_SEMVER}} \
           --push --tag ${{env.TELEPRESENCE_REGISTRY}}/tel2:${{env.TELEPRESENCE_SEMVER}} -f build-aux/docker/images/Dockerfile.traffic .
       - name: Push Helm Chart
-        run: helm push build-output/telepresence-chart.tgz oci://${{env.TELEPRESENCE_REGISTRY}}
+        run: helm push build-output/telepresence-oss-chart.tgz oci://${{env.TELEPRESENCE_REGISTRY}}
       - name: Log out from registry
         if: always()
         run: docker logout
