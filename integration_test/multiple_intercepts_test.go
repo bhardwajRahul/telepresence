@@ -68,6 +68,17 @@ func (s *multipleInterceptsSuite) TearDownSuite() {
 			cancel()
 		}
 	}
+	// Ensure that we have OK statuses on our services after leaving the intercept.
+	s.Eventually(func() bool {
+		stdout := itest.TelepresenceOk(ctx, "-n", s.AppNamespace(), "list")
+		for i := 0; i < s.ServiceCount(); i++ {
+			rx := regexp.MustCompile(fmt.Sprintf(`%s-%d\s*: ready to (engage|intercept)`, s.Name(), i))
+			if !rx.MatchString(stdout) {
+				return false
+			}
+		}
+		return true
+	}, 30*time.Second, 2*time.Second)
 }
 
 func (s *multipleInterceptsSuite) Test_Intercepts() {
