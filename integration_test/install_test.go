@@ -66,6 +66,9 @@ func (is *installSuite) AmendSuiteContext(ctx context.Context) context.Context {
 }
 
 func (is *installSuite) Test_UpgradeRetainsValues() {
+	if is.ClientIsVersion("<2.22.0") && !is.ManagerVersion().EQ(is.ClientVersion()) {
+		is.T().Skip("Not part of compatibility tests. Client < 2.22.0 cannot handle helm --version flag.")
+	}
 	ctx := is.Context()
 	rq := is.Require()
 	is.TelepresenceHelmInstallOK(ctx, false, "--set", "logLevel=debug")
@@ -86,7 +89,7 @@ func (is *installSuite) Test_UpgradeRetainsValues() {
 	oldValues, err := getValues()
 	rq.NoError(err)
 	args := []string{"helm", "upgrade", "--namespace", is.ManagerNamespace()}
-	if !(is.ManagerVersion().EQ(is.ClientVersion()) || is.ManagerVersion().LT(version.Structured)) {
+	if !is.ManagerVersion().EQ(is.ClientVersion()) {
 		args = append(args, "--version", is.ManagerVersion().String())
 	}
 

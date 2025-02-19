@@ -18,42 +18,11 @@ import (
 // injection of a traffic-agent.
 // See ticket https://github.com/telepresenceio/telepresence/issues/3441 for more info.
 func (s *singleServiceSuite) Test_InterceptOperationRestoredAfterFailingInject() {
-	if !s.ClientIsVersion(">2.21.x") {
-		s.T().Skip("Not part of compatibility tests.")
+	if s.ClientIsVersion("<2.22.0") && s.ManagerIsVersion(">=2.22.0") {
+		s.T().Skip("Not part of compatibility tests. Clients < 2.22.0 cannot uninstall agents with traffic-manager >= 2.22.0")
 	}
 	ctx := s.Context()
 	rq := s.Require()
-
-	// Create an intercept and ensure that it lists as intercepted
-	stdout := itest.TelepresenceOk(ctx, "intercept", s.ServiceName(), "--mount=false")
-	rq.Contains(stdout, "Using Deployment "+s.ServiceName())
-	rq.Eventually(func() bool {
-		stdout, _, err := itest.Telepresence(ctx, "list", "--intercepts")
-		return err == nil && regexp.MustCompile(s.ServiceName()+`\s*: intercepted`).MatchString(stdout)
-	}, 12*time.Second, 3*time.Second)
-
-	// Leave the intercept. We are now 100% sure that an agent is present in the
-	// pod.
-	itest.TelepresenceOk(ctx, "leave", s.ServiceName())
-
-	// Break the TLS by temporally disabling the agent-injector service. We do this by the port of the
-	// service that the webhook is calling.
-	portRestored := false
-	wh := "agent-injector-webhook-" + s.ManagerNamespace()
-	pmf := `{"webhooks":[{"name": "agent-injector-%s.getambassador.io", "clientConfig": {"service": {"name": "agent-injector", "port": %d}}}]}`
-	rq.NoError(itest.Kubectl(ctx, s.ManagerNamespace(), "patch", "mutatingwebhookconfiguration", wh,
-		"--patch", fmt.Sprintf(pmf, s.ManagerNamespace(), 8443)))
-
-	// Restore the webhook port when this test ends in case an error occurred that prevented it
-	defer func() {
-		if !portRestored {
-			s.NoError(itest.Kubectl(ctx, s.ManagerNamespace(), "patch", "mutatingwebhookconfiguration", wh,
-				"--patch", fmt.Sprintf(pmf, s.ManagerNamespace(), 443)))
-		}
-	}()
-
-	// Uninstall the agent.
-	itest.TelepresenceOk(ctx, "uninstall", s.ServiceName())
 
 	oneContainer := func() bool {
 		pods := itest.RunningPodNames(ctx, s.ServiceName(), s.AppNamespace())
@@ -80,11 +49,31 @@ func (s *singleServiceSuite) Test_InterceptOperationRestoredAfterFailingInject()
 		return false
 	}
 
-	// Verify that the pod has no agent
-	rq.Eventually(oneContainer, 30*time.Second, 3*time.Second)
+	// Ensure that agent is uninstalled.
+	so, se, err := itest.Telepresence(ctx, "uninstall", s.ServiceName())
+	// We don't care if it succeeds, but the output and error might be of interest when debugging.
+	dlog.Debugf(ctx, "stdout: %s, stderr %s, err: %v", so, se, err)
+
+	rq.Eventually(oneContainer, 60*time.Second, 3*time.Second)
+
+	// Break the TLS by temporally disabling the agent-injector service. We do this by the port of the
+	// service that the webhook is calling.
+	wh := "agent-injector-webhook-" + s.ManagerNamespace()
+	pmf := `{"webhooks":[{"name": "agent-injector-%s.getambassador.io", "clientConfig": {"service": {"name": "agent-injector", "port": %d}}}]}`
+	rq.NoError(itest.Kubectl(ctx, s.ManagerNamespace(), "patch", "mutatingwebhookconfiguration", wh,
+		"--patch", fmt.Sprintf(pmf, s.ManagerNamespace(), 8443)))
+	portRestored := false
+
+	// Restore the webhook port when this test ends in case an error occurred that prevented it
+	defer func() {
+		if !portRestored {
+			s.NoError(itest.Kubectl(ctx, s.ManagerNamespace(), "patch", "mutatingwebhookconfiguration", wh,
+				"--patch", fmt.Sprintf(pmf, s.ManagerNamespace(), 443)))
+		}
+	}()
 
 	// Now try to intercept. This attempt will timeout because the agent is never injected.
-	_, _, err := itest.Telepresence(ctx, "intercept", s.ServiceName(), "--mount=false")
+	_, _, err = itest.Telepresence(ctx, "intercept", s.ServiceName(), "--mount=false")
 	// Wait for the intercept call to return. It must return an error.
 	rq.Error(err)
 
@@ -97,7 +86,7 @@ func (s *singleServiceSuite) Test_InterceptOperationRestoredAfterFailingInject()
 	portRestored = true
 
 	// Verify that intercept works OK again.
-	stdout = itest.TelepresenceOk(ctx, "intercept", s.ServiceName(), "--mount=false")
+	stdout := itest.TelepresenceOk(ctx, "intercept", s.ServiceName(), "--mount=false")
 	rq.Contains(stdout, "Using Deployment "+s.ServiceName())
 	rq.Eventually(func() bool {
 		stdout, _, err := itest.Telepresence(ctx, "list", "--intercepts")

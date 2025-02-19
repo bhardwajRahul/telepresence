@@ -191,6 +191,7 @@ func (is *installSuite) Test_MultiOnDemandInjectOnApply() {
 
 	// First install the traffic-manager
 	is.TelepresenceHelmInstallOK(ctx, false)
+	time.Sleep(3 * time.Second)
 	defer func() {
 		is.UninstallTrafficManager(ctx, is.ManagerNamespace())
 		is.Eventually(func() bool {

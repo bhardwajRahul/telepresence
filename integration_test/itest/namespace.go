@@ -96,8 +96,6 @@ func WithNamespacePair(ctx context.Context, suffix string, f func(NamespacePair)
 	})
 }
 
-const purposeLabel = "tp-cli-testing"
-
 func (s *nsPair) setup(ctx context.Context) bool {
 	CreateNamespaces(ctx, s.AppNamespace(), s.Namespace)
 	t := getT(ctx)
