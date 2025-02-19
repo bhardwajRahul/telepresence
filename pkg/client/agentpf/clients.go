@@ -36,12 +36,10 @@ type client struct {
 	cli             agent.AgentClient
 	session         *manager.SessionInfo
 	info            *manager.AgentPodInfo
-	ready           chan error
 	remove          func()
 	cancelClient    context.CancelFunc
 	cancelDialWatch context.CancelFunc
 	tunnelCount     int32
-	infant          atomic.Bool
 }
 
 func (ac *client) String() string {
@@ -52,32 +50,10 @@ func (ac *client) String() string {
 	return fmt.Sprintf("%s(%s), port %d, dormant %t", ai.PodName, net.IP(ai.PodIp), ai.ApiPort, ac.dormant())
 }
 
-func (ac *client) ensureConnect(ctx context.Context) (err error) {
-	if ac.infant.CompareAndSwap(true, false) {
-		go ac.connect(ctx, func() {
-			ac.remove()
-		})
-	}
-	select {
-	case <-ctx.Done():
-		err = ctx.Err()
-	case err = <-ac.ready:
-		// Put status on the channel for next call to ensureConnect.
-		ac.ready <- err
-	}
-	return err
-}
-
 func (ac *client) Tunnel(ctx context.Context, opts ...grpc.CallOption) (tunnel.Client, error) {
-	if err := ac.ensureConnect(ctx); err != nil {
+	cli, err := ac.ensureConnect(ctx)
+	if err != nil {
 		return nil, err
-	}
-	ac.RLock()
-	cli := ac.cli
-	ac.RUnlock()
-	if cli == nil {
-		// Client was closed.
-		return nil, io.EOF
 	}
 	dlog.Tracef(ctx, "%s(%s) creating Tunnel over gRPC", ac, net.IP(ac.info.PodIp))
 	tc, err := cli.Tunnel(ctx, opts...)
@@ -95,25 +71,30 @@ func (ac *client) Tunnel(ctx context.Context, opts ...grpc.CallOption) (tunnel.C
 	return tc, nil
 }
 
-func (ac *client) connect(ctx context.Context, deleteMe func()) {
+func (ac *client) ensureConnect(ctx context.Context) (cli agent.AgentClient, err error) {
+	ac.RLock()
+	cli = ac.cli
+	ac.RUnlock()
+	if cli != nil {
+		return cli, nil
+	}
+
 	dialCtx, dialCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer dialCancel()
 
-	var err error
 	defer func() {
 		if err != nil {
-			deleteMe()
+			cli = nil
+			ac.remove()
 		}
-		ac.ready <- err
 	}()
 
 	var conn *grpc.ClientConn
-	var cli agent.AgentClient
 
 	ai := ac.info
 	conn, cli, _, err = k8sclient.ConnectToAgent(dialCtx, ai.PodName, ai.Namespace, uint16(ac.info.ApiPort), types.UID(ai.PodId))
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	ac.Lock()
@@ -121,24 +102,23 @@ func (ac *client) connect(ctx context.Context, deleteMe func()) {
 	ac.cancelClient = func() {
 		// Need to run this in a separate thread to avoid deadlock.
 		go func() {
-			// Need to invalidate the pod connection cache here, because StatefulSets reuse the same pod name.
 			conn.Close()
 			ac.Lock()
 			ac.cancelClient = nil
 			ac.cli = nil
-			ac.infant.Store(true)
 			ac.Unlock()
 		}()
 	}
 	intercepted := ai.Intercepted
 	ac.Unlock()
 	if intercepted {
-		err = ac.startDialWatcherReady(ctx)
+		err = ac.startDialWatcherReady(ctx, cli)
 	}
+	return cli, err
 }
 
 func (ac *client) dormant() bool {
-	if ac.infant.Load() || atomic.LoadInt32(&ac.tunnelCount) > 0 {
+	if atomic.LoadInt32(&ac.tunnelCount) > 0 {
 		return false
 	}
 	ac.RLock()
@@ -160,13 +140,13 @@ func (ac *client) cancel() bool {
 	cdw := ac.cancelDialWatch
 	ac.RUnlock()
 	didCancel := false
-	if cc != nil {
-		didCancel = true
-		cc()
-	}
 	if cdw != nil {
 		didCancel = true
 		cdw()
+	}
+	if cc != nil {
+		didCancel = true
+		cc()
 	}
 	return didCancel
 }
@@ -197,15 +177,7 @@ func (ac *client) refresh(ctx context.Context, ai *manager.AgentPodInfo) {
 	}
 }
 
-func (ac *client) startDialWatcher(ctx context.Context) error {
-	// Not called from the startup go routine, so wait for that routine to finish
-	if err := ac.ensureConnect(ctx); err != nil {
-		return err
-	}
-	return ac.startDialWatcherReady(ctx)
-}
-
-func (ac *client) startDialWatcherReady(ctx context.Context) error {
+func (ac *client) startDialWatcher(ctx context.Context) (err error) {
 	ac.RLock()
 	cli := ac.cli
 	running := ac.cancelDialWatch != nil
@@ -214,13 +186,20 @@ func (ac *client) startDialWatcherReady(ctx context.Context) error {
 		return nil
 	}
 	if cli == nil {
-		return fmt.Errorf("agent connection closed")
+		// ensureConnect will start the dial watcher.
+		_, err = ac.ensureConnect(ctx)
+	} else {
+		err = ac.startDialWatcherReady(ctx, cli)
 	}
+	return err
+}
+
+func (ac *client) startDialWatcherReady(ctx context.Context, cli agent.AgentClient) (err error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	// Create the dial watcher
 	dlog.Debugf(ctx, "watching dials from agent pod %s", ac)
-	watcher, err := ac.cli.WatchDial(ctx, ac.session)
+	watcher, err := cli.WatchDial(ctx, ac.session)
 	if err != nil {
 		cancel()
 		return err
@@ -239,9 +218,11 @@ func (ac *client) startDialWatcherReady(ctx context.Context) error {
 	go func() {
 		err := tunnel.DialWaitLoop(ctx, tunnel.ClientToAgent, tunnel.AgentProvider(ac.cli), watcher, tunnel.SessionID(ac.session.SessionId))
 		if err != nil {
+			// The traffic-agent closed the dial wait loop, which means that it's terminating.
 			dlog.Error(ctx, err)
 		}
-		// The traffic-agent closed the dial watcher which means that it's terminating.
+		ai := ac.info
+		dlog.Debugf(ctx, "Deleting agent %s.%s. DialWaitLoop ended", ai.PodName, ai.Namespace)
 		ac.cancel()
 	}()
 	return nil
@@ -477,7 +458,8 @@ func (s *clients) WaitForIP(ctx context.Context, timeout time.Duration, ip netip
 	if cl == nil {
 		return status.Error(codes.NotFound, "no client available")
 	}
-	return cl.ensureConnect(ctx)
+	_, err := cl.ensureConnect(ctx)
+	return err
 }
 
 func (s *clients) WaitForWorkload(ctx context.Context, timeout time.Duration, name string) error {
@@ -567,14 +549,12 @@ func (s *clients) updateClients(ctx context.Context, ais []*manager.AgentPodInfo
 				return oldValue, false
 			}
 			ac := &client{
-				ready:   make(chan error, 1),
 				session: s.session,
 				remove: func() {
 					deleteClient(k)
 				},
 				info: ai,
 			}
-			ac.infant.Store(true)
 			dlog.Debugf(ctx, "Adding agent pod %s (%s)", k, net.IP(ai.PodIp))
 			return ac, false
 		})
@@ -591,6 +571,7 @@ func (s *clients) updateClients(ctx context.Context, ais []*manager.AgentPodInfo
 		if ac.dormant() && !s.isProxyVIA(ac.info) && !s.hasWaiterFor(ac.info) {
 			dormantCount++
 			if dormantCount > 1 {
+				dlog.Debugf(ctx, "Deleting dormant agent %s", k)
 				ac.cancel()
 			}
 		}
