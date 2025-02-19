@@ -22,10 +22,8 @@ const (
 	TelepresenceChartName         = "telepresence-oss"
 )
 
-var (
-	//go:embed all:telepresence-oss
-	TelepresenceFS embed.FS
-)
+//go:embed all:telepresence-oss
+var TelepresenceFS embed.FS
 
 // filePriority returns the sort-priority of a filename; higher priority files sorts earlier.
 func filePriority(chartName, filename string) int {
