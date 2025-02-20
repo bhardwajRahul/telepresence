@@ -27,7 +27,6 @@ type HelmCommand struct {
 
 var (
 	HelmInstallExtendFlagsFunc func(*pflag.FlagSet)                                      //nolint:gochecknoglobals // extension point
-	HelmExtendFlagsFunc        func(*pflag.FlagSet)                                      //nolint:gochecknoglobals // extension point
 	HelmInstallPrologFunc      func(context.Context, *pflag.FlagSet, *HelmCommand) error //nolint:gochecknoglobals // extension point
 )
 
