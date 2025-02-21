@@ -114,6 +114,12 @@ items:
           The clusterID was deprecated some time ago, and replaced by the ID of the namespace where the traffic-manager
           is installed.
       - type: bugfix
+        title: Rename charts/telepresence to charts/telepresence-oss.
+        body: >-
+          The Helm chart name "telepresence-oss" was inconsistent with its contained folder "telepresence". As a result,
+          attempts to install the chart using an argo ApplicationSet failed. The contained folder was renamed to match
+          the chart name.
+      - type: bugfix
         title: Conflict detection between namespaced and cluster-wide install.
         body: >-
           The namespace conflict detection mechanism would only discover conflicts between two _namespaced_ Traffic

@@ -96,6 +96,12 @@ The traffic-agent configuration was moved into a pod-annotation. This avoids syn
 The clusterID was deprecated some time ago, and replaced by the ID of the namespace where the traffic-manager is installed.
 </div>
 
+## <div style="display:flex;"><img src="images/bugfix.png" alt="bugfix" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">Rename charts/telepresence to charts/telepresence-oss.</div></div>
+<div style="margin-left: 15px">
+
+The Helm chart name "telepresence-oss" was inconsistent with its contained folder "telepresence". As a result, attempts to install the chart using an argo ApplicationSet failed. The contained folder was renamed to match the chart name.
+</div>
+
 ## <div style="display:flex;"><img src="images/bugfix.png" alt="bugfix" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">[Conflict detection between namespaced and cluster-wide install.](install/manager#namespace-collision-detection)</div></div>
 <div style="margin-left: 15px">
 

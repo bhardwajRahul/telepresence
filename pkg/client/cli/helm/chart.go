@@ -19,7 +19,7 @@ import (
 
 func loadCoreChart(version string) (*chart.Chart, error) {
 	var buf bytes.Buffer
-	if err := telcharts.WriteChart(telcharts.DirTypeTelepresence, &buf, "telepresence", version); err != nil {
+	if err := telcharts.WriteChart(telcharts.DirTypeTelepresence, &buf, telcharts.TelepresenceChartName, version); err != nil {
 		return nil, err
 	}
 	return loader.LoadArchive(&buf)
@@ -64,12 +64,4 @@ func pullCoreChart(ctx context.Context, helmConfig *action.Configuration, ref, v
 	}
 	defer f.Close()
 	return loader.LoadArchive(f)
-}
-
-func loadCRDChart(version string) (*chart.Chart, error) {
-	var buf bytes.Buffer
-	if err := telcharts.WriteChart(telcharts.DirTypeTelepresenceCRDs, &buf, "telepresence-crds", version); err != nil {
-		return nil, err
-	}
-	return loader.LoadArchive(&buf)
 }
