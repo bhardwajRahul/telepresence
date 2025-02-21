@@ -310,6 +310,9 @@ func (s *cluster) TelepresenceHelmInstall(ctx context.Context, upgrade bool, set
 		// Give the manager time to perform rollouts, listen to telepresence-agents configmap, etc.
 		time.Sleep(2 * time.Second)
 	}
+	if err != nil {
+		return "", err
+	}
 	return logFileName, nil
 }
 

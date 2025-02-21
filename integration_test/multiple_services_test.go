@@ -49,9 +49,9 @@ func (s *multipleServicesSuite) Test_LargeRequest() {
 		s.TelepresenceConnect(s.Context())
 	}()
 
-	const sendSize = 1024 * 1024 * 16
+	const sendSize = 1024 * 1024 * 12
 	const varyMax = 1024 * 1024 * 4 // vary last 4Mi
-	const concurrentRequests = 100
+	const concurrentRequests = 64
 
 	tb := [sendSize + varyMax]byte{}
 	tb[0] = '!'

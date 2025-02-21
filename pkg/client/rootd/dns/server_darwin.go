@@ -68,7 +68,7 @@ func (s *Server) Worker(c context.Context, dev vif.Device, configureDNS func(net
 			return s.updateResolverFiles(c, resolverDirName, dnsAddr)
 		}, dev)
 		// Server will close the listener, so no need to close it here.
-		return s.Run(c, make(chan struct{}), []net.PacketConn{listener}, nil, s.resolveInCluster)
+		return s.Run(c, make(chan struct{}), []net.PacketConn{listener}, nil)
 	})
 	return g.Wait()
 }

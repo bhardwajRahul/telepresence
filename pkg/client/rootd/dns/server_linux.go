@@ -119,7 +119,7 @@ func (s *Server) runOverridingServer(c context.Context, dev vif.Device) error {
 			s.flushDNS()
 			return nil
 		}, dev)
-		return s.Run(c, serverStarted, listeners, pool, s.resolveInCluster)
+		return s.Run(c, serverStarted, listeners, pool)
 	})
 
 	if proc.RunningInContainer() {

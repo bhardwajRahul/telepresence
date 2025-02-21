@@ -72,7 +72,6 @@ type Server struct {
 	client.DNS
 	ctx          context.Context // necessary to make logging work in ServeDNS function
 	fallbackPool FallbackPool
-	resolve      Resolver
 	requestCount int64
 	cache        *xsync.MapOf[cacheKey, *cacheEntry]
 	recursive    int32 // one of the recursionXXX constants declared above (unique type avoided because it just gets messy with the atomic calls)
@@ -99,6 +98,9 @@ type Server struct {
 
 	// clusterDomain reported by the traffic-manager
 	clusterDomain string
+
+	// Function that resolves the request using the client's config and the cache.
+	clientLookup func(*dns.Question) (dnsproxy.RRs, int, error)
 
 	// Function that sends a lookup request to the traffic-manager
 	clusterLookup Resolver
@@ -692,7 +694,7 @@ func (s *Server) resolveThruCache(q *dns.Question) (answer dnsproxy.RRs, rCode i
 			s.cache.Delete(key)
 		}
 	}()
-	return s.resolve(s.ctx, q)
+	return s.resolveInCluster(s.ctx, q)
 }
 
 // dfs is a func that implements the fmt.Stringer interface. Used in log statements to ensure
@@ -705,6 +707,10 @@ func (d dfs) String() string {
 }
 
 func (s *Server) performRecursionCheck(c context.Context) {
+	if !client.GetConfig(c).DNS().RecursionCheck {
+		close(s.ready)
+		return
+	}
 	s.Lock()
 	if _, ok := s.routes["kube-system"]; !ok {
 		s.routes["kube-system"] = struct{}{}
@@ -884,7 +890,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		// end up in the cache.
 		answer, rCode, err = s.resolveMapping(q)
 		if err == errNoMapping {
-			answer, rCode, err = s.resolveWithRecursionCheck(q)
+			answer, rCode, err = s.clientLookup(q)
 		}
 	case dns.TypePTR:
 		// Respond with cluster domain if the queried IP is the IP of this DNS server.
@@ -900,7 +906,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		}
 		fallthrough
 	default:
-		answer, rCode, err = s.resolveWithRecursionCheck(q)
+		answer, rCode, err = s.clientLookup(q)
 	}
 
 	if err == nil && rCode == dns.RcodeSuccess {
@@ -1008,7 +1014,7 @@ func (s *Server) resolveMapping(q *dns.Question) (dnsproxy.RRs, int, error) {
 
 	// A query for an A or AAAA must resolve the CNAME and then return both the result and the
 	// CNAME that resolved to it.
-	answer, rCode, err := s.resolveWithRecursionCheck(&dns.Question{
+	answer, rCode, err := s.clientLookup(&dns.Question{
 		Name:   mappingAlias,
 		Qtype:  q.Qtype,
 		Qclass: q.Qclass,
@@ -1020,10 +1026,14 @@ func (s *Server) resolveMapping(q *dns.Question) (dnsproxy.RRs, int, error) {
 }
 
 // Run starts the DNS server(s) and waits for them to end.
-func (s *Server) Run(c context.Context, initDone chan<- struct{}, listeners []net.PacketConn, fallbackPool FallbackPool, resolve Resolver) error {
+func (s *Server) Run(c context.Context, initDone chan<- struct{}, listeners []net.PacketConn, fallbackPool FallbackPool) error {
 	s.ctx = c
 	s.fallbackPool = fallbackPool
-	s.resolve = resolve
+	if client.GetConfig(c).DNS().RecursionCheck {
+		s.clientLookup = s.resolveWithRecursionCheck
+	} else {
+		s.clientLookup = s.resolveThruCache
+	}
 
 	g := dgroup.NewGroup(c, dgroup.GroupConfig{})
 	for _, listener := range listeners {

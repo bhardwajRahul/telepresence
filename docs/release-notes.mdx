@@ -69,6 +69,10 @@ namespaceSelector:
 	<Body>The output of the `telepresence list` command will now include the workload kind (deployment, replicaset, statefulset, or rollout) in all entries.</Body>
 </Note>
 <Note>
+	<Title type="change">Make the DNS recursion check configurable and turn it off by default.</Title>
+	<Body>Very few systems experience a DNS recursion lookup problem. It can only occur when the cluster runs locally and the cluster's DNS is configured to somehow use DNS server that is started by Telepresence. The check is therefore now configurable through the client setting `dns.recursionCheck`, and it is `false` by default.</Body>
+</Note>
+<Note>
 	<Title type="change">Trigger the mutating webhook with Kubernetes eviction objects instead of patching workloads.</Title>
 	<Body>Instead of patching workloads, or scaling the workloads down to zero and up again, Telepresence will now create policy/v1 Eviction objects to trigger the mutating webhook. This causes a slight change in the traffic-manager RBAC. The `patch` permissions are no longer needed. Instead, the traffic-manager must be able to create "pod/eviction" objects.</Body>
 </Note>

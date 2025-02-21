@@ -29,6 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 	core "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/labels"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/clientcmd/api"
@@ -52,7 +53,9 @@ import (
 )
 
 const (
-	TestUser = "telepresence-test-developer"
+	purposeLabel       = "tp-cli-testing"
+	AssignPurposeLabel = "purpose=" + purposeLabel
+	TestUser           = "telepresence-test-developer"
 )
 
 type Cluster interface {
@@ -285,7 +288,12 @@ func (s *cluster) Initialize(ctx context.Context) context.Context {
 	}
 
 	s.ensureQuit(ctx)
-	_ = Run(ctx, "kubectl", "delete", "ns", "-l", "purpose=tp-cli-testing")
+	s.ensureNoManager(ctx)
+	_ = Run(ctx, "kubectl", "delete", "ns", "-l", AssignPurposeLabel)
+	_ = Run(ctx, "kubectl", "delete", "-f", filepath.Join("testdata", "k8s", "client_rbac.yaml"))
+	_ = Run(ctx, "kubectl", "delete", "ns", "-l", AssignPurposeLabel)
+	_ = Run(ctx, "kubectl", "delete", "pv", "-l", AssignPurposeLabel)
+	_ = Run(ctx, "kubectl", "delete", "storageclass", "-l", AssignPurposeLabel)
 	return ctx
 }
 
@@ -345,9 +353,10 @@ func (s *cluster) tearDown(ctx context.Context) {
 	if s.kubeConfig != "" {
 		ctx = WithWorkingDir(ctx, GetOSSRoot(ctx))
 		_ = Run(ctx, "kubectl", "delete", "-f", filepath.Join("testdata", "k8s", "client_rbac.yaml"))
-		_ = Run(ctx, "kubectl", "delete", "--wait=false", "ns", "-l", "purpose=tp-cli-testing")
-		_ = Run(ctx, "kubectl", "delete", "--wait=false", "pv", "-l", "purpose=tp-cli-testing")
-		_ = Run(ctx, "kubectl", "delete", "--wait=false", "storageclass", "-l", "purpose=tp-cli-testing")
+		_ = Run(ctx, "kubectl", "delete", "--wait=false", "ns", "-l", AssignPurposeLabel)
+		_ = Run(ctx, "kubectl", "delete", "--wait=false", "pv", "-l", AssignPurposeLabel)
+		_ = Run(ctx, "kubectl", "delete", "--wait=false", "storageclass", "-l", AssignPurposeLabel)
+		_ = Run(ctx, "kubectl", "delete", "--wait=false", "mutatingwebhookconfigurations", "-l", AssignPurposeLabel)
 	}
 }
 
@@ -357,6 +366,22 @@ func (s *cluster) ensureQuit(ctx context.Context) {
 
 	// Ensure that the daemon-socket is non-existent.
 	_ = rmAsRoot(ctx, socket.RootDaemonPath(ctx))
+}
+
+func (s *cluster) ensureNoManager(ctx context.Context) {
+	out, err := Output(ctx, "helm", "list", "-A", "--output", "json")
+	t := getT(ctx)
+	require.NoError(t, err)
+	var es []map[string]any
+	err = json.Unmarshal([]byte(out), &es)
+	require.NoError(t, err)
+	ix := slices.IndexFunc(es, func(v map[string]any) bool {
+		return v["name"] == "traffic-manager"
+	})
+	if ix >= 0 {
+		e := es[ix]
+		t.Fatalf("%s is already installed in namespace %s. Please uninstall before testing.", e["chart"], e["namespace"])
+	}
 }
 
 // PodCreateTimeout will return a timeout suitable for operations that create pods.
@@ -910,7 +935,7 @@ func CreateNamespaces(ctx context.Context, namespaces ...string) {
 		go func(ns string) {
 			defer wg.Done()
 			assert.NoError(t, Kubectl(ctx, "", "create", "namespace", ns), "failed to create namespace %q", ns)
-			assert.NoError(t, Kubectl(ctx, "", "label", "namespace", ns, "purpose="+purposeLabel, fmt.Sprintf("app.kubernetes.io/name=%s", ns)))
+			assert.NoError(t, Kubectl(ctx, "", "label", "namespace", ns, AssignPurposeLabel, fmt.Sprintf("app.kubernetes.io/name=%s", ns)))
 		}(ns)
 	}
 	wg.Wait()
@@ -1089,7 +1114,11 @@ func WithKubeConfig(ctx context.Context, cfg *api.Config) context.Context {
 }
 
 func RunningPods(ctx context.Context, svc, ns string) []core.Pod {
-	out, err := KubectlOut(ctx, ns, "get", "pods", "-o", "json", "--field-selector", "status.phase==Running", "-l", "app="+svc)
+	return RunningPodsSelector(ctx, ns, labels.SelectorFromSet(map[string]string{"app": svc}))
+}
+
+func RunningPodsSelector(ctx context.Context, ns string, selector labels.Selector) []core.Pod {
+	out, err := KubectlOut(ctx, ns, "get", "pods", "-o", "json", "--field-selector", "status.phase==Running", "-l", selector.String())
 	if err != nil {
 		getT(ctx).Log(err.Error())
 		return nil

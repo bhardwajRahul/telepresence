@@ -41,6 +41,9 @@ spec:
     metadata:
       labels:
         app: {{ .Name }}
+{{- with .Labels }}
+  {{- toYaml . | nindent 8 }}
+{{- end}}
 {{- with .Annotations }}
       annotations:
   {{- toYaml . | nindent 8 }}
