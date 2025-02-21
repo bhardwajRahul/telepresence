@@ -60,11 +60,13 @@ func main() {
 	ports := strings.Split(portsEnv, ",")
 	g := dgroup.NewGroup(context.Background(), dgroup.GroupConfig{
 		EnableSignalHandling: true,
+		SoftShutdownTimeout:  time.Second,
 		DisableLogging:       true,
 	})
 	for _, port := range ports {
 		port := port // pin it
 		g.Go(fmt.Sprintf("port-%s", port), func(ctx context.Context) error {
+			defer fmt.Printf("Echo server stop listening port %s.\n", port)
 			lc := dhttp.ServerConfig{Handler: h2c.NewHandler(
 				http.HandlerFunc(func(wr http.ResponseWriter, rq *http.Request) {
 					handler(wr, rq, port)
@@ -84,8 +86,10 @@ func main() {
 	}
 	if err := g.Wait(); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
+		fmt.Println("Echo server exited")
 		os.Exit(1)
 	}
+	fmt.Println("Echo server exited")
 }
 
 var upgrader = websocket.Upgrader{

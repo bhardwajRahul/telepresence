@@ -16,6 +16,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/ingest"
+	"github.com/telepresenceio/telepresence/v2/pkg/version"
 )
 
 type ingestSuite struct {
@@ -210,6 +211,9 @@ func (s *ingestSuite) Test_IngestRepeat() {
 }
 
 func (s *ingestSuite) Test_IngestFTP() {
+	if !s.ClientVersion().EQ(version.Structured) {
+		s.T().Skip(`Not part of compatibility tests. DoWithSession assumes compiled executable`)
+	}
 	mountPoint := filepath.Join(s.T().TempDir(), "mnt")
 	rq := s.Require()
 	rq.NoError(os.Mkdir(mountPoint, 0o755))

@@ -6,21 +6,28 @@ on:
 
 env:
   TELEPRESENCE_REGISTRY: ghcr.io/telepresenceio
-  DTEST_REGISTRY: ghcr.io/telepresenceio
 
 jobs:
   build_images:
-    if: github.event.label.name == 'ok to test'
+    if: github.event.label.name == 'ok to test' || github.event.label.name == 'compatibility test'
     runs-on: ubuntu-latest
     outputs:
       telepresenceVersion: ${{ steps.version.outputs.version }}
       telepresenceSemver: ${{ steps.version.outputs.semver }}
     steps:
-      - name: Remove label
+      - name: Remove ok to test label
+        if: github.event.label.name == 'ok to test'
         uses: buildsville/add-remove-label@v2.0.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           labels: ok to test
+          type: remove
+      - name: Remove compatibility test label
+        if: github.event.label.name == 'compatibility test'
+        uses: buildsville/add-remove-label@v2.0.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          labels: compatibility test
           type: remove
       - uses: actions/checkout@v4
         with:
@@ -55,7 +62,7 @@ jobs:
         run: docker logout
 
   run_tests:
-    if: github.event.label.name == 'ok to test'
+    if: github.event.label.name == 'ok to test' || github.event.label.name == 'compatibility test'
     strategy:
       fail-fast: false
       matrix:
@@ -81,8 +88,7 @@ jobs:
       - name: Build client
         run: make build
       - name: Run integration tests
-        env:
-          SCOUT_DISABLE: "1"
+        if: github.event.label.name == 'ok to test'
         uses: nick-fields/retry/@v3
         with:
           max_attempts: 3
@@ -93,13 +99,43 @@ jobs:
             if [[ ${RUNNER_OS} == "Windows" ]]; then
               export PATH="$PATH:/C/Program Files/SSHFS-Win/bin:$HOME/kubectl-plugins"
             fi
-            DEV_TELEPRESENCE_VERSION=${TELEPRESENCE_VERSION} DTEST_KUBECONFIG="${HOME}/.kube/config" make check-integration
+            make check-integration
+      - name: Compatibility with older manager and agent
+        if: github.event.label.name == 'compatibility test'
+        env:
+          DEV_MANAGER_VERSION: "2.21.3"
+        uses: nick-fields/retry/@v3
+        with:
+          max_attempts: 3
+          shell: bash
+          timeout_minutes: 90
+          command: |
+            set -ex
+            if [[ ${RUNNER_OS} == "Windows" ]]; then
+              export PATH="$PATH:/C/Program Files/SSHFS-Win/bin:$HOME/kubectl-plugins"
+            fi
+            make check-integration
+      - name: Compatibility with older client
+        if: github.event.label.name == 'compatibility test'
+        env:
+          DEV_CLIENT_VERSION: "2.21.3"
+        uses: nick-fields/retry/@v3
+        with:
+          max_attempts: 3
+          shell: bash
+          timeout_minutes: 90
+          command: |
+            set -ex
+            if [[ ${RUNNER_OS} == "Windows" ]]; then
+              export PATH="$PATH:/C/Program Files/SSHFS-Win/bin:$HOME/kubectl-plugins"
+            fi
+            make check-integration
       - uses: ./.github/actions/upload-logs
         env:
           LOG_SUFFIX: "${{ runner.os }}-${{ runner.arch }}-${{ matrix.clusters.distribution }}-${{ matrix.clusters.version }}"
         if: always()
   purge_images:
-    if: github.event.label.name == 'ok to test'
+    if: github.event.label.name == 'ok to test' || github.event.label.name == 'compatibility test'
     runs-on: ubuntu-latest
     permissions:
       packages: write

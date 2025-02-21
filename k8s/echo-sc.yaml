@@ -33,7 +33,7 @@ spec:
         runAsUser: 1000
       containers:
         - name: echo-sc
-          image: jmalloc/echo-server
+          image: ghcr.io/telepresenceio/echo-server:latest
           ports:
             - containerPort: 8080
               name: http

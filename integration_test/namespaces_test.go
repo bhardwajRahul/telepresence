@@ -33,9 +33,9 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: {{.Name}}
-{{- with .Labels }}
   labels:
     purpose: tp-cli-testing
+{{- with .Labels }}
 {{ toYaml . | nindent 4 }}
 {{- end }}`
 
@@ -45,6 +45,9 @@ type namespaceData struct {
 }
 
 func (s *nsSuite) SetupSuite() {
+	if !(s.ClientIsVersion(">2.21.x") && s.ManagerIsVersion(">2.21.x")) {
+		s.T().Skip("Not part of compatibility tests. Namespace selector was introduced in 2.22.0")
+	}
 	s.nss = []namespaceData{
 		{
 			"manager",

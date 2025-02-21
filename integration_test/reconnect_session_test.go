@@ -35,6 +35,9 @@ func init() {
 }
 
 func (s *reconnectSuite) SetupSuite() {
+	if !s.ClientIsVersion(">2.21.x") {
+		s.T().Skip(`Not part of compatibility tests. Reconnect doesn't work well in Versions < 2.22.0`)
+	}
 	s.Suite.SetupSuite()
 
 	// Add our iptables table, disable tests if we're unable to.

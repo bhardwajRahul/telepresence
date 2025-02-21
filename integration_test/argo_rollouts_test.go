@@ -34,9 +34,7 @@ func (s *argoRolloutsSuite) SetupSuite() {
 	s.Suite.SetupSuite()
 	ctx := s.Context()
 	rq := s.Require()
-	if itest.Kubectl(ctx, "", "get", "namespaces", "argo-rollouts") != nil {
-		itest.CreateNamespaces(ctx, "argo-rollouts")
-	}
+	itest.CreateNamespaces(ctx, "argo-rollouts")
 	arExe := filepath.Join(itest.BuildOutput(ctx), "bin", "kubectl-argo-rollouts")
 	if runtime.GOOS == "windows" {
 		arExe += ".exe"
@@ -49,6 +47,10 @@ func (s *argoRolloutsSuite) SetupSuite() {
 	rq.NoError(err)
 	dlog.Info(ctx, out)
 	rq.NoError(itest.Kubectl(ctx, "argo-rollouts", "apply", "-f", "https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml"))
+}
+
+func (s *argoRolloutsSuite) TearDownSuite() {
+	itest.DeleteNamespaces(s.Context(), "argo-rollouts")
 }
 
 func downloadKubectlArgoRollouts(ctx context.Context, arExe string) error {
@@ -105,6 +107,14 @@ func (s *argoRolloutsSuite) Test_SuccessfullyInterceptsArgoRollout() {
 	itest.TelepresenceOk(ctx, "leave", svc)
 	stdout = itest.TelepresenceOk(ctx, "list", "--intercepts")
 	require.NotContains(stdout, svc+": intercepted")
+
+	if !s.ClientIsVersion(">2.21.x") && s.ManagerIsVersion(">2.21.x") {
+		// An <2.22.0 client will not be able to uninstall an agent when the traffic-manager is >=2.22.0
+		// because the client will attempt to remove the entry in the telepresence-agents configmap. It
+		// is no longer present in versions >=2.22.0
+		return
+	}
+	time.Sleep(3 * time.Second)
 	itest.TelepresenceOk(ctx, "uninstall", svc)
 
 	require.Eventually(

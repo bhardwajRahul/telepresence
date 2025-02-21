@@ -1,6 +1,7 @@
 package itest
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"fmt"
@@ -20,26 +21,22 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/blang/semver/v4"
 	"github.com/cenkalti/backoff/v4"
 	"github.com/go-json-experiment/json"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	core "k8s.io/api/core/v1"
-	rbac "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/clientcmd/api"
-	sigsYaml "sigs.k8s.io/yaml"
 
 	"github.com/datawire/dlib/dexec"
 	"github.com/datawire/dlib/dlog"
 	"github.com/datawire/dlib/dtime"
-	"github.com/datawire/dtest"
-	telcharts "github.com/telepresenceio/telepresence/v2/charts"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
-	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/socket"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/userd/k8s"
@@ -47,8 +44,6 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/filelocation"
 	"github.com/telepresenceio/telepresence/v2/pkg/ioutil"
 	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
-	"github.com/telepresenceio/telepresence/v2/pkg/labels"
-	"github.com/telepresenceio/telepresence/v2/pkg/log"
 	"github.com/telepresenceio/telepresence/v2/pkg/maps"
 	"github.com/telepresenceio/telepresence/v2/pkg/proc"
 	"github.com/telepresenceio/telepresence/v2/pkg/shellquote"
@@ -62,21 +57,15 @@ const (
 
 type Cluster interface {
 	CapturePodLogs(ctx context.Context, app, container, ns string) string
-	CompatVersion() string
 	Executable() (string, error)
 	GeneralError() error
 	GlobalEnv(context.Context) dos.MapEnv
-	AgentVersion(context.Context) string
 	Initialize(context.Context) context.Context
-	InstallTrafficManager(ctx context.Context, values map[string]any) error
-	InstallTrafficManagerVersion(ctx context.Context, version string, values map[string]any) error
 	IsCI() bool
 	IsIPv6() bool
 	LargeFileTestDisabled() bool
-	Registry() string
 	SetGeneralError(error)
 	Suffix() string
-	TelepresenceVersion() string
 	UninstallTrafficManager(ctx context.Context, managerNamespace string, args ...string)
 	PackageHelmChart(ctx context.Context) (string, error)
 	GetValuesForHelm(ctx context.Context, values map[string]any, release bool) []string
@@ -86,6 +75,26 @@ type Cluster interface {
 	TelepresenceHelmInstall(ctx context.Context, upgrade bool, args ...string) (string, error)
 	UserdPProf() uint16
 	RootdPProf() uint16
+
+	AgentImage() string
+	AgentVersion() semver.Version
+	AgentRegistry() string
+
+	ClientImage() string
+	ClientRegistry() string
+	ClientVersion() semver.Version
+
+	// ClientIsVersion returns true if the final version of the ClientVersion is included
+	// in the given version range.
+	ClientIsVersion(versionRange string) bool
+
+	ManagerImage() string
+	ManagerRegistry() string
+	ManagerVersion() semver.Version
+
+	// ManagerIsVersion returns true if the final version of the ManagerVersion is included
+	// in the given version range.
+	ManagerIsVersion(versionRange string) bool
 }
 
 // The cluster is created once and then reused by all tests. It ensures that:
@@ -97,12 +106,8 @@ type Cluster interface {
 type cluster struct {
 	suffix                string
 	isCI                  bool
-	prePushed             bool
 	ipv6                  bool
 	executable            string
-	testVersion           string
-	compatVersion         string
-	registry              string
 	kubeConfig            string
 	generalError          error
 	logCapturingPods      sync.Map
@@ -110,6 +115,18 @@ type cluster struct {
 	rootdPProf            uint16
 	self                  Cluster
 	largeFileTestDisabled bool
+
+	agentImage   string
+	clientImage  string
+	managerImage string
+
+	agentRegistry   string
+	clientRegistry  string
+	managerRegistry string
+
+	agentVersion   semver.Version
+	clientVersion  semver.Version
+	managerVersion semver.Version
 }
 
 //nolint:gochecknoglobals // extension point
@@ -134,25 +151,6 @@ func (s *cluster) SetSelf(self Cluster) {
 	s.self = self
 }
 
-func (s *cluster) imagesFromEnv(ctx context.Context) context.Context {
-	v := s.self.TelepresenceVersion()[1:]
-	r := s.self.Registry()
-	if img := ImageFromEnv(ctx, "DEV_MANAGER_IMAGE", v, r); img != nil {
-		ctx = WithImage(ctx, img)
-	}
-	if img := ImageFromEnv(ctx, "DEV_CLIENT_IMAGE", v, r); img != nil {
-		ctx = WithClientImage(ctx, img)
-	}
-	if img := ImageFromEnv(ctx, "DEV_AGENT_IMAGE", s.self.AgentVersion(ctx), r); img != nil {
-		ctx = WithAgentImage(ctx, img)
-	}
-	return ctx
-}
-
-func (s *cluster) AgentVersion(ctx context.Context) string {
-	return s.self.TelepresenceVersion()[1:]
-}
-
 func (s *cluster) Initialize(ctx context.Context) context.Context {
 	s.suffix, s.isCI = dos.LookupEnv(ctx, "GITHUB_SHA")
 	if s.isCI {
@@ -163,20 +161,88 @@ func (s *cluster) Initialize(ctx context.Context) context.Context {
 	} else {
 		s.suffix = strconv.Itoa(os.Getpid())
 	}
-	s.testVersion, s.prePushed = dos.LookupEnv(ctx, "DEV_TELEPRESENCE_VERSION")
-	if s.prePushed {
-		dlog.Infof(ctx, "Using pre-pushed binary %s", s.testVersion)
-	} else {
-		s.testVersion = "v2.14.0-gotest.z" + s.suffix
-		dlog.Infof(ctx, "Building temp binary %s", s.testVersion)
-	}
-	version.Version, version.Structured = version.Init(s.testVersion, "TELEPRESENCE_VERSION")
-	s.compatVersion = dos.Getenv(ctx, "DEV_COMPAT_VERSION")
-
 	t := getT(ctx)
-	s.registry = dos.Getenv(ctx, "DTEST_REGISTRY")
-	require.NoError(t, s.generalError)
-	ctx = s.imagesFromEnv(ctx)
+
+	v := dos.Getenv(ctx, "TELEPRESENCE_VERSION")
+	require.NotEmpty(t, v, "TELEPRESENCE_VERSION must be set")
+	var err error
+	version.Structured, err = semver.Parse(strings.TrimPrefix(v, "v"))
+	require.NoError(t, err)
+	version.Version = v
+
+	if v = dos.Getenv(ctx, "DEV_CLIENT_VERSION"); v != "" {
+		s.clientVersion, err = semver.Parse(v)
+		require.NoError(t, err)
+	} else {
+		s.clientVersion = version.Structured
+	}
+
+	if v = dos.Getenv(ctx, "DEV_MANAGER_VERSION"); v != "" {
+		s.managerVersion, err = semver.Parse(v)
+		require.NoError(t, err)
+	} else {
+		s.managerVersion = version.Structured
+	}
+
+	if v = dos.Getenv(ctx, "DEV_AGENT_VERSION"); v != "" {
+		s.agentVersion, err = semver.Parse(v)
+		require.NoError(t, err)
+	} else {
+		s.agentVersion = s.managerVersion
+	}
+
+	registry := dos.Getenv(ctx, "TELEPRESENCE_REGISTRY")
+	if registry == "" {
+		registry = "ghcr.io/telepresenceio"
+	}
+
+	s.clientRegistry = dos.Getenv(ctx, "DEV_CLIENT_REGISTRY")
+	if s.clientRegistry == "" {
+		s.clientRegistry = registry
+	}
+	s.managerRegistry = dos.Getenv(ctx, "DEV_MANAGER_REGISTRY")
+	if s.managerRegistry == "" {
+		s.managerRegistry = registry
+	}
+	s.agentRegistry = dos.Getenv(ctx, "DEV_AGENT_REGISTRY")
+	if s.agentRegistry == "" {
+		s.agentRegistry = s.managerRegistry
+	}
+
+	s.kubeConfig = dos.Getenv(ctx, "DEV_KUBECONFIG")
+	if s.kubeConfig == "" {
+		lr := clientcmd.NewDefaultClientConfigLoadingRules()
+		require.True(t, len(lr.Precedence) > 0, "Unable to figure out KUBECONFIG")
+		s.kubeConfig = lr.Precedence[0]
+	}
+
+	s.clientImage = dos.Getenv(ctx, "DEV_CLIENT_IMAGE")
+	if s.clientImage == "" {
+		s.clientImage = "telepresence"
+	}
+	ctx = WithClientImage(ctx, &Image{
+		Name:     s.clientImage,
+		Tag:      s.clientVersion.String(),
+		Registry: s.clientRegistry,
+	})
+	s.managerImage = dos.Getenv(ctx, "DEV_MANAGER_IMAGE")
+	if s.managerImage == "" {
+		s.managerImage = "tel2"
+	}
+	ctx = WithImage(ctx, &Image{
+		Name:     s.managerImage,
+		Tag:      s.managerVersion.String(),
+		Registry: s.managerRegistry,
+	})
+	s.agentImage = dos.Getenv(ctx, "DEV_AGENT_IMAGE")
+	if s.agentImage == "" {
+		s.agentImage = s.managerImage
+	}
+	ctx = WithAgentImage(ctx, &Image{
+		Name:     s.agentImage,
+		Tag:      s.agentVersion.String(),
+		Registry: s.agentRegistry,
+	})
 
 	if pp := dos.Getenv(ctx, "DEV_USERD_PROFILING_PORT"); pp != "" {
 		port, err := strconv.ParseUint(pp, 10, 16)
@@ -188,25 +254,21 @@ func (s *cluster) Initialize(ctx context.Context) context.Context {
 		require.NoError(t, err)
 		s.rootdPProf = uint16(port)
 	}
-	if s.prePushed {
-		exe := "telepresence"
-		if runtime.GOOS == "windows" {
-			exe = "telepresence.exe"
-		}
-		s.executable = filepath.Join(BuildOutput(ctx), "bin", exe)
+
+	exe := "telepresence"
+	if runtime.GOOS == "windows" {
+		exe = "telepresence.exe"
 	}
-	s.largeFileTestDisabled, _ = strconv.ParseBool(dos.Getenv(ctx, "LARGE_FILE_TEST_DISABLED"))
-	errs := make(chan error, 10)
-	wg := &sync.WaitGroup{}
-	wg.Add(3)
-	go s.ensureExecutable(ctx, errs, wg)
-	go s.ensureDockerImages(ctx, errs, wg)
-	go s.ensureCluster(ctx, wg)
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		assert.NoError(t, err)
+	s.executable = filepath.Join(BuildOutput(ctx), "bin", exe)
+
+	var executable string
+	if !s.clientVersion.EQ(version.Structured) {
+		executable = s.downloadBinary(ctx, t, s.clientVersion)
+	} else {
+		executable = s.executable
 	}
+	dlog.Infof(ctx, "Using binary %s", executable)
+	ctx = WithExecutable(ctx, executable)
 
 	if ipv6, err := strconv.ParseBool("DEV_IPV6_CLUSTER"); err == nil {
 		s.ipv6 = ipv6
@@ -227,6 +289,57 @@ func (s *cluster) Initialize(ctx context.Context) context.Context {
 	return ctx
 }
 
+func (s *cluster) downloadBinary(ctx context.Context, t testing.TB, v semver.Version) string {
+	path := filepath.Join(BuildOutput(ctx), "downloads")
+	err := os.MkdirAll(path, 0o755)
+	require.NoError(t, err)
+	cdPath := filepath.Join(path, "telepresence-"+v.String())
+	if _, err := os.Stat(cdPath); err == nil {
+		return cdPath
+	}
+
+	cdURL := "https://github.com/telepresenceio/telepresence/releases/download/v%s/telepresence-%s-%s"
+	cdURL = fmt.Sprintf(cdURL, v, runtime.GOOS, runtime.GOARCH)
+	if runtime.GOOS == "windows" {
+		cdURL += ".zip"
+		cdPath += ".zip"
+	}
+	dlog.Infof(ctx, "Downloading telepresence binary from %s", cdURL)
+	cdFile, err := os.Create(cdPath)
+	require.NoError(t, err)
+	rsp, err := http.Get(cdURL)
+	require.NoError(t, err)
+	bdy := rsp.Body
+	_, err = io.Copy(cdFile, bdy)
+	bdy.Close()
+	require.NoError(t, err)
+	if runtime.GOOS == "windows" {
+		require.NoError(t, cdFile.Close())
+		unzip(t, cdFile.Name(), cdPath)
+		return filepath.Join(cdPath, "telepresence.exe")
+	} else {
+		require.NoError(t, cdFile.Chmod(0o755))
+		require.NoError(t, cdFile.Close())
+		return cdFile.Name()
+	}
+}
+
+func unzip(t testing.TB, zipFile, dir string) {
+	uz, err := zip.OpenReader(zipFile)
+	require.NoError(t, err)
+	defer uz.Close()
+	for _, f := range uz.File {
+		rc, err := f.Open()
+		require.NoError(t, err)
+		out, err := os.OpenFile(filepath.Join(dir, f.Name), os.O_CREATE|os.O_WRONLY, f.FileInfo().Mode())
+		require.NoError(t, err)
+		_, err = io.Copy(out, rc)
+		rc.Close()
+		out.Close()
+		require.NoError(t, err)
+	}
+}
+
 func (s *cluster) tearDown(ctx context.Context) {
 	s.ensureQuit(ctx)
 	if s.kubeConfig != "" {
@@ -244,96 +357,6 @@ func (s *cluster) ensureQuit(ctx context.Context) {
 
 	// Ensure that the daemon-socket is non-existent.
 	_ = rmAsRoot(ctx, socket.RootDaemonPath(ctx))
-}
-
-func (s *cluster) ensureExecutable(ctx context.Context, errs chan<- error, wg *sync.WaitGroup) {
-	defer wg.Done()
-	if s.executable != "" {
-		return
-	}
-
-	ctx = WithModuleRoot(ctx)
-	exe := "telepresence"
-	env := map[string]string{
-		"TELEPRESENCE_VERSION":  s.testVersion,
-		"TELEPRESENCE_REGISTRY": s.registry,
-	}
-	if runtime.GOOS == "windows" {
-		env["CGO_ENABLED"] = "0"
-		exe += ".exe"
-	}
-	err := Run(WithEnv(ctx, env), "make", "build")
-	if err != nil {
-		errs <- err
-		return
-	}
-	s.executable = filepath.Join(BuildOutput(ctx), "bin", exe)
-}
-
-func (s *cluster) ensureDocker(ctx context.Context, wg *sync.WaitGroup) {
-	defer wg.Done()
-	s.registry = dtest.DockerRegistry(log.WithDiscardingLogger(ctx))
-}
-
-func (s *cluster) ensureDockerImages(ctx context.Context, errs chan<- error, wg *sync.WaitGroup) {
-	defer wg.Done()
-	if s.prePushed || s.isCI {
-		return
-	}
-	makeExe := "make"
-	if runtime.GOOS == "windows" {
-		makeExe = "winmake.bat"
-	}
-
-	// Initialize docker and build image simultaneously
-	wgs := &sync.WaitGroup{}
-	if s.registry == "" {
-		wgs.Add(1)
-		go s.ensureDocker(ctx, wgs)
-	}
-
-	runMake := func(target string) {
-		out, err := Command(WithEnv(WithModuleRoot(ctx), map[string]string{
-			"TELEPRESENCE_VERSION":  s.testVersion,
-			"TELEPRESENCE_REGISTRY": s.registry,
-		}), makeExe, target).CombinedOutput()
-		if err != nil {
-			errs <- RunError(err, out)
-		}
-	}
-
-	wgs.Add(2)
-	go func() {
-		defer wgs.Done()
-		runMake("tel2-image")
-	}()
-	go func() {
-		defer wgs.Done()
-		runMake("client-image")
-	}()
-	wgs.Wait()
-
-	//  Image built and a registry exists. Push the image
-	runMake("push-images")
-}
-
-func (s *cluster) ensureCluster(ctx context.Context, wg *sync.WaitGroup) {
-	defer wg.Done()
-	if s.registry == "" {
-		dwg := sync.WaitGroup{}
-		dwg.Add(1)
-		s.ensureDocker(ctx, &dwg)
-		dwg.Wait()
-	}
-	t := getT(ctx)
-	s.kubeConfig = dos.Getenv(ctx, "DTEST_KUBECONFIG")
-	if s.kubeConfig == "" {
-		s.kubeConfig = dtest.Kubeconfig(log.WithDiscardingLogger(ctx))
-	}
-	require.NoError(t, os.Chmod(s.kubeConfig, 0o600), "failed to chmod 0600 %q", s.kubeConfig)
-
-	// Delete any lingering traffic-manager resources that aren't bound to specific namespaces.
-	_ = Run(ctx, "kubectl", "delete", "mutatingwebhookconfiguration,role,rolebinding", "-l", "app=traffic-manager")
 }
 
 // PodCreateTimeout will return a timeout suitable for operations that create pods.
@@ -365,19 +388,21 @@ func (s *cluster) withBasicConfig(c context.Context, t *testing.T) context.Conte
 	to.PrivateTrafficManagerConnect = 30 * time.Second
 	to.PrivateConnectivityCheck = 0
 
-	images := config.Images()
-	images.PrivateRegistry = s.self.Registry()
-	if agentImage := GetAgentImage(c); agentImage != nil {
-		images.PrivateAgentImage = agentImage.FQName()
-		images.PrivateWebhookRegistry = agentImage.Registry
-	}
-	if clientImage := GetClientImage(c); clientImage != nil {
-		images.PrivateClientImage = clientImage.FQName()
+	if s.ManagerVersion().EQ(version.Structured) {
+		images := config.Images()
+		images.PrivateRegistry = s.self.ManagerRegistry()
+		if agentImage := GetAgentImage(c); agentImage != nil {
+			images.PrivateAgentImage = agentImage.FQName()
+			images.PrivateWebhookRegistry = agentImage.Registry
+		}
+		if clientImage := GetClientImage(c); clientImage != nil {
+			images.PrivateClientImage = clientImage.FQName()
+		}
 	}
 
 	config.Grpc().MaxReceiveSizeV, _ = resource.ParseQuantity("10Mi")
 	config.Intercept().UseFtp = true
-	config.Routing().RecursionBlockDuration = 2 * time.Millisecond
+	config.Routing().RecursionBlockDuration = 10 * time.Millisecond
 
 	configYaml, err := config.MarshalYAML()
 	require.NoError(t, err)
@@ -396,7 +421,6 @@ func (s *cluster) GlobalEnv(ctx context.Context) dos.MapEnv {
 	}
 	yes := struct{}{}
 	includeEnv := map[string]struct{}{
-		"SCOUT_DISABLE":             yes,
 		"HOME":                      yes,
 		"PATH":                      yes,
 		"LOGNAME":                   yes,
@@ -453,8 +477,56 @@ func (s *cluster) LargeFileTestDisabled() bool {
 	return s.largeFileTestDisabled
 }
 
-func (s *cluster) Registry() string {
-	return s.registry
+func (s *cluster) AgentImage() string {
+	return s.agentImage
+}
+
+func (s *cluster) AgentRegistry() string {
+	return s.agentRegistry
+}
+
+func (s *cluster) AgentVersion() semver.Version {
+	return s.agentVersion
+}
+
+func (s *cluster) ClientImage() string {
+	return s.clientImage
+}
+
+func (s *cluster) ClientRegistry() string {
+	return s.clientRegistry
+}
+
+func (s *cluster) ClientVersion() semver.Version {
+	return s.clientVersion
+}
+
+func isFinalIncluded(vr string, v semver.Version) bool {
+	return semver.MustParseRange(vr)(semver.MustParse(v.FinalizeVersion()))
+}
+
+// ClientIsVersion returns true if the final version of the ClientVersion is included
+// in the given version range.
+func (s *cluster) ClientIsVersion(vr string) bool {
+	return isFinalIncluded(vr, s.ClientVersion())
+}
+
+func (s *cluster) ManagerImage() string {
+	return s.managerImage
+}
+
+func (s *cluster) ManagerRegistry() string {
+	return s.managerRegistry
+}
+
+func (s *cluster) ManagerVersion() semver.Version {
+	return s.managerVersion
+}
+
+// ManagerIsVersion returns true if the final version of the ManagerVersion is included
+// in the given version range.
+func (s *cluster) ManagerIsVersion(vr string) bool {
+	return isFinalIncluded(vr, s.ManagerVersion())
 }
 
 func (s *cluster) SetGeneralError(err error) {
@@ -463,14 +535,6 @@ func (s *cluster) SetGeneralError(err error) {
 
 func (s *cluster) Suffix() string {
 	return s.suffix
-}
-
-func (s *cluster) TelepresenceVersion() string {
-	return s.testVersion
-}
-
-func (s *cluster) CompatVersion() string {
-	return s.compatVersion
 }
 
 func (s *cluster) UserdPProf() uint16 {
@@ -582,262 +646,6 @@ func (s *cluster) CapturePodLogs(ctx context.Context, app, container, ns string)
 	case file := <-ready:
 		return file
 	}
-}
-
-func (s *cluster) PackageHelmChart(ctx context.Context) (string, error) {
-	filename := filepath.Join(getT(ctx).TempDir(), "telepresence-chart.tgz")
-	fh, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0o666)
-	if err != nil {
-		return "", err
-	}
-	if err := telcharts.WriteChart(telcharts.DirTypeTelepresence, fh, "telepresence", s.self.TelepresenceVersion()[1:]); err != nil {
-		_ = fh.Close()
-		return "", err
-	}
-	if err := fh.Close(); err != nil {
-		return "", err
-	}
-	return filename, nil
-}
-
-func (s *cluster) GetSetArgsForHelm(ctx context.Context, values map[string]any, release bool) []string {
-	settings := s.GetValuesForHelm(ctx, values, release)
-	args := make([]string, len(settings)*2)
-	n := 0
-	for _, s := range settings {
-		args[n] = "--set-json"
-		n++
-		args[n] = s
-		n++
-	}
-	return args
-}
-
-func (s *cluster) GetValuesForHelm(ctx context.Context, values map[string]any, release bool) []string {
-	nss := GetNamespaces(ctx)
-	settings := []string{
-		`logLevel="debug"`,
-	}
-	reg := s.self.Registry()
-	if reg == "local" {
-		settings = append(settings, `image.pullPolicy="Never"`)
-	} else if !s.isCI {
-		settings = append(settings, `image.pullPolicy="Always"`)
-	}
-	if nss != nil && nss.Selector != nil {
-		j, err := json.Marshal(nss.Selector)
-		if err != nil {
-			dlog.Errorf(ctx, "unable to marshal selector '%v': %v", nss.Selector, err)
-		} else {
-			settings = append(settings, `namespaceSelector=`+string(j))
-		}
-	}
-	agentImage := GetAgentImage(ctx)
-	if agentImage != nil {
-		settings = append(settings,
-			fmt.Sprintf(`agent.image.name=%q`, agentImage.Name), // Prevent attempts to retrieve image from SystemA
-			fmt.Sprintf(`agent.image.tag=%q`, agentImage.Tag),
-			fmt.Sprintf(`agent.image.registry=%q`, agentImage.Registry))
-	}
-	if !release {
-		settings = append(settings, fmt.Sprintf(`image.registry=%q`, s.self.Registry()))
-	}
-	if reg == "local" {
-		settings = append(settings, `agent.image.pullPolicy="Never"`)
-	} else if !s.isCI {
-		settings = append(settings, `agent.image.pullPolicy="Always"`)
-	}
-
-	for k, v := range values {
-		j, err := json.Marshal(v)
-		if err != nil {
-			dlog.Errorf(ctx, "unable to marshal value %v: %v", v, err)
-		} else {
-			settings = append(settings, k+"="+string(j))
-		}
-	}
-	return settings
-}
-
-func (s *cluster) InstallTrafficManager(ctx context.Context, values map[string]any) error {
-	chartFilename, err := s.self.PackageHelmChart(ctx)
-	if err != nil {
-		return err
-	}
-	return s.installChart(ctx, false, chartFilename, values)
-}
-
-// InstallTrafficManagerVersion performs a helm install of a specific version of the traffic-manager using
-// the helm registry at https://app.getambassador.io. It is assumed that the image to use for the traffic-manager
-// can be pulled from the standard registry at ghcr.io/telepresenceio, and that the traffic-manager image is
-// configured using DEV_AGENT_IMAGE.
-//
-// The intent is to simulate connection to an older cluster from the current client.
-func (s *cluster) InstallTrafficManagerVersion(ctx context.Context, version string, values map[string]any) error {
-	chartFilename, err := s.pullHelmChart(ctx, version)
-	if err != nil {
-		return err
-	}
-	return s.installChart(ctx, true, chartFilename, values)
-}
-
-func (s *cluster) installChart(ctx context.Context, release bool, chartFilename string, values map[string]any) error {
-	settings := s.self.GetSetArgsForHelm(ctx, values, release)
-
-	ctx = WithWorkingDir(ctx, GetOSSRoot(ctx))
-	nss := GetNamespaces(ctx)
-	args := []string{"install", "-n", nss.Namespace, "--wait"}
-	args = append(args, settings...)
-	args = append(args, "traffic-manager", chartFilename)
-
-	err := Run(ctx, "helm", args...)
-	if err == nil {
-		err = RolloutStatusWait(ctx, nss.Namespace, "deploy/traffic-manager")
-		if err == nil {
-			s.self.CapturePodLogs(ctx, "traffic-manager", "", nss.Namespace)
-		}
-	}
-	return err
-}
-
-func (s *cluster) TelepresenceHelmInstallOK(ctx context.Context, upgrade bool, settings ...string) string {
-	logFile, err := s.self.TelepresenceHelmInstall(ctx, upgrade, settings...)
-	require.NoError(getT(ctx), err)
-	return logFile
-}
-
-func (s *cluster) TelepresenceHelmInstall(ctx context.Context, upgrade bool, settings ...string) (string, error) {
-	nss := GetNamespaces(ctx)
-	subjectNames := []string{TestUser}
-	subjects := make([]rbac.Subject, len(subjectNames))
-	for i, s := range subjectNames {
-		subjects[i] = rbac.Subject{
-			Kind:      "ServiceAccount",
-			Name:      s,
-			Namespace: nss.Namespace,
-		}
-	}
-
-	type xRbac struct {
-		Create     bool           `json:"create"`
-		Namespaced bool           `json:"namespaced"`
-		Subjects   []rbac.Subject `json:"subjects,omitempty"`
-		Namespaces []string       `json:"namespaces,omitempty"`
-	}
-	type xAgent struct {
-		Image *Image `json:"image,omitempty"`
-	}
-	var agent *xAgent
-	if agentImage := GetAgentImage(ctx); agentImage != nil {
-		agent = &xAgent{Image: agentImage}
-	}
-	type xClient struct {
-		Routing map[string][]string `json:"routing"`
-	}
-	type xTimeouts struct {
-		AgentArrival string `json:"agentArrival,omitempty"`
-	}
-	vx := struct {
-		LogLevel          string           `json:"logLevel"`
-		Image             Image            `json:"image,omitempty"`
-		Agent             *xAgent          `json:"agent,omitempty"`
-		ClientRbac        xRbac            `json:"clientRbac"`
-		ManagerRbac       xRbac            `json:"managerRbac"`
-		Client            xClient          `json:"client"`
-		Timeouts          xTimeouts        `json:"timeouts,omitempty"`
-		Namespaces        []string         `json:"namespaces,omitempty"`
-		NamespaceSelector *labels.Selector `json:"namespaceSelector,omitempty"`
-	}{
-		LogLevel: "debug",
-		Agent:    agent,
-		ClientRbac: xRbac{
-			Create:   true,
-			Subjects: subjects,
-		},
-		ManagerRbac: xRbac{
-			Create: true,
-		},
-		Client: xClient{
-			Routing: map[string][]string{},
-		},
-		Timeouts: xTimeouts{AgentArrival: "60s"},
-	}
-	if managedNamespaces := nss.Selector.StaticNames(); len(managedNamespaces) > 0 {
-		vx.Namespaces = managedNamespaces
-	} else {
-		vx.NamespaceSelector = nss.Selector
-	}
-
-	image := GetImage(ctx)
-	if image != nil {
-		vx.Image = *image
-	}
-	if !s.isCI {
-		pp := "Always"
-		if s.Registry() == "local" {
-			// Using minikube with local images.
-			// They are automatically present and must not be pulled.
-			pp = "Never"
-		}
-		vx.Image.PullPolicy = pp
-		if vx.Agent == nil {
-			vx.Agent = &xAgent{}
-		}
-		if vx.Agent.Image == nil {
-			vx.Agent.Image = &Image{}
-		}
-		vx.Agent.Image.PullPolicy = pp
-	}
-
-	ss, err := sigsYaml.Marshal(&vx)
-	if err != nil {
-		return "", err
-	}
-	valuesFile := filepath.Join(getT(ctx).TempDir(), "values.yaml")
-	if err := os.WriteFile(valuesFile, ss, 0o644); err != nil {
-		return "", err
-	}
-
-	verb := "install"
-	if upgrade {
-		verb = "upgrade"
-	}
-	args := []string{"helm", verb, "-n", nss.Namespace, "-f", valuesFile}
-	args = append(args, settings...)
-
-	if _, _, err = Telepresence(WithUser(ctx, "default"), args...); err != nil {
-		return "", err
-	}
-	if err = RolloutStatusWait(ctx, nss.Namespace, "deploy/"+agentmap.ManagerAppName); err != nil {
-		return "", err
-	}
-	logFileName := s.self.CapturePodLogs(ctx, agentmap.ManagerAppName, "", nss.Namespace)
-	return logFileName, nil
-}
-
-func (s *cluster) pullHelmChart(ctx context.Context, version string) (string, error) {
-	if err := Run(ctx, "helm", "repo", "add", "datawire", "https://app.getambassador.io"); err != nil {
-		return "", err
-	}
-	if err := Run(ctx, "helm", "repo", "update"); err != nil {
-		return "", err
-	}
-	dir := getT(ctx).TempDir()
-	if err := Run(WithWorkingDir(ctx, dir), "helm", "pull", "datawire/telepresence", "--version", version); err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, fmt.Sprintf("telepresence-%s.tgz", version)), nil
-}
-
-func (s *cluster) UninstallTrafficManager(ctx context.Context, managerNamespace string, args ...string) {
-	t := getT(ctx)
-	ctx = WithUser(ctx, "default")
-	TelepresenceOk(ctx, append([]string{"helm", "uninstall", "--manager-namespace", managerNamespace}, args...)...)
-
-	// Helm uninstall does deletions asynchronously, so let's wait until the deployment is gone
-	assert.Eventually(t, func() bool { return len(RunningPodNames(ctx, agentmap.ManagerAppName, managerNamespace)) == 0 },
-		60*time.Second, 4*time.Second, "traffic-manager deployment was not removed")
-	TelepresenceQuitOk(ctx)
 }
 
 func (s *cluster) GetK8SCluster(ctx context.Context, context, managerNamespace string) (context.Context, *k8s.Cluster, error) {
@@ -970,8 +778,7 @@ func TelepresenceCmd(ctx context.Context, args ...string) *dexec.Cmd {
 		}
 		args = append(args, rest...)
 	}
-	exe, _ := gh.Executable()
-	cmd := Command(ctx, exe, args...)
+	cmd := Command(ctx, GetExecutable(ctx), args...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	return cmd
