@@ -240,6 +240,7 @@ func firstAppSecurityContext(pod *core.Pod, config *Sidecar) (*core.SecurityCont
 }
 
 func InitContainer(config *Sidecar) *core.Container {
+        runAsUser := int64(0)
 	ic := &core.Container{
 		Name:  InitContainerName,
 		Image: config.AgentImage,
@@ -269,6 +270,7 @@ func InitContainer(config *Sidecar) *core.Container {
 			},
 		},
 		SecurityContext: &core.SecurityContext{
+                        RunAsUser: &runAsUser,
 			Capabilities: &core.Capabilities{
 				Add: []core.Capability{"NET_ADMIN"},
 			},
