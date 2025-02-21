@@ -36,6 +36,12 @@ The deprecated `--replace` flag still works, but is hidden from the `telepresenc
 will print a deprecation warning when used.</Body>
 </Note>
 <Note>
+	<Title type="feature">Add json-schema for the Telepresence Helm Chart</Title>
+	<Body>Helm can validate a chart using a json-schema using the command `helm lint`, and this schema can be part of
+the actual Helm chart. The telepresence-oss Helm chart now includes such a schema, and a new
+`telepresence helm lint` command was added so that linting can be performed using the embedded chart.</Body>
+</Note>
+<Note>
 	<Title type="feature">No dormant container present during replace.</Title>
 	<Body>Telepresence will no longer inject a dormant container during a `telepresence replace` operation. Instead, the
 Traffic Agent now directly serves as the replacement container, eliminating the need to forward traffic to the

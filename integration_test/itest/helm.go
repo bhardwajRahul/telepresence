@@ -120,7 +120,7 @@ func (s *cluster) TelepresenceHelmInstall(ctx context.Context, upgrade bool, set
 
 	type xRbac struct {
 		Create     bool           `json:"create"`
-		Namespaced bool           `json:"namespaced"`
+		Namespaced bool           `json:"namespaced,omitempty"`
 		Subjects   []rbac.Subject `json:"subjects,omitempty"`
 		Namespaces []string       `json:"namespaces,omitempty"`
 	}

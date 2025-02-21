@@ -2,8 +2,6 @@
 ## Deployment Configuration
 ################################################################################
 
-isCI: false
-
 # The Traffic Manager only support running with one replica at the moment.
 # Configuring the replicaCount will be added in future versions of Telepresence
 
@@ -20,63 +18,13 @@ image:
   registry: ghcr.io/telepresenceio
   name: tel2
   pullPolicy: IfNotPresent
-  # Overrides the image tag whose default is the chart appVersion.
-  tag: ""
-
-  imagePullSecrets: []
 
 apiPort: 8081
-
-podAnnotations: {}
-
-podLabels: {}
-
-# Sets the spec.template.spec.hostNetwork for the Traffic Manager.
-# Set this to true when using Calico on AWS EKS to ensure that the mutating webhook can
-# communicate with the traffic manager.
-hostNetwork: false
-
-podSecurityContext: {}
-  # fsGroup: 2000
 
 securityContext:
   readOnlyRootFilesystem: true
   runAsNonRoot: true
   runAsUser: 1000
-
-livenessProbe: {}
-  # httpGet:
-  #   path: /
-  #   port: api
-  # initialDelaySeconds: 10
-  # periodSeconds: 5
-readinessProbe: {}
-  # httpGet:
-  #   path: /
-  #   port: api
-  # initialDelaySeconds: 10
-  # periodSeconds: 5
-
-resources: {}
-  # limits:
-  #   cpu: 100m
-  #   memory: 128Mi
-  # requests:
-  #   cpu: 100m
-  #   memory: 128Mi
-
-nodeSelector: {}
-
-tolerations: []
-
-affinity: {}
-
-schedulerName: ~
-
-## @param priorityClassName Name of the existing priority class to be used
-## Ref: https://kubernetes.io/docs/concepts/configuration/pod-priority-preemption/
-##
-priorityClassName: ""
 
 ################################################################################
 ## Traffic Manager Service Configuration
@@ -100,9 +48,6 @@ grpc:
   # manager will service.
   maxReceiveSize: 4Mi
 
-# podCIDRs is the verbatim list of CIDRs used when the podCIDRStrategy is set to environment
-podCIDRs: []
-
 # podCIDRStrategy controls what strategy the traffic-manager will use for finding out what
 # CIDRs the cluster is using for its pods. Valid values are:
 #
@@ -123,17 +68,6 @@ managerRbac:
   # Default: true
   create: true
 
-  # Whether the manager rbac should limit itself to only certain namespaces
-  # Default: false
-  namespaced: false
-
-  # If namespaced is true, which namespaces the managerRbac should apply to
-  namespaces: []
-
-intercept:
-  environment:
-    excluded: []
-
 timeouts:
   # The duration the traffic manager should wait for an agent to arrive (i.e., to be registered in the traffic manager's state)
   # Default: 30s
@@ -148,9 +82,7 @@ agentInjector:
   secret:
     name: mutator-webhook-tls
   certificate:
-    regenerate: false
-
-    # The method used by the agent-injector to access the generated secret.
+     # The method used by the agent-injector to access the generated secret.
     # Possible options: watch or mount
     #
     # Default watch
@@ -188,23 +120,14 @@ agentInjector:
     reinvocationPolicy: IfNeeded
     sideEffects: None
     timeoutSeconds: 5
-  agentImage: {}
 
 ################################################################################
 ## Telepresence traffic-agent configuration
 ################################################################################
 agent:
-  logLevel:
-  resources: {}
-  initResources: {}
-  initSecurityContext: {}
   appProtocolStrategy: http2Probe
   port: 9900
   image:
-    registry:
-    name:
-    tag:
-    pullSecrets: []
     pullPolicy: IfNotPresent
 
 ################################################################################
@@ -219,77 +142,13 @@ telepresenceAPI:
 ## Prometheus Server Configuration
 ################################################################################
 prometheus:
-  # Create the extra RBAC for non-admin users.
-  #
   # Set this port number to enable a prometheus metrics http server for the
   # traffic manager
   # Default: 0
   port: 0
 
-################################################################################
-## User Configuration
-################################################################################
-
-# Telepresence requires admin permissions for installation. Creating intercepts
-# requires lower permissions. Use the following configurations to create roles
-# so non-admin users can create intercepts.
-#
-# You do not need to create any extra RBAC if your users are cluster admins.
-# For more on how telepresence uses rbac, check out:
-# https://www.telepresence.io/docs/reference/rbac/
-clientRbac:
-
-  # Create the extra RBAC for non-admin users.
-  #
-  # Default: false
-  create: false
-
-  # The user accounts to bind to the Roles created by this chart. This can be a
-  # ServiceAccount, user account, user group, etc. depending on how accounts are
-  # managed in your cluster.
-  # This MUST be set.
-  #
-  # Default: []
-  subjects: []
-    # - kind: User
-    #   name: jane
-    #   apiGroup: rbac.authorization.k8s.io
-
-  # Explicitly set the namespaces to create the RoleBindings in. Defaults to the traffic-managers managed namespaces.
-  namespaces:
-
-  ruleExtras: false
-
-rbac:
-  # Configure this release to ONLY create the rbac-related objects. This allows for RBAC and the
-  # installation to be managed separately. This can be used in conjunction with clientRbac.create=true
-  # and managerRbac.create=true to select which sets of rbac objects you wish to create.
-  #
-  # Default: false
-  only: false
-
 # Values specific to the helm chart hooks for managing upgrade/deleting
 hooks:
-  podSecurityContext:
-    {}
-    # fsGroup: 2000
-
-  # Falls back to the root securityContext if not supplied
-  securityContext:
-    {}
-    # readOnlyRootFilesystem: true
-    # runAsNonRoot: true
-    # runAsUser: 1000
-
-  resources:
-    {}
-    # limits:
-    #   cpu: 100m
-    #   memory: 128Mi
-    # requests:
-    #   cpu: 100m
-    #   memory: 128Mi
-
   busybox:
     registry: docker.io
     image: busybox
@@ -308,25 +167,9 @@ client:
   # any calls to Remain.
   connectionTTL: 24h
 
-  routing:
-    # add the following subnets to the client's virtual network interface
-    # array of strings, example ["8.8.8.8/32", "6.7.8.9/32"]
-    alsoProxySubnets:  []
-
-    # remove the following subnets from the client's virtual network interface
-    # array of strings, example ["8.8.8.8/32", "6.7.8.9/32"]
-    neverProxySubnets: []
-
-    ## Allow the following subnets to be routed even if they conflict with other routes on the local machine
-    ## array of strings, example ["10.0.0.0/8"]
-    allowConflictingSubnets: []
-
   dns:
     # Tell client's DNS resolver to never send names with these suffixes to the cluster side resolver
     excludeSuffixes: [".com", ".io", ".net", ".org", ".ru"]
-
-    # Tell client's DNS resolver to always send names with these suffixes to the cluster side resolver
-    includeSuffixes: []
 
 # Controls which workload kinds are recognized by Telepresence
 workloads:
@@ -338,12 +181,3 @@ workloads:
     enabled: true
   argoRollouts:
     enabled: false
-
-# Use for testing only.
-compatibility:
-  # Controls the enablement of features more recent than the given version. Only applicable
-  # for versions 2.18.0 and up, and only recognized by versions 2.21.0 and up. In other words,
-  # you can make a 2.21.0 version behave as far back as a 2.18.0 version, but you cannot
-  # alter the behavior of versions earlier than 2.21.0.
-  #
-  # version: 2.19.0

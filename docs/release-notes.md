@@ -31,6 +31,14 @@ The deprecated `--replace` flag still works, but is hidden from the `telepresenc
 will print a deprecation warning when used.
 </div>
 
+## <div style="display:flex;"><img src="images/feature.png" alt="feature" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">Add json-schema for the Telepresence Helm Chart</div></div>
+<div style="margin-left: 15px">
+
+Helm can validate a chart using a json-schema using the command `helm lint`, and this schema can be part of
+the actual Helm chart. The telepresence-oss Helm chart now includes such a schema, and a new
+`telepresence helm lint` command was added so that linting can be performed using the embedded chart.
+</div>
+
 ## <div style="display:flex;"><img src="images/feature.png" alt="feature" style="width:30px;height:fit-content;"/><div style="display:flex;margin-left:7px;">No dormant container present during replace.</div></div>
 <div style="margin-left: 15px">
 

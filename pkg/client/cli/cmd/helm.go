@@ -15,7 +15,7 @@ func helmCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "helm",
 	}
-	cmd.AddCommand(helmInstall(), helmUpgrade(), helmUninstall())
+	cmd.AddCommand(helmInstall(), helmUpgrade(), helmUninstall(), helmLint())
 	return cmd
 }
 
@@ -119,6 +119,29 @@ func helmUninstall() *cobra.Command {
 	}
 	flags := cmd.Flags()
 	flags.BoolVarP(&ha.NoHooks, "no-hooks", "", false, "prevent hooks from running during uninstallation")
+	ha.rq = daemon.InitRequest(cmd)
+	return cmd
+}
+
+func helmLint() *cobra.Command {
+	ha := &HelmCommand{
+		Request: helm.Request{
+			Type: helm.Lint,
+		},
+	}
+	cmd := &cobra.Command{
+		Use:   "lint",
+		Args:  cobra.NoArgs,
+		Short: "Verify the embedded telepresence Helm chart",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return ha.run(cmd, args)
+		},
+		ValidArgsFunction: cobra.NoFileCompletions,
+	}
+
+	flags := cmd.Flags()
+	flags.StringVar(&ha.Version, "version", "", "the telepresence version if different from the client's version. May be a range (e.g. ^2.21.0)")
+	ha.addValueSettingFlags(flags)
 	ha.rq = daemon.InitRequest(cmd)
 	return cmd
 }

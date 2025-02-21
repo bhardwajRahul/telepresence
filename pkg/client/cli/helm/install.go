@@ -42,6 +42,7 @@ const (
 	Install RequestType = iota
 	Upgrade
 	Uninstall
+	Lint
 )
 
 type Request struct {
@@ -53,11 +54,17 @@ type Request struct {
 	CreateNamespace bool
 	NoHooks         bool
 	Version         string
+	KubeVersion     *chartutil.KubeVersion
 }
 
-func (hr *Request) Run(ctx context.Context, cr *connector.ConnectRequest) error {
+func (hr *Request) Run(ctx context.Context, cr *connector.ConnectRequest) (err error) {
+	defer func() {
+		if err != nil {
+			err = errcat.NoDaemonLogs.New(err)
+		}
+	}()
 	if hr.ReuseValues && hr.ResetValues {
-		return errcat.User.New("--reset-values and --reuse-values are mutually exclusive")
+		return errors.New("--reset-values and --reuse-values are mutually exclusive")
 	}
 
 	if cr.ManagerNamespace == "" {
@@ -92,9 +99,12 @@ func (hr *Request) Run(ctx context.Context, cr *connector.ConnectRequest) error 
 	}
 
 	mgrNs := k8s.GetManagerNamespace(ctx)
-	if hr.Type == Uninstall {
+	switch hr.Type {
+	case Uninstall:
 		err = DeleteTrafficManager(ctx, cluster.Kubeconfig, mgrNs, false, hr)
-	} else {
+	case Lint:
+		err = lint(ctx, cluster.Kubeconfig, mgrNs, hr)
+	default:
 		dlog.Debug(ctx, "ensuring that traffic-manager exists")
 		err = EnsureTrafficManager(cluster.WithJoinedClientSetInterface(ctx), cluster.Kubeconfig, mgrNs, hr)
 	}
@@ -110,6 +120,8 @@ func (hr *Request) Run(ctx context.Context, cr *connector.ConnectRequest) error 
 		msg = "upgraded"
 	case Uninstall:
 		msg = "uninstalled"
+	case Lint:
+		return nil
 	}
 
 	updatedResource := "Traffic Manager"
@@ -223,6 +235,7 @@ func installNew(
 	install.Wait = true
 	install.CreateNamespace = req.CreateNamespace
 	install.DisableHooks = req.NoHooks
+	install.KubeVersion = req.KubeVersion
 	install.Version = chrt.Metadata.Version
 	return timedRun(ctx, func(timeout time.Duration) error {
 		install.Timeout = timeout
@@ -364,51 +377,23 @@ func ensureIsInstalled(
 		existing = nil
 	}
 
-	// OK, now install things.
-	var providedVals map[string]any
-	if len(req.ValuesJson) > 0 {
-		if err := json.Unmarshal(req.ValuesJson, &providedVals); err != nil {
-			return errcat.User.Newf("unable to parse values JSON: %w", err)
-		}
-	}
-
-	var vals map[string]any
-	if len(providedVals) > 0 {
-		vals = chartutil.CoalesceTables(providedVals, GetValuesFunc(ctx, req))
-	} else {
-		// No values were provided. This means that an upgrade should retain existing values unless
-		// reset-values is true.
-		if req.Type == Upgrade && !req.ResetValues {
-			req.ReuseValues = true
-		}
-		vals = GetValuesFunc(ctx, req)
-	}
-
-	version := getTrafficManagerVersion(vals)
-
-	var chrt *chart.Chart
-	if req.Version != "" {
-		version = req.Version
-		chrt, err = pullCoreChart(ctx, helmConfig, "oci://ghcr.io/telepresenceio/telepresence-oss", version)
-	} else {
-		chrt, err = loadCoreChart(version)
-	}
+	chrt, vals, err := loadOrPullChart(ctx, helmConfig, req)
 	if err != nil {
-		return fmt.Errorf("unable to load built-in helm chart: %w", err)
+		return err
 	}
 
 	switch {
 	case existing == nil && req.Type == Upgrade: // fresh install
-		err = errcat.User.Newf("%s is not installed, use 'telepresence helm install' to install it", releaseName)
+		err = fmt.Errorf("%s is not installed, use 'telepresence helm install' to install it", releaseName)
 	case existing == nil:
 		dlog.Infof(ctx, "ensureIsInstalled(namespace=%q): performing fresh install...", namespace)
 		err = installNew(ctx, chrt, helmConfig, releaseName, namespace, req, vals)
 	case req.Type == Upgrade: // replace existing install
 		dlog.Infof(ctx, "ensureIsInstalled(namespace=%q): replacing %s from %q to %q...",
-			namespace, releaseName, releaseVer(existing), version)
+			namespace, releaseName, releaseVer(existing), chrt.Metadata.AppVersion)
 		err = upgradeExisting(ctx, releaseVer(existing), chrt, helmConfig, releaseName, namespace, req, vals)
 	default:
-		err = errcat.User.Newf(
+		err = fmt.Errorf(
 			"%s version %q is already installed, use 'telepresence helm upgrade' instead to replace it",
 			releaseName, releaseVer(existing))
 	}

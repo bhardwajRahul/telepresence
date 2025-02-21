@@ -293,7 +293,7 @@ push-images: push-tel2-image push-client-image
 .PHONY: helm-chart
 helm-chart: $(BUILDDIR)/telepresence-oss-chart.tgz
 
-$(BUILDDIR)/telepresence-oss-chart.tgz: $(wildcard charts/telepresence-oss/**/*)
+$(BUILDDIR)/telepresence-oss-chart.tgz: $(wildcard charts/**/*)
 	mkdir -p $(BUILDDIR)
 	go run packaging/helmpackage.go -o $@ -v $(TELEPRESENCE_SEMVER)
 

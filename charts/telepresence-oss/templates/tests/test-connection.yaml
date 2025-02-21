@@ -1,4 +1,4 @@
-{{- if not .Values.rbac.only }}
+{{- if not (and .Values.rbac .Values.rbac.only) }}
 apiVersion: v1
 kind: Pod
 metadata:

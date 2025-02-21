@@ -1,5 +1,5 @@
 {{- with .Values }}
-{{- if not .rbac.only }}
+{{- if not (and .rbac .rbac.only) }}
 apiVersion: v1
 kind: Service
 metadata:
