@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/datawire/dlib/dlog"
 	"github.com/datawire/dlib/dtime"
@@ -48,7 +49,7 @@ func (ac *client) String() string {
 		return "<nil>"
 	}
 	ai := ac.info
-	return fmt.Sprintf("%s.%s:%d", ai.PodName, ai.Namespace, ai.ApiPort)
+	return fmt.Sprintf("%s(%s), port %d, dormant %t", ai.PodName, net.IP(ai.PodIp), ai.ApiPort, ac.dormant())
 }
 
 func (ac *client) ensureConnect(ctx context.Context) (err error) {
@@ -78,8 +79,10 @@ func (ac *client) Tunnel(ctx context.Context, opts ...grpc.CallOption) (tunnel.C
 		// Client was closed.
 		return nil, io.EOF
 	}
+	dlog.Tracef(ctx, "%s(%s) creating Tunnel over gRPC", ac, net.IP(ac.info.PodIp))
 	tc, err := cli.Tunnel(ctx, opts...)
 	if err != nil {
+		dlog.Tracef(ctx, "%s(%s) failed to create Tunnel over gRPC: %v", ac, net.IP(ac.info.PodIp), err)
 		return nil, err
 	}
 	atomic.AddInt32(&ac.tunnelCount, 1)
@@ -107,7 +110,8 @@ func (ac *client) connect(ctx context.Context, deleteMe func()) {
 	var conn *grpc.ClientConn
 	var cli agent.AgentClient
 
-	conn, cli, _, err = k8sclient.ConnectToAgent(dialCtx, ac.info.PodName, ac.info.Namespace, uint16(ac.info.ApiPort))
+	ai := ac.info
+	conn, cli, _, err = k8sclient.ConnectToAgent(dialCtx, ai.PodName, ai.Namespace, uint16(ac.info.ApiPort), types.UID(ai.PodId))
 	if err != nil {
 		return
 	}
@@ -117,18 +121,16 @@ func (ac *client) connect(ctx context.Context, deleteMe func()) {
 	ac.cancelClient = func() {
 		// Need to run this in a separate thread to avoid deadlock.
 		go func() {
-			ac.Lock()
+			// Need to invalidate the pod connection cache here, because StatefulSets reuse the same pod name.
 			conn.Close()
+			ac.Lock()
 			ac.cancelClient = nil
 			ac.cli = nil
 			ac.infant.Store(true)
-			for len(ac.ready) > 0 {
-				<-ac.ready
-			}
 			ac.Unlock()
 		}()
 	}
-	intercepted := ac.info.Intercepted
+	intercepted := ai.Intercepted
 	ac.Unlock()
 	if intercepted {
 		err = ac.startDialWatcherReady(ctx)
@@ -169,26 +171,29 @@ func (ac *client) cancel() bool {
 	return didCancel
 }
 
-func (ac *client) setIntercepted(ctx context.Context, k string, status bool) {
-	ac.RLock()
-	aci := ac.info.Intercepted
+func (ac *client) refresh(ctx context.Context, ai *manager.AgentPodInfo) {
+	ac.Lock()
+	oldStatus := ac.info.Intercepted
+	ac.info = ai
 	cdw := ac.cancelDialWatch
-	ac.RUnlock()
-	if status {
-		if aci {
-			return
-		}
-		dlog.Debugf(ctx, "Agent %s changed to intercepted", k)
+	ac.Unlock()
+	if ai.Intercepted == oldStatus {
+		return
+	}
+	if ai.Intercepted {
+		dlog.Debugf(ctx, "Agent %s(%s) changed to intercepted", ai.PodName, net.IP(ai.PodIp))
 		go func() {
 			if err := ac.startDialWatcher(ctx); err != nil {
-				dlog.Errorf(ctx, "failed to start client watcher for %s: %v", k, err)
+				dlog.Errorf(ctx, "failed to start client watcher for %s(%s): %v", ai.PodName, net.IP(ai.PodIp), err)
 			}
 		}()
 		// This agent is now intercepting. Start a dial watcher.
-	} else if aci && cdw != nil {
+	} else {
 		// This agent is no longer intercepting. Stop the dial watcher
-		dlog.Debugf(ctx, "Agent %s changed to not intercepted", k)
-		cdw()
+		dlog.Debugf(ctx, "Agent %s(%s) changed to not intercepted", ai.PodName, net.IP(ai.PodIp))
+		if cdw != nil {
+			cdw()
+		}
 	}
 }
 
@@ -203,7 +208,11 @@ func (ac *client) startDialWatcher(ctx context.Context) error {
 func (ac *client) startDialWatcherReady(ctx context.Context) error {
 	ac.RLock()
 	cli := ac.cli
+	running := ac.cancelDialWatch != nil
 	ac.RUnlock()
+	if running {
+		return nil
+	}
 	if cli == nil {
 		return fmt.Errorf("agent connection closed")
 	}
@@ -218,7 +227,6 @@ func (ac *client) startDialWatcherReady(ctx context.Context) error {
 	}
 
 	ac.Lock()
-	ac.info.Intercepted = true
 	ac.cancelDialWatch = func() {
 		ac.Lock()
 		ac.info.Intercepted = false
@@ -549,7 +557,7 @@ func (s *clients) updateClients(ctx context.Context, ais []*manager.AgentPodInfo
 	// Refresh current clients
 	for k, ai := range aim {
 		if ac, ok := s.clients.Load(k); ok {
-			ac.setIntercepted(ctx, k, ai.Intercepted)
+			ac.refresh(ctx, ai)
 		}
 	}
 

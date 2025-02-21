@@ -324,6 +324,7 @@ func (s *service) WatchAgentPods(session *rpc.SessionInfo, stream rpc.Manager_Wa
 				}
 				ap := &rpc.AgentPodInfo{
 					WorkloadName: a.Name,
+					PodId:        a.PodUid,
 					PodName:      a.PodName,
 					Namespace:    a.Namespace,
 					PodIp:        aip.AsSlice(),
@@ -687,9 +688,9 @@ func (s *service) ReviewIntercept(ctx context.Context, rIReq *rpc.ReviewIntercep
 			return
 		}
 
-		// Only update intercepts in the waiting state.  Agents race to review an intercept, but we
-		// expect they will always compatible answers.
-		if intercept.Disposition == rpc.InterceptDispositionType_WAITING {
+		// Only update intercepts in the waiting or no agent states.  Agents race to review an intercept, but we
+		// expect they will always produce compatible answers.
+		if intercept.Disposition == rpc.InterceptDispositionType_NO_AGENT || intercept.Disposition == rpc.InterceptDispositionType_WAITING {
 			intercept.Disposition = rIReq.Disposition
 			intercept.Message = rIReq.Message
 			intercept.PodIp = rIReq.PodIp
