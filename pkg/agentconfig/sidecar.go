@@ -191,6 +191,9 @@ type Sidecar struct {
 
 	// SecurityContext for the sidecar
 	SecurityContext *core.SecurityContext `json:"securityContext,omitempty"`
+
+	// InitSecurityContext is the SecurityContext for the initContainer sidecar
+	InitSecurityContext *core.SecurityContext `json:"initSecurityContext,omitempty"`
 }
 
 func (s *Sidecar) AgentConfig() *Sidecar {
@@ -249,12 +252,14 @@ func MarshalTight(s SidecarExt) (string, error) {
 	ps := ac.PullSecrets
 	ir := ac.InitResources
 	sc := ac.SecurityContext
+	is := ac.InitSecurityContext
 
 	ac.AgentImage = ""
 	ac.PullPolicy = ""
 	ac.PullSecrets = nil
 	ac.InitResources = nil
 	ac.SecurityContext = nil
+	ac.InitSecurityContext = nil
 
 	data, err := json.Marshal(s)
 	ac.AgentImage = ai
@@ -262,6 +267,7 @@ func MarshalTight(s SidecarExt) (string, error) {
 	ac.PullSecrets = ps
 	ac.InitResources = ir
 	ac.SecurityContext = sc
+	ac.InitSecurityContext = is
 
 	if err != nil {
 		return "", err

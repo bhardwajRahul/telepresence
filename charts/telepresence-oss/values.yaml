@@ -197,6 +197,7 @@ agent:
   logLevel:
   resources: {}
   initResources: {}
+  initSecurityContext: {}
   appProtocolStrategy: http2Probe
   port: 9900
   image:
