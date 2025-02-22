@@ -3,7 +3,8 @@ package k8sapi
 import (
 	"fmt"
 
-	"gopkg.in/yaml.v3"
+	"github.com/go-json-experiment/json"
+	"github.com/go-json-experiment/json/jsontext"
 )
 
 // AppProtocolStrategy specifies how the application protocol for a service port is determined
@@ -40,8 +41,8 @@ func NewAppProtocolStrategy(s string) (AppProtocolStrategy, error) {
 	return 0, fmt.Errorf("invalid AppProtcolStrategy: %q", s)
 }
 
-func (aps AppProtocolStrategy) MarshalYAML() (any, error) {
-	return aps.String(), nil
+func (aps AppProtocolStrategy) MarshalJSONTo(out *jsontext.Encoder, opts json.Options) error {
+	return json.MarshalEncode(out, aps.String(), opts)
 }
 
 func (aps *AppProtocolStrategy) EnvDecode(val string) (err error) {
@@ -55,10 +56,11 @@ func (aps *AppProtocolStrategy) EnvDecode(val string) (err error) {
 	return nil
 }
 
-func (aps *AppProtocolStrategy) UnmarshalYAML(node *yaml.Node) (err error) {
+func (aps *AppProtocolStrategy) UnmarshalJSONFrom(in *jsontext.Decoder, opts json.Options) error {
 	var s string
-	if err := node.Decode(&s); err != nil {
-		return err
+	err := json.UnmarshalDecode(in, &s, opts)
+	if err == nil {
+		err = aps.EnvDecode(s)
 	}
-	return aps.EnvDecode(s)
+	return err
 }
