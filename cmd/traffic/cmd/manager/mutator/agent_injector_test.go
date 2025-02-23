@@ -1518,6 +1518,10 @@ matchExpressions:
     image: ghcr.io/telepresenceio/tel2:2.13.3
     name: tel-agent-init
     resources: {}
+    securityContext:
+      capabilities:
+        add:
+        - NET_ADMIN
 - op: add
   path: /spec/containers/-
   value:
@@ -1631,6 +1635,10 @@ matchExpressions:
     image: ghcr.io/telepresenceio/tel2:2.13.3
     name: tel-agent-init
     resources: {}
+    securityContext:
+      capabilities:
+        add:
+        - NET_ADMIN
 - op: add
   path: /spec/containers/-
   value:
@@ -1764,6 +1772,11 @@ matchExpressions:
 										FieldPath:  "status.podIP",
 									},
 								},
+							},
+						},
+						SecurityContext: &core.SecurityContext{
+							Capabilities: &core.Capabilities{
+								Add: []core.Capability{"NET_ADMIN"},
 							},
 						},
 					}},

@@ -268,6 +268,11 @@ func InitContainer(config *Sidecar) *core.Container {
 				},
 			},
 		},
+		SecurityContext: &core.SecurityContext{
+			Capabilities: &core.Capabilities{
+				Add: []core.Capability{"NET_ADMIN"},
+			},
+		},
 	}
 	if r := config.InitResources; r != nil {
 		ic.Resources = *r
