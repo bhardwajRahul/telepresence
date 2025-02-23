@@ -96,6 +96,11 @@ items:
         body: >-
           The output of the `telepresence list` command will now include the workload kind (deployment, replicaset,
           statefulset, or rollout) in all entries.
+      - type: feature
+        title: Add ability to override the default securityContext for the Telepresence init-container
+        body: >-
+          Users can now use the Helm value `agent.initSecurityContext` to override the default securityContext for the
+          Telepresence init-container.
       - type: change
         title: Make the DNS recursion check configurable and turn it off by default.
         body: >-
