@@ -56,6 +56,7 @@ type BasicGeneratorConfig struct {
 	PullSecrets         []core.LocalObjectReference
 	AppProtocolStrategy k8sapi.AppProtocolStrategy
 	SecurityContext     *core.SecurityContext
+	InitSecurityContext *core.SecurityContext
 }
 
 func portsFromContainerPortsAnnotation(wl k8sapi.Workload) (ports []agentconfig.PortIdentifier, err error) {
@@ -194,21 +195,22 @@ func (cfg *BasicGeneratorConfig) Generate(
 	}
 
 	return &agentconfig.Sidecar{
-		AgentImage:      cfg.QualifiedAgentImage,
-		AgentName:       wl.GetName(),
-		LogLevel:        cfg.LogLevel,
-		Namespace:       wl.GetNamespace(),
-		WorkloadName:    wl.GetName(),
-		WorkloadKind:    wl.GetKind(),
-		ManagerHost:     ManagerAppName + "." + cfg.ManagerNamespace,
-		ManagerPort:     cfg.ManagerPort,
-		APIPort:         cfg.APIPort,
-		Containers:      ccs,
-		InitResources:   cfg.InitResources,
-		Resources:       cfg.Resources,
-		PullPolicy:      cfg.PullPolicy,
-		PullSecrets:     cfg.PullSecrets,
-		SecurityContext: cfg.SecurityContext,
+		AgentImage:          cfg.QualifiedAgentImage,
+		AgentName:           wl.GetName(),
+		LogLevel:            cfg.LogLevel,
+		Namespace:           wl.GetNamespace(),
+		WorkloadName:        wl.GetName(),
+		WorkloadKind:        wl.GetKind(),
+		ManagerHost:         ManagerAppName + "." + cfg.ManagerNamespace,
+		ManagerPort:         cfg.ManagerPort,
+		APIPort:             cfg.APIPort,
+		Containers:          ccs,
+		InitResources:       cfg.InitResources,
+		Resources:           cfg.Resources,
+		PullPolicy:          cfg.PullPolicy,
+		PullSecrets:         cfg.PullSecrets,
+		SecurityContext:     cfg.SecurityContext,
+		InitSecurityContext: cfg.InitSecurityContext,
 	}, nil
 }
 

@@ -192,6 +192,10 @@ spec:
           - name: AGENT_SECURITY_CONTEXT
             value: '{{ toJson .agent.securityContext }}'
           {{- end }}
+          {{- if .agent.initSecurityContext }}
+          - name: AGENT_INIT_SECURITY_CONTEXT
+            value: '{{ toJson .agent.initSecurityContext }}'
+          {{- end }}
           {{- with fromJsonArray (include "traffic-manager.namespaces" $) }}
           {{- /*
            This environment variable it not used, it's here to force a redeploy of the traffic manager when the list

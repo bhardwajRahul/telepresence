@@ -1743,7 +1743,8 @@ matchExpressions:
 							Replace:    agentconfig.ReplacePolicyIntercept,
 						},
 					},
-					SecurityContext: nil,
+					SecurityContext:     nil,
+					InitSecurityContext: nil,
 				}),
 				Spec: core.PodSpec{
 					InitContainers: []core.Container{{

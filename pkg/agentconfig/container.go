@@ -277,6 +277,9 @@ func InitContainer(config *Sidecar) *core.Container {
 	if r := config.InitResources; r != nil {
 		ic.Resources = *r
 	}
+	if s := config.InitSecurityContext; s != nil {
+		ic.SecurityContext = s
+	}
 	return ic
 }
 
