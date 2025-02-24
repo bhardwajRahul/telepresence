@@ -456,9 +456,7 @@ properties:
 
   replicaCount:
     description: Number or replicas for the traffic-manager. The Traffic Manager only support running with one replica at the moment.
-    type: integer
-    minimum: 1
-    maximum: 1
+    const: 1
 
   resources:
     description: Define resource requests and limits for the Traffic Manger
