@@ -1,4 +1,5 @@
-{{- if .Values.clientRbac.create }}
+{{- with .Values.clientRbac }}
+{{- if .create }}
 {{- /*
 Client must have the following RBAC in the traffic-manager.namespace to establish
 a port-forward to the traffic-manager pod.
@@ -32,10 +33,11 @@ metadata:
   labels:
     {{- include "telepresence.labels" $ | nindent 4 }}
 subjects:
-{{ toYaml .Values.clientRbac.subjects }}
+{{ toYaml .subjects }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   name: traffic-manager-connect
   kind: Role
 
+{{- end }}
 {{- end }}

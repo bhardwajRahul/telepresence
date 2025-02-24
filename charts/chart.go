@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"sort"
 	"strings"
 
@@ -41,14 +42,19 @@ func filePriority(chartName, filename string) int {
 }
 
 func addFile(tarWriter *tar.Writer, vfs fs.FS, filename string, content []byte) error {
+	var header *tar.Header
 	// Build the tar.Header.
 	fi, err := fs.Stat(vfs, filename)
-	if err != nil {
-		return err
-	}
-	header, err := tar.FileInfoHeader(fi, "")
-	if err != nil {
-		return err
+	if err == nil {
+		header, err = tar.FileInfoHeader(fi, "")
+		if err != nil {
+			return err
+		}
+	} else {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		header = &tar.Header{}
 	}
 	header.Name = filename
 	header.Mode = 0o644
@@ -126,6 +132,18 @@ func WriteChart(helmChartDir DirType, out io.Writer, chartName, version string, 
 
 	for _, filename := range filenames {
 		switch filename {
+		case fmt.Sprintf("%s/values.schema.yaml", chartName):
+			content, err := fs.ReadFile(baseDir, filename)
+			if err != nil {
+				return err
+			}
+			content, err = yaml.YAMLToJSON(content)
+			if err != nil {
+				return err
+			}
+			if err = addFile(tarWriter, baseDir, fmt.Sprintf("%s/values.schema.json", chartName), content); err != nil {
+				return err
+			}
 		case fmt.Sprintf("%s/Chart.yaml", chartName):
 			content, err := fs.ReadFile(baseDir, filename)
 			if err != nil {
@@ -141,7 +159,7 @@ func WriteChart(helmChartDir DirType, out io.Writer, chartName, version string, 
 			if err != nil {
 				return err
 			}
-			if err := addFile(tarWriter, baseDir, filename, content); err != nil {
+			if err = addFile(tarWriter, baseDir, filename, content); err != nil {
 				return err
 			}
 		default:
@@ -149,7 +167,7 @@ func WriteChart(helmChartDir DirType, out io.Writer, chartName, version string, 
 			if err != nil {
 				return err
 			}
-			if err := addFile(tarWriter, baseDir, filename, content); err != nil {
+			if err = addFile(tarWriter, baseDir, filename, content); err != nil {
 				return err
 			}
 		}

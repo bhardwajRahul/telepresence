@@ -4,7 +4,6 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"sigs.k8s.io/yaml"
 
@@ -56,13 +55,13 @@ func (s *podCIDRSuite) Test_PodCIDRStrategy() {
 
 	tests := []struct {
 		name        string
-		values      map[string]string
+		values      map[string]any
 		wantSubnets []string
 	}{
 		{
 			"environment",
-			map[string]string{
-				"podCIDRs":        strings.Join(append(podCIDRs, "199.199.50.228/30"), " "),
+			map[string]any{
+				"podCIDRs":        append(podCIDRs, "199.199.50.228/30"),
 				"podCIDRStrategy": "environment",
 			},
 			append(podCIDRs, "199.199.50.228/30"),

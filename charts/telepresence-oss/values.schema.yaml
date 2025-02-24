@@ -1,0 +1,579 @@
+$schema: https://json-schema.org/draft/2020-12/schema#
+$id: https://github.com/telepresenceio/telepresence-oss.schema.json
+title: Telepresence Values
+description: Values Schema for the Telepresence OSS Helm Chart
+type: object
+additionalProperties: false
+properties:
+  affinity:
+    description: If specified, the pod's scheduling constraints
+    $ref: "#/$defs/affinity"
+
+  agent:
+    description: Telepresence traffic-agent configuration
+    type: object
+    additionalProperties: false
+    properties:
+      appProtocolStrategy:
+        description: The strategy to use when determining the application protocol to use for intercepts
+        type: string
+        enum:
+          - http2Probe
+          - portName
+          - http
+          - http2
+      image:
+        type: object
+        additionalProperties: false
+        properties:
+          name:
+            description: The name of the injected agent image
+            type: string
+          pullPolicy:
+            description: Pull policy in the webhook for the traffic agent image
+            $ref: "#/$defs/pullPolicy"
+          registry:
+            description: The registry for the injected agent image
+            type: string
+          tag:
+            description: Overrides the image tag whose default is the chart appVersion
+            type: string
+      initResources:
+        description: Resource requirements for the init-container
+        $ref: "#/$defs/resourceRequirements"
+      initSecurityContext:
+        description: Security context for the init-container
+        $ref: "#/$defs/securityContext"
+      logLevel:
+        description: Loglevel for the agent, if different from the traffic-manager
+        $ref: "#/$defs/logLevel"
+      port:
+        description: Port number of the first port that the agent will use
+        type: integer
+      resources:
+        description: Resource requirements for the agent
+        $ref: "#/$defs/resourceRequirements"
+      securityContext:
+        description: Security context for the agent
+        $ref: "#/$defs/securityContext"
+
+  agentInjector:
+    description: Properties for the agent injector service
+    type: object
+    additionalProperties: false
+    properties:
+      certificate:
+        type: object
+        additionalProperties: false
+        properties:
+          accessMethod:
+            description: Method used by the agent injector to access the certificate (watch or mount)
+            type: string
+            enum:
+              - watch
+              - mount
+          certmanager:
+            type: object
+            additionalProperties: false
+            properties:
+              commonName:
+                description: The common name of the generated Certmanager certificate
+                type: string
+              duration:
+                description: The certificate validity duration
+                $ref: "#/$defs/duration"
+              issuerRef:
+                type: object
+                additionalProperties: false
+                properties:
+                  kind:
+                    description: The Issuer kind to use to generate the self signed certificate (Issuer of ClusterIssuer)
+                    type: string
+                    enum:
+                      - Issuer
+                      - ClusterIssuer
+                  name:
+                    description: The Issuer name to use to generate the self signed certificate
+                    type: string
+          method:
+            description: Method used when generating the certificate used for mutating webhook (helm, supplied, or certmanager)
+            type: string
+            enum:
+              - helm
+              - supplied
+              - certmanager
+          regenerate:
+            description: Whether the certificate used for the mutating webhook should be regenerated
+            type: boolean
+      enabled:
+        description: Enable/Disable the agent-injector and its webhook
+        type: boolean
+      injectPolicy:
+        description: Determines when an agent is injected, possible values are OnDemand and WhenEnabled
+        type: string
+        enum:
+          - OnDemand
+          - WhenEnabled
+      name:
+        description: Name to use with objects associated with the agent-injector
+        type: string
+      secret:
+        type: object
+        properties:
+          name:
+            description: The name of the secret the agent-injector webhook uses for authorization with the kubernetes api will expose
+            $ref: "#/$defs/rfc1123Label"
+      service:
+        type: object
+        additionalProperties: false
+        properties:
+          type:
+            description: Type of service for the agent-injector.
+            type: string
+      webhook:
+        type: object
+        additionalProperties: false
+        properties:
+          admissionReviewVersions:
+            description: List of supported admissionReviewVersions
+            type: array
+            items:
+              type: string
+          failurePolicy:
+            description: Action to take on unexpected failure or timeout of webhook.
+            type: string
+            enum:
+              - Fail
+              - Ignore
+          name:
+            description: The name of the agent-injector webhook
+            type: string
+          port:
+            description: Port for the service that provides the admission webhook
+            type: integer
+          reinvocationPolicy:
+            description: Specify if the webhook may be called again after the initial webhook call. Possible values are Never and IfNeeded
+            type: string
+            enum:
+              - IfNeeded
+              - Never
+          servicePath:
+            description: Path to the service that provides the admission webhook
+            type: string
+          sideEffects:
+            description: Any side effects the admission webhook makes outside of AdmissionReview
+            type: string
+            enum:
+              - None
+              - NoneOnDryRun
+              - Some
+              - Unknown
+          timeoutSeconds:
+            description: Timeout of the admission webhook
+            type: integer
+
+  apiPort:
+    description: The port used by the Traffic Manager gRPC API
+    type: integer
+
+  client:
+    type: object
+    properties:
+      connectionTTL:
+        description: The time that the traffic-manager will retain a client connection without any sign of life from the workstation
+        type: string
+        $ref: "#/$defs/duration"
+      dns:
+        type: object
+        properties:
+          excludeSuffixes:
+            description: >-
+              Suffixes for which the client DNS resolver will always fail (or fallback in case of the overriding resolver)
+              Defaults to [".com", ".io", ".net", ".org", ".ru"]
+            type: array
+            items:
+              type: string
+          includeSuffixes:
+            description: >-
+              Suffixes for which the client DNS resolver will always attempt to do a lookup. Includes have higher priority
+              than excludes
+            type: array
+            items:
+              type: string
+      routing:
+        type: object
+        properties:
+          allowConflictingSubnets:
+            description: Allow the specified subnets to be routed even if they conflict with other routes on the local machine
+            type: array
+            items:
+              type: string
+          alsoProxySubnets:
+            description: The virtual network interface of connected clients will also proxy these subnets
+            type: array
+            items:
+              type: string
+          neverProxySubnets:
+            description: The virtual network interface of connected clients never proxy these subnets
+            type: array
+            items:
+              type: string
+
+  clientRbac:
+    type: object
+    additionalProperties: false
+    properties:
+      create:
+        description: Create RBAC resources for non-admin users with this release
+        type: boolean
+      namespaces:
+        description: The namespaces to give users access to. Defaults to Traffic Manager's namespaces (unless dynamic)
+        type: array
+        items:
+          $ref: "#/$defs/rfc1123Label"
+      ruleExtras:
+        description: If set, run the clientRbac-ruleExtras template to add additional RBAC rules.
+        type: boolean
+      subjects:
+        description: The user accounts to tie the created roles to
+        type: array
+        items:
+          $ref: "#/$defs/subject"
+
+  grpc:
+    type: object
+    additionalProperties: false
+    properties:
+      maxReceiveSize:
+        description: maxReceiveSize is a quantity that configures the maximum message size that the traffic manager will service.
+        $ref: "#/$defs/quantity"
+
+  hooks:
+    type: object
+    additionalProperties: false
+    properties:
+      busybox:
+        type: object
+        additionalProperties: false
+        properties:
+          image:
+            description: The name of the image to use for busybox
+            type: string
+          imagePullSecrets:
+            description: The Secret storing any credentials needed to access the image in a private registry
+            type: array
+            items:
+              $ref: "#/$defs/localObjectReference"
+          pullPolicy:
+            description: Pull policy in the webhook for the image
+            $ref: "#/$defs/pullPolicy"
+          registry:
+            description: The registry to download the image from
+            type: string
+          tag:
+            description: Override the version of busybox to be installed
+            type: string
+      curl:
+        type: object
+        additionalProperties: false
+        properties:
+          image:
+            description: The name of the image to use for curl
+            type: string
+          imagePullSecrets:
+            description: The Secret storing any credentials needed to access the image in a private registry
+            type: array
+            items:
+              $ref: "#/$defs/localObjectReference"
+          pullPolicy:
+            description: Pull policy in the webhook for the image
+            $ref: "#/$defs/pullPolicy"
+          registry:
+            description: The registry to download the image from
+            type: string
+          tag:
+            description: Override the version of curl to be installed
+            type: string
+      podSecurityContext:
+        description: The Kubernetes SecurityContext for the chart hooks Pod
+        $ref: "#/$defs/podSecurityContext"
+      resources:
+        description: Define resource requests and limits for the chart hooks
+        $ref: "#/$defs/resourceRequirements"
+      securityContext:
+        description: The Kubernetes SecurityContext for the chart hooks Container
+        $ref: "#/$defs/securityContext"
+
+  hostNetwork:
+    description: >-
+      Sets the spec.template.spec.hostNetwork for the Traffic Manager.
+      Set this to true when using Calico on AWS EKS to ensure that the mutating webhook can
+      communicate with the traffic manager
+    type: boolean
+
+  image:
+    type: object
+    additionalProperties: false
+    properties:
+      imagePullSecrets:
+        description: The Secret storing any credentials needed to access the image in a private registry
+        type: array
+        items:
+          $ref: "#/$defs/localObjectReference"
+      name:
+        description: The name of the image to use for the traffic-manager
+        type: string
+      pullPolicy:
+        description: Pull policy in the webhook for the traffic-manager image
+        $ref: "#/$defs/pullPolicy"
+      registry:
+        description: The registry to download the image from
+        type: string
+      tag:
+        description: Overrides the image tag whose default is the chart appVersion
+        type: string
+
+  intercept:
+    type: object
+    additionalProperties: false
+    properties:
+      environment:
+        type: object
+        properties:
+          excluded:
+            description: Environment variables to exclude from the list sent to the client during engagement
+            type: array
+            items:
+              type: string
+
+  isCI:
+    description: isCI can be set to force the traffic-manager namespace to be "ambassador"
+    type: boolean
+    default: false
+
+  livenessProbe:
+    description: Define livenessProbe for the traffic-manager
+    $ref: "#/$defs/probe"
+
+  logLevel:
+    description: Define the logging level of the Traffic Manager
+    $ref: "#/$defs/logLevel"
+
+  managerRbac:
+    type: object
+    additionalProperties: false
+    properties:
+      create:
+        description: Create RBAC resources for traffic-manager with this release
+        type: boolean
+      namespaces:
+        description: Declares a fixed set of managed namespaces
+        deprecated: true
+        type: array
+        items:
+          $ref: "#/$defs/rfc1123Label"
+
+  maxNamespaceSpecificWatchers:
+    description: >-
+      Threshold controlling when the traffic-manager switches from using watchers for each managed namespace to using
+      cluster-wide watchers
+    type: integer
+    minimum: 0
+    maximum: 50
+
+  nameOverride:
+    description: Override the default name prefix used when creating RBAC resources
+    type: string
+
+  namespaces:
+    description: Declares a fixed set of managed namespaces. Mutually exclusive to namespaceSelector
+    type: array
+    items:
+      $ref: "#/$defs/rfc1123Label"
+
+  namespaceSelector:
+    description: Declares the managed namespace using matchLabels and matchExpressions. Mutually exclusive to namespaces
+    $ref: "#/$defs/labelSelector"
+
+  nodeSelector:
+    description: Define which Nodes you want to the Traffic Manager to be deployed to.
+    $ref: "#/$defs/nodeSelector"
+
+  podAnnotations:
+    description: Annotations for the Traffic Manager Pod
+    type: object
+    additionalProperties:
+      type: string
+
+  podCIDRs:
+    description: podCIDRs is the verbatim list of CIDRs used when the podCIDRStrategy is set to environment
+    type: array
+    items:
+      type: string
+
+  podCIDRStrategy:
+    description: Define the strategy that the traffic-manager uses to discover what CIDRs the cluster uses for pods
+    type: string
+    enum:
+      - auto
+      - coverPodIPs
+      - environment
+      - nodePodCIDRs
+
+  podLabels:
+    description: Labels for the Traffic Manager Pod
+    type: object
+    additionalProperties:
+      type: string
+
+  podSecurityContext:
+    description: The Kubernetes SecurityContext for the traffic-manager Pod
+    $ref: "#/$defs/podSecurityContext"
+
+  priorityClassName:
+    description: Name of the existing pod priority class to be used
+    type: string
+
+  prometheus:
+    type: object
+    additionalProperties: false
+    properties:
+      port:
+        description: Set this port number to enable a prometheus metrics http server for the traffic manager
+        type: integer
+
+  rbac:
+    type: object
+    additionalProperties: false
+    properties:
+      only:
+        description: Only create the RBAC resources and omit the traffic-manger
+        type: boolean
+
+  readinessProbe:
+    description: Define readinessProbe for the Traffic Manger.
+    $ref: "#/$defs/probe"
+
+  replicaCount:
+    description: Number or replicas for the traffic-manager. The Traffic Manager only support running with one replica at the moment.
+    const: 1
+
+  resources:
+    description: Define resource requests and limits for the Traffic Manger
+    $ref: "#/$defs/resourceRequirements"
+
+  schedulerName:
+    description: Specify a scheduler for Traffic Manager Pod and hooks Pod
+    type: string
+
+  securityContext:
+    description: The Kubernetes SecurityContext for the traffic-manager container
+    $ref: "#/$defs/securityContext"
+
+  service:
+    type: object
+    additionalProperties: false
+    properties:
+      type:
+        description: The type of service for the traffic-manager
+        type: string
+
+  telepresenceAPI:
+    type: object
+    additionalProperties: false
+    properties:
+      port:
+        description: The port on agent's localhost where the Telepresence API server can be found
+        type: integer
+
+  timeouts:
+    type: object
+    additionalProperties: false
+    properties:
+      agentArrival:
+        description: The time that the traffic-manager will wait for the traffic-agent to arrive
+        $ref: "#/$defs/duration"
+
+  tolerations:
+    description: Define tolerations for the Traffic Manager to ignore Node taints
+    type: array
+    items:
+      $ref: "#/$defs/toleration"
+
+  workloads:
+    type: object
+    additionalProperties: false
+    properties:
+      argoRollouts:
+        type: object
+        additionalProperties: false
+        properties:
+          enabled:
+            description: Enable/Disable the argo-rollouts integration
+            type: boolean
+      deployments:
+        type: object
+        additionalProperties: false
+        properties:
+          enabled:
+            description: Enable/Disable the support for Deployments
+            type: boolean
+      replicaSets:
+        type: object
+        additionalProperties: false
+        properties:
+          enabled:
+            description: Enable/Disable the support for ReplicaSets
+            type: boolean
+      statefulSets:
+        type: object
+        additionalProperties: false
+        properties:
+          enabled:
+            description: Enable/Disable the support for StatefulSets
+            type: boolean
+
+$defs:
+  duration:
+    type: string
+    pattern: "^[+-]?(\\d+(\\.\\d+)?(h|m|s|ms|us|µs))+"
+  rfc1123Label:
+    description: RFC 1123 label name
+    type: string
+    pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+  logLevel:
+    type: string
+    enum:
+      - error
+      - warning
+      - info
+      - debug
+      - trace
+  pullPolicy:
+    type: string
+    enum:
+    - Always
+    - Never
+    - IfNotPresent
+  affinity:
+    $ref: https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.32.2/_definitions.json#/definitions/io.k8s.api.core.v1.Affinity
+  labelSelector:
+    $ref: https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.32.2/_definitions.json#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector
+  localObjectReference:
+    $ref: https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.32.2/_definitions.json#/definitions/io.k8s.api.core.v1.LocalObjectReference
+  nodeSelector:
+    $ref: https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.32.2/_definitions.json#/definitions/io.k8s.api.core.v1.NodeSelector
+  resourceRequirements:
+    $ref: https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.32.2/_definitions.json#/definitions/io.k8s.api.core.v1.ResourceRequirements
+  podSecurityContext:
+    $ref: https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.32.2/_definitions.json#/definitions/io.k8s.api.core.v1.PodSecurityContext
+  probe:
+    $ref: https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.32.2/_definitions.json#/definitions/io.k8s.api.core.v1.Probe
+  quantity:
+    $ref: https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.32.2/_definitions.json#/definitions/io.k8s.apimachinery.pkg.api.resource.Quantity
+  securityContext:
+    $ref: https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.32.2/_definitions.json#/definitions/io.k8s.api.core.v1.SecurityContext
+  subject:
+    $ref: https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.32.2/_definitions.json#/definitions/io.k8s.api.rbac.v1.Subject
+  toleration:
+    $ref: https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.32.2/_definitions.json#/definitions/io.k8s.api.core.v1.Toleration

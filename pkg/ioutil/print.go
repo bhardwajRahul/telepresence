@@ -7,8 +7,8 @@ import (
 )
 
 // Print is like Fprint but panics on error.
-func Print(out io.Writer, txt string) int {
-	n, err := fmt.Fprint(out, txt)
+func Print(out io.Writer, args ...any) int {
+	n, err := fmt.Fprint(out, args...)
 	if err != nil {
 		panic(err)
 	}
@@ -16,8 +16,8 @@ func Print(out io.Writer, txt string) int {
 }
 
 // Println is like Fprintln but panics on error.
-func Println(out io.Writer, txt string) int {
-	n, err := fmt.Fprintln(out, txt)
+func Println(out io.Writer, args ...any) int {
+	n, err := fmt.Fprintln(out, args...)
 	if err != nil {
 		panic(err)
 	}

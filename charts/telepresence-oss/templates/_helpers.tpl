@@ -183,7 +183,7 @@ telepresence: manager
 Client RBAC name suffix
 */}}
 {{- define "telepresence.clientRbacName" -}}
-{{ printf "%s-%s" (default (include "telepresence.name" $) .Values.rbac.nameOverride) (include "traffic-manager.namespace" $) }}
+{{ printf "%s-%s" (include "telepresence.name" $) (include "traffic-manager.namespace" $) }}
 {{- end -}}
 
 {{- /*

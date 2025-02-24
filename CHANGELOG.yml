@@ -55,6 +55,12 @@ items:
           The deprecated `--replace` flag still works, but is hidden from the `telepresence intercept` command help, and
           will print a deprecation warning when used.
       - type: feature
+        title: Add json-schema for the Telepresence Helm Chart
+        body: |-
+          Helm can validate a chart using a json-schema using the command `helm lint`, and this schema can be part of
+          the actual Helm chart. The telepresence-oss Helm chart now includes such a schema, and a new
+          `telepresence helm lint` command was added so that linting can be performed using the embedded chart.
+      - type: feature
         title: No dormant container present during replace.
         body: |-
           Telepresence will no longer inject a dormant container during a `telepresence replace` operation. Instead, the
@@ -90,6 +96,11 @@ items:
         body: >-
           The output of the `telepresence list` command will now include the workload kind (deployment, replicaset,
           statefulset, or rollout) in all entries.
+      - type: feature
+        title: Add ability to override the default securityContext for the Telepresence init-container
+        body: >-
+          Users can now use the Helm value `agent.initSecurityContext` to override the default securityContext for the
+          Telepresence init-container.
       - type: change
         title: Make the DNS recursion check configurable and turn it off by default.
         body: >-

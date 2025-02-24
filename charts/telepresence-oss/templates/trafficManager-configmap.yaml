@@ -10,9 +10,11 @@ data:
   client.yaml: |
     {{- toYaml .Values.client | nindent 4 }}
 {{- end }}
-{{- if .Values.intercept.environment }}
+{{- with .Values.intercept }}
+{{- if .environment }}
   agent-env.yaml: |
-    {{- toYaml .Values.intercept.environment | nindent 4 }}
+    {{- toYaml .environment | nindent 4 }}
+{{- end }}
 {{- end }}
   namespace-selector.yaml: |
     {{- toYaml (mustFromJson (include "traffic-manager.namespaceSelector" $)) | nindent 4 }}

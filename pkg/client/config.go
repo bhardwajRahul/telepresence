@@ -183,16 +183,7 @@ func (c *BaseConfig) MarshalYAML() ([]byte, error) {
 }
 
 func UnmarshalJSON(data []byte, into any, rejectUnknown bool) error {
-	opts := []json.Options{
-		json.WithUnmarshalers(
-			json.UnmarshalFromFunc(func(dec *jsontext.Decoder, strategy *k8sapi.AppProtocolStrategy, opts json.Options) error {
-				var s string
-				if err := json.UnmarshalDecode(dec, &s, opts); err != nil {
-					return err
-				}
-				return strategy.EnvDecode(s)
-			})),
-	}
+	var opts []json.Options
 	if rejectUnknown {
 		opts = append(opts, json.RejectUnknownMembers(true))
 	}
@@ -203,11 +194,7 @@ func UnmarshalJSON(data []byte, into any, rejectUnknown bool) error {
 }
 
 func MarshalJSON(value any) ([]byte, error) {
-	return json.Marshal(value, json.WithMarshalers(
-		json.MarshalToFunc[k8sapi.AppProtocolStrategy](func(enc *jsontext.Encoder, strategy k8sapi.AppProtocolStrategy, _ json.Options) error {
-			return enc.WriteToken(jsontext.String(strategy.String()))
-		}),
-	))
+	return json.Marshal(value)
 }
 
 func UnmarshalJSONConfig(data []byte, rejectUnknown bool) (Config, error) {
