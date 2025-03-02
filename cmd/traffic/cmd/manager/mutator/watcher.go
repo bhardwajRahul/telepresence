@@ -2,7 +2,6 @@ package mutator
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"sync/atomic"
 	"time"
@@ -11,10 +10,6 @@ import (
 	"github.com/puzpuzpuz/xsync/v3"
 	"google.golang.org/protobuf/types/known/durationpb"
 	core "k8s.io/api/core/v1"
-	v1 "k8s.io/api/policy/v1"
-	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
-	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 
@@ -41,7 +36,7 @@ type Map interface {
 	IsInactive(podID types.UID) bool
 	Inactivate(podID types.UID)
 	EvictPodsWithAgentConfig(ctx context.Context, wl k8sapi.Workload) error
-	EvictPodsWithAgentConfigMismatch(ctx context.Context, scx agentconfig.SidecarExt) error
+	EvictPodsWithAgentConfigMismatch(ctx context.Context, wl k8sapi.Workload, scx agentconfig.SidecarExt) error
 	EvictAllPodsWithAgentConfig(ctx context.Context, namespace string) error
 
 	RegenerateAgentMaps(ctx context.Context, s string) error
@@ -71,8 +66,8 @@ func Load(ctx context.Context) Map {
 	return cw
 }
 
-// RegenerateAgentMaps load the telepresence-agents config map, regenerates all entries in it,
-// and then, if any of the entries changed, it updates the map.
+// RegenerateAgentMaps regenerates all agent configurations and triggers pod evictions for all pods with
+// an agent config annotation different from the generated one.
 func (c *configWatcher) RegenerateAgentMaps(ctx context.Context, agentImage string) error {
 	gc, err := agentmap.GeneratorConfigFunc(agentImage)
 	if err != nil {
@@ -80,18 +75,16 @@ func (c *configWatcher) RegenerateAgentMaps(ctx context.Context, agentImage stri
 	}
 	nss := namespaces.GetOrGlobal(ctx)
 	for _, ns := range nss {
-		if err = c.regenerateAgentMaps(ctx, ns, gc); err != nil {
+		if err = c.regenerateAgentConfigs(ctx, ns, gc); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// regenerateAgentMaps load the telepresence-agents config map, regenerates all entries in it,
-// and then, if any of the entries changed, it updates the map.
-func (c *configWatcher) regenerateAgentMaps(ctx context.Context, ns string, gc agentmap.GeneratorConfig) error {
+func (c *configWatcher) regenerateAgentConfigs(ctx context.Context, ns string, gc agentmap.GeneratorConfig) error {
 	dlog.Debugf(ctx, "regenerate agent maps %s", whereWeWatch(ns))
-	pods, err := podList(ctx, "", "", ns)
+	evictMap, err := podList(ctx, ns)
 	if err != nil {
 		return err
 	}
@@ -100,42 +93,44 @@ func (c *configWatcher) regenerateAgentMaps(ctx context.Context, ns string, gc a
 		return a.AsDuration() == b.AsDuration()
 	})
 
-	wls := make(map[workloadKey]agentconfig.SidecarExt, len(pods))
-	for _, pod := range pods {
-		cfgJSON, ok := pod.ObjectMeta.Annotations[agentconfig.ConfigAnnotation]
-		if !ok {
-			continue
-		}
-		sce, err := agentconfig.UnmarshalJSON(cfgJSON)
-		if err != nil {
-			dlog.Errorf(ctx, "unable to unmarshal agent config from annotation in pod %s.%s: %v", pod.Name, pod.Namespace, err)
-			continue
-		}
-		ac := sce.AgentConfig()
-		key := workloadKey{
-			name:      ac.WorkloadName,
-			namespace: ac.Namespace,
-			kind:      ac.WorkloadKind,
-		}
-		newSce, ok := wls[key]
-		if !ok && managerutil.GetEnv(ctx).EnabledWorkloadKinds.Contains(ac.WorkloadKind) {
-			wl, err := agentmap.GetWorkload(ctx, ac.WorkloadName, ac.Namespace, ac.WorkloadKind)
-			if err != nil {
-				dlog.Errorf(ctx, "unable to load %s %s.%s", ac.WorkloadKind, ac.WorkloadName, ac.Namespace)
+	for _, wp := range evictMap {
+		wl := wp.wl
+		wls := make(map[workloadKey]agentconfig.SidecarExt, len(wp.pods))
+		podsOfInterest := make([]*core.Pod, 0, len(wp.pods))
+		for _, pod := range wp.pods {
+			cfgJSON, ok := pod.ObjectMeta.Annotations[agentconfig.ConfigAnnotation]
+			if !ok {
 				continue
 			}
-			newSce, err = gc.Generate(ctx, wl, sce)
+			sce, err := agentconfig.UnmarshalJSON(cfgJSON)
 			if err != nil {
-				dlog.Errorf(ctx, "unable to update config for %s %s.%s", ac.WorkloadKind, ac.WorkloadName, ac.Namespace)
+				dlog.Errorf(ctx, "unable to unmarshal agent config from annotation in pod %s.%s: %v", pod.Name, pod.Namespace, err)
 				continue
 			}
-			wls[key] = newSce
-			c.Store(newSce)
+			ac := sce.AgentConfig()
+			key := workloadKey{
+				name:      ac.WorkloadName,
+				namespace: ac.Namespace,
+				kind:      ac.WorkloadKind,
+			}
+			newSce, ok := wls[key]
+			if !ok && managerutil.GetEnv(ctx).EnabledWorkloadKinds.Contains(ac.WorkloadKind) {
+				newSce, err = gc.Generate(ctx, wl, sce)
+				if err != nil {
+					dlog.Errorf(ctx, "unable to update config for %s", wl)
+					continue
+				}
+				wls[key] = newSce
+				c.Store(newSce)
+			}
+			if newSce == nil || !cmp.Equal(newSce, sce, dbpCmp) {
+				podsOfInterest = append(podsOfInterest, pod)
+			}
 		}
-		if newSce == nil || !cmp.Equal(newSce, sce, dbpCmp) {
-			go func() {
-				evictPod(ctx, pod)
-			}()
+		if len(podsOfInterest) > 0 {
+			if err := c.evictPods(ctx, wl, podsOfInterest); err != nil {
+				dlog.Errorf(ctx, "failed to evict pods for %s", wl)
+			}
 		}
 	}
 	return nil
@@ -364,17 +359,15 @@ func (c *configWatcher) startPods(ctx context.Context, ns string) cache.SharedIn
 			pod.Finalizers = nil
 
 			ps := &pod.Status
-			// We're just interested in the podIP/podIPs
-			ps.Conditions = nil
-
 			// Strip everything but the State from the container statuses. We need
 			// the state to determine if a pod is running.
-			cns := pod.Status.ContainerStatuses
+			cns := ps.ContainerStatuses
 			for i := range cns {
 				cns[i] = core.ContainerStatus{
 					State: cns[i].State,
 				}
 			}
+			ps.Conditions = nil
 			ps.EphemeralContainerStatuses = nil
 			ps.HostIPs = nil
 			ps.HostIP = ""
@@ -498,93 +491,6 @@ func (c *configWatcher) deleteMapsAndRolloutNS(ctx context.Context, ns string, i
 	}
 }
 
-func (c *configWatcher) EvictPodsWithAgentConfigMismatch(ctx context.Context, scx agentconfig.SidecarExt) error {
-	ac := scx.AgentConfig()
-	pods, err := podList(ctx, ac.WorkloadKind, ac.AgentName, ac.Namespace)
-	if err != nil {
-		return err
-	}
-	cfgJSON, err := agentconfig.MarshalTight(scx)
-	if err != nil {
-		return err
-	}
-
-	for _, pod := range pods {
-		err = c.evictPodWithAgentConfigMismatch(ctx, pod, cfgJSON)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (c *configWatcher) EvictPodsWithAgentConfig(ctx context.Context, wl k8sapi.Workload) error {
-	pods, err := podList(ctx, wl.GetKind(), wl.GetName(), wl.GetNamespace())
-	if err != nil {
-		return err
-	}
-
-	for _, pod := range pods {
-		err = c.evictPodWithAgentConfigMismatch(ctx, pod, "")
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (c *configWatcher) EvictAllPodsWithAgentConfig(ctx context.Context, namespace string) error {
-	c.agentConfigs.Delete(namespace)
-	pods, err := podList(ctx, "", "", namespace)
-	if err != nil {
-		return err
-	}
-	for _, pod := range pods {
-		err = c.evictPodWithAgentConfigMismatch(ctx, pod, "")
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (c *configWatcher) evictPodWithAgentConfigMismatch(ctx context.Context, pod *core.Pod, cfgJSON string) error {
-	podID := pod.UID
-	if c.isEvicted(podID) {
-		dlog.Debugf(ctx, "Skipping pod %s because it is already deleted", pod.Name)
-		return nil
-	}
-	a := pod.ObjectMeta.Annotations
-	if v, ok := a[agentconfig.ManualInjectAnnotation]; ok && v == "true" {
-		dlog.Tracef(ctx, "Skipping pod %s because it is managed manually", pod.Name)
-		return nil
-	}
-	if a[agentconfig.ConfigAnnotation] == cfgJSON {
-		dlog.Tracef(ctx, "Keeping pod %s because its config is still valid", pod.Name)
-		return nil
-	}
-	var err error
-	c.inactivePods.Compute(podID, func(v inactivation, loaded bool) (inactivation, bool) {
-		if loaded && v.deleted {
-			dlog.Debugf(ctx, "Skipping pod %s because it was deleted by another goroutine", pod.Name)
-			return v, false
-		}
-		evictPod(ctx, pod)
-		return inactivation{Time: time.Now(), deleted: true}, false
-	})
-	return err
-}
-
-func evictPod(ctx context.Context, pod *core.Pod) {
-	dlog.Debugf(ctx, "Evicting pod %s", pod.Name)
-	err := k8sapi.GetK8sInterface(ctx).CoreV1().Pods(pod.Namespace).EvictV1(ctx, &v1.Eviction{
-		ObjectMeta: meta.ObjectMeta{Name: pod.Name, Namespace: pod.Namespace},
-	})
-	if err != nil {
-		dlog.Errorf(ctx, "Failed to evict pod %s: %v", pod.Name, err)
-	}
-}
-
 func (c *configWatcher) Inactivate(podID types.UID) {
 	c.inactivePods.LoadOrCompute(podID, func() inactivation {
 		return inactivation{Time: time.Now()}
@@ -599,50 +505,4 @@ func (c *configWatcher) IsInactive(podID types.UID) bool {
 func (c *configWatcher) isEvicted(podID types.UID) bool {
 	v, ok := c.inactivePods.Load(podID)
 	return ok && v.deleted
-}
-
-func podIsRunning(pod *core.Pod) bool {
-	switch pod.Status.Phase {
-	case core.PodPending, core.PodRunning:
-		return true
-	default:
-		return false
-	}
-}
-
-func podList(ctx context.Context, kind k8sapi.Kind, name, namespace string) ([]*core.Pod, error) {
-	var lister interface {
-		List(selector labels.Selector) (ret []*core.Pod, err error)
-	}
-	api := informer.GetK8sFactory(ctx, namespace).Core().V1().Pods().Lister()
-	if namespace == "" {
-		lister = api
-	} else {
-		lister = api.Pods(namespace)
-	}
-	pods, err := lister.List(labels.Everything())
-	if err != nil {
-		return nil, fmt.Errorf("error listing pods in namespace %s: %v", namespace, err)
-	}
-	enabledWorkloads := managerutil.GetEnv(ctx).EnabledWorkloadKinds
-	var podsOfInterest []*core.Pod
-	for _, pod := range pods {
-		if !podIsRunning(pod) {
-			continue
-		}
-		if podKind, ok := pod.Labels[agentconfig.WorkloadKindLabel]; ok && !enabledWorkloads.Contains(k8sapi.Kind(podKind)) {
-			// Pod's label indicates a workload kind that has been disabled.
-			podsOfInterest = append(podsOfInterest, pod)
-			continue
-		}
-		wl, err := agentmap.FindOwnerWorkload(ctx, k8sapi.Pod(pod), enabledWorkloads)
-		if err != nil {
-			if !k8sErrors.IsNotFound(err) {
-				return nil, err
-			}
-		} else if (kind == "" || wl.GetKind() == kind) && (name == "" || wl.GetName() == name) {
-			podsOfInterest = append(podsOfInterest, pod)
-		}
-	}
-	return podsOfInterest, nil
 }

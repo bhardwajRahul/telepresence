@@ -19,14 +19,6 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/subnet"
 )
 
-// PodLister helps list Pods.
-// All objects returned here must be treated as read-only.
-type PodLister interface {
-	// List lists all Pods in the indexer.
-	// Objects returned here must be treated as read-only.
-	List(selector labels.Selector) (ret []*corev1.Pod, err error)
-}
-
 type podWatcher struct {
 	ipsMap    map[netip.Addr]struct{}
 	timer     *time.Timer

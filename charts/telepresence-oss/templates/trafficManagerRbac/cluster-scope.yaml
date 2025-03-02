@@ -56,6 +56,9 @@ rules:
   - get
   - list
   - watch
+{{- if .agentInjector.enabled }}
+  - patch
+{{- end }}
 {{- if .workloads.argoRollouts.enabled }}
 - apiGroups:
   - "argoproj.io"
@@ -65,6 +68,9 @@ rules:
   - get
   - list
   - watch
+{{- if .agentInjector.enabled }}
+  - patch
+{{- end }}
 {{- end }}
 - apiGroups:
     - "events.k8s.io"

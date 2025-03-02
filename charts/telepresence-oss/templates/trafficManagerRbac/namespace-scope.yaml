@@ -73,6 +73,9 @@ rules:
   - get
   - list
   - watch
+{{- if $interceptEnabled }}
+  - patch
+{{- end }}
 {{- if $argoRolloutsEnabled }}
 - apiGroups:
   - "argoproj.io"

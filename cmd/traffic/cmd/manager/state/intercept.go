@@ -310,7 +310,9 @@ func (s *state) AddIntercept(ctx context.Context, cir *rpc.CreateInterceptReques
 			return nil
 		})
 	}
-	err = s.AddInterceptFinalizer(interceptID, s.restoreAppContainer)
+	err = s.AddInterceptFinalizer(interceptID, func(ctx context.Context, interceptInfo *rpc.InterceptInfo) error {
+		return s.restoreAppContainer(ctx, interceptInfo, wl)
+	})
 	if err != nil {
 		dlog.Errorf(ctx, "Failed to add finalizer for %s: %v", interceptID, err)
 	}
@@ -414,7 +416,7 @@ func (s *state) ensureAgent(parentCtx context.Context, wl k8sapi.Workload, exten
 	ac *agentconfig.Sidecar, as []*AgentSession, err error,
 ) {
 	if agentmap.TrafficManagerSelector.Matches(labels.Set(wl.GetLabels())) {
-		msg := fmt.Sprintf("deployment %s.%s is the Telepresence Traffic Manager. It can not have a traffic-agent", wl.GetName(), wl.GetNamespace())
+		msg := fmt.Sprintf("%s is the Telepresence Traffic Manager. It can not have a traffic-agent", wl)
 		dlog.Error(parentCtx, msg)
 		return nil, nil, status.Error(codes.FailedPrecondition, msg)
 	}
@@ -422,7 +424,7 @@ func (s *state) ensureAgent(parentCtx context.Context, wl k8sapi.Workload, exten
 	if !managerutil.AgentInjectorEnabled(parentCtx) {
 		cfgJSON, ok := wl.GetPodTemplate().Annotations[agentconfig.ConfigAnnotation]
 		if !ok {
-			msg := fmt.Sprintf("agent-injector is disabled and no agent has been added manually for %s.%s", wl.GetName(), wl.GetNamespace())
+			msg := fmt.Sprintf("agent-injector is disabled and no agent has been added manually for %s", wl)
 			return nil, nil, status.Error(codes.FailedPrecondition, msg)
 		}
 		sce, err := agentconfig.UnmarshalJSON(cfgJSON)
@@ -463,7 +465,7 @@ func (s *state) ensureAgent(parentCtx context.Context, wl k8sapi.Workload, exten
 	if err != nil {
 		return nil, nil, err
 	}
-	err = mutator.GetMap(ctx).EvictPodsWithAgentConfigMismatch(ctx, sce)
+	err = mutator.GetMap(ctx).EvictPodsWithAgentConfigMismatch(ctx, wl, sce)
 	if err != nil {
 		dlog.Errorf(ctx, "failed to inactivate pods: %v", err)
 		return nil, nil, err
@@ -500,13 +502,13 @@ func (s *state) dropAgentConfig(
 	mutator.GetMap(ctx).Delete(wl.GetName(), wl.GetNamespace())
 }
 
-func (s *state) restoreAppContainer(ctx context.Context, ii *rpc.InterceptInfo) (err error) {
+func (s *state) restoreAppContainer(ctx context.Context, ii *rpc.InterceptInfo, wl k8sapi.Workload) error {
 	dlog.Debugf(ctx, "Restoring app container for %s", ii.Id)
 	spec := ii.Spec
 	n := spec.Agent
 	ns := spec.Namespace
 	mm := mutator.GetMap(ctx)
-	_, err = mm.Update(n, ns, func(sce agentconfig.SidecarExt) (ext agentconfig.SidecarExt, err error) {
+	_, err := mm.Update(n, ns, func(sce agentconfig.SidecarExt) (ext agentconfig.SidecarExt, err error) {
 		if sce == nil {
 			return nil, nil
 		}
@@ -527,7 +529,7 @@ func (s *state) restoreAppContainer(ctx context.Context, ii *rpc.InterceptInfo) 
 		// The pods for this workload will be killed once the new updated sidecar
 		// reaches the configmap. We inactivate them now, so that they don't continue to
 		// review intercepts.
-		err = mm.EvictPodsWithAgentConfigMismatch(ctx, sce)
+		err = mm.EvictPodsWithAgentConfigMismatch(ctx, wl, sce)
 		return sce, err
 	})
 	return err
@@ -550,7 +552,7 @@ func (s *state) createAgentConfig(ctx context.Context, wl k8sapi.Workload, agent
 	if gc, err = agentmap.GeneratorConfigFunc(agentImage); err != nil {
 		return nil, err
 	}
-	dlog.Debugf(ctx, "generating new agent config for %s.%s", wl.GetName(), wl.GetNamespace())
+	dlog.Debugf(ctx, "generating new agent config for %s", wl)
 	if sce, err = gc.Generate(ctx, wl, nil); err != nil {
 		return nil, err
 	}
@@ -573,7 +575,7 @@ func (s *state) getOrCreateAgentConfig(
 		return nil, err
 	}
 	if !enabled {
-		return nil, errcat.User.Newf("%s %s.%s is not interceptable", wl.GetKind(), wl.GetName(), wl.GetNamespace())
+		return nil, errcat.User.Newf("%s is not interceptable", wl)
 	}
 
 	agentImage := managerutil.GetAgentImage(ctx)
@@ -597,7 +599,7 @@ func (s *state) getOrCreateAgentConfig(
 			if ac.AgentImage != agentImage {
 				ac.AgentImage = agentImage
 			}
-			dlog.Debugf(ctx, "found existing agent config for %s.%s", wl.GetName(), wl.GetNamespace())
+			dlog.Debugf(ctx, "found existing agent config for %s", wl)
 		} else {
 			sce, err = s.createAgentConfig(ctx, wl, agentImage)
 			if err != nil {
@@ -620,7 +622,7 @@ func (s *state) getOrCreateAgentConfig(
 		}
 
 		if dryRun {
-			dlog.Debugf(ctx, "dry run for getOrCreateAgentConfig %s.%s returns", wl.GetName(), wl.GetNamespace())
+			dlog.Debugf(ctx, "dry run for getOrCreateAgentConfig %s returns", wl)
 			return sce, nil
 		}
 		return sce, nil

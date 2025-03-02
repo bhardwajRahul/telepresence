@@ -134,7 +134,7 @@ func (a *agentInjector) Inject(ctx context.Context, req *admission.AdmissionRequ
 			uwkError := k8sapi.UnsupportedWorkloadKindError("")
 			switch {
 			case k8sErrors.IsNotFound(err):
-				dlog.Debugf(ctx, "No workload owner found for pod %s.%s", pod.Name, pod.Namespace)
+				dlog.Tracef(ctx, "No workload owner found for pod %s.%s", pod.Name, pod.Namespace)
 			case errors.As(err, &uwkError):
 				dlog.Debugf(ctx, "Workload owner with %s found for pod %s.%s", uwkError.Error(), pod.Name, pod.Namespace)
 			default:
@@ -146,19 +146,21 @@ func (a *agentInjector) Inject(ctx context.Context, req *admission.AdmissionRequ
 		scx = a.agentConfigs.Get(wl.GetName(), wl.GetNamespace())
 		switch {
 		case scx == nil:
-			dlog.Debugf(ctx, "Skipping %s.%s (no agent config)", wl.GetName(), wl.GetNamespace())
+			dlog.Tracef(ctx, "Skipping %s (no agent config)", wl)
 			return nil, nil
 		case scx.AgentConfig().Manual:
-			dlog.Debugf(ctx, "Skipping webhook where agent is manually injected %s.%s", wl.GetName(), wl.GetNamespace())
+			dlog.Tracef(ctx, "Skipping webhook where agent is manually injected %s", wl.GetNamespace())
 			return nil, nil
 		}
 	default:
 		return nil, fmt.Errorf("invalid value %q for annotation %s", ia, agentconfig.InjectAnnotation)
 	}
+	return createPatch(ctx, scx.AgentConfig(), pod)
+}
 
+func createPatch(ctx context.Context, config *agentconfig.Sidecar, pod *core.Pod) (PatchOps, error) {
 	var patches PatchOps
 	var annotations map[string]string
-	config := scx.AgentConfig()
 	patches = addInitContainer(pod, config, patches)
 	patches, annotations = addAgentContainer(ctx, pod, config, patches)
 	patches = addPullSecrets(pod, config, patches)

@@ -85,7 +85,7 @@ func (c *configWatcher) updateWorkload(ctx context.Context, wl, oldWl k8sapi.Wor
 		if scx == nil {
 			action = "Regenerating"
 		}
-		dlog.Debugf(ctx, "%s config entry for %s %s.%s", action, wl.GetKind(), wl.GetName(), wl.GetNamespace())
+		dlog.Debugf(ctx, "%s config entry for %s", action, wl)
 
 		scx, err = cfg.Generate(ctx, wl, scx)
 		if err != nil {
@@ -98,9 +98,8 @@ func (c *configWatcher) updateWorkload(ctx context.Context, wl, oldWl k8sapi.Wor
 		}
 
 		c.Store(scx)
-		ac := scx.AgentConfig()
-		dlog.Debugf(ctx, "deleting pods with config mismatch for %s %s.%s", ac.WorkloadKind, ac.WorkloadName, ac.Namespace)
-		err = c.EvictPodsWithAgentConfigMismatch(ctx, scx)
+		dlog.Debugf(ctx, "deleting pods with config mismatch for %s", wl)
+		err = c.EvictPodsWithAgentConfigMismatch(ctx, wl, scx)
 		if err != nil {
 			dlog.Error(ctx, err)
 		}

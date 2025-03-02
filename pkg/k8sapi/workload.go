@@ -232,6 +232,10 @@ func StatefulSetImpl(o Object) (*apps.StatefulSet, bool) {
 	return nil, false
 }
 
+func String(o Object) string {
+	return fmt.Sprintf("%s %s.%s", o.GetKind(), o.GetName(), o.GetNamespace())
+}
+
 type deployment struct {
 	*apps.Deployment
 }
@@ -285,6 +289,10 @@ func (o *deployment) Replicas() int {
 
 func (o *deployment) Selector() (labels.Selector, error) {
 	return meta.LabelSelectorAsSelector(o.Spec.Selector)
+}
+
+func (o *deployment) String() string {
+	return String(o)
 }
 
 func (o *deployment) Update(c context.Context) error {
@@ -363,6 +371,10 @@ func (o *rollout) Selector() (labels.Selector, error) {
 	return meta.LabelSelectorAsSelector(o.Spec.Selector)
 }
 
+func (o *rollout) String() string {
+	return String(o)
+}
+
 func (o *rollout) Update(c context.Context) error {
 	d, err := o.ki(c).Update(c, o.Rollout, meta.UpdateOptions{})
 	if err == nil {
@@ -435,6 +447,10 @@ func (o *replicaSet) Selector() (labels.Selector, error) {
 	return meta.LabelSelectorAsSelector(o.Spec.Selector)
 }
 
+func (o *replicaSet) String() string {
+	return String(o)
+}
+
 func (o *replicaSet) Update(c context.Context) error {
 	d, err := o.ki(c).Update(c, o.ReplicaSet, meta.UpdateOptions{})
 	if err == nil {
@@ -505,6 +521,10 @@ func (o *statefulSet) Replicas() int {
 
 func (o *statefulSet) Selector() (labels.Selector, error) {
 	return meta.LabelSelectorAsSelector(o.Spec.Selector)
+}
+
+func (o *statefulSet) String() string {
+	return String(o)
 }
 
 func (o *statefulSet) Update(c context.Context) error {
