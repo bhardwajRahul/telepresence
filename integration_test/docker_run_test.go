@@ -11,7 +11,6 @@ import (
 	"github.com/datawire/dlib/dcontext"
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
-	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/daemon"
 )
 
 func (s *singleServiceSuite) Test_DockerRun_HostDaemon() {
@@ -37,6 +36,8 @@ func (s *singleServiceSuite) Test_DockerRun_HostDaemon() {
 			"--docker-run", "--port", "9070:8080", "--", "--rm", "-v", abs+":/usr/src/app", tag)
 		if len(stderr) > 0 {
 			dlog.Debugf(ctx, "stderr = %q", stderr)
+		} else {
+			s.CapturePodLogs(ctx, svc, "traffic-agent", s.AppNamespace())
 		}
 	}
 
@@ -51,12 +52,12 @@ func (s *singleServiceSuite) Test_DockerRun_HostDaemon() {
 		s.Eventually(
 			// condition
 			func() bool {
-				out, err := itest.Output(ctx, "curl", "--silent", "--max-time", "1", svc)
+				out, err := itest.Output(ctx, "curl", "--silent", "--max-time", "1", "http://"+svc)
+				dlog.Info(ctx, out)
 				if err != nil {
 					dlog.Error(ctx, err)
 					return false
 				}
-				dlog.Info(ctx, out)
 				return expectedOutput.MatchString(out)
 			},
 			10*time.Second, // waitFor
@@ -138,9 +139,6 @@ func (s *singleServiceSuite) Test_DockerRun_HostDaemon() {
 }
 
 func (s *dockerDaemonSuite) Test_DockerRun_DockerDaemon() {
-	if s.IsCI() && !(goRuntime.GOOS == "linux" && goRuntime.GOARCH == "amd64") {
-		s.T().Skip("CI can't run linux docker containers inside non-linux runners")
-	}
 	svc := "echo"
 	ctx := s.Context()
 	s.ApplyEchoService(ctx, svc, 80)
@@ -153,13 +151,10 @@ func (s *dockerDaemonSuite) Test_DockerRun_DockerDaemon() {
 	match := regexp.MustCompile(`Connected to context ?(.+),\s*namespace (\S+)\s+\(`).FindStringSubmatch(stdout)
 	require.Len(match, 3)
 
-	daemonID, err := daemon.NewIdentifier("", match[1], match[2], true)
-	require.NoError(err)
-	daemonName := daemonID.ContainerName()
 	tag := "telepresence/echo-test"
 	testDir := "testdata/echo-server"
 
-	_, err = itest.Output(ctx, "docker", "build", "-t", tag, testDir)
+	_, err := itest.Output(ctx, "docker", "build", "-t", tag, testDir)
 	require.NoError(err)
 
 	abs, err := filepath.Abs(testDir)
@@ -167,13 +162,21 @@ func (s *dockerDaemonSuite) Test_DockerRun_DockerDaemon() {
 
 	runDockerRun := func(ctx context.Context, wch chan<- struct{}) {
 		defer close(wch)
-		_, _, _ = itest.Telepresence(ctx, "intercept", "--mount", "false", svc,
+		so, se, err := itest.Telepresence(ctx, "intercept", "--mount", "false", svc,
 			"--docker-run", "--", "--rm", "-v", abs+":/usr/src/app", tag)
+		dlog.Info(ctx, so)
+		if se != "" {
+			dlog.Error(ctx, se)
+		}
+		if err != nil {
+			dlog.Error(ctx, err.Error())
+		}
 	}
 
 	assertInterceptResponse := func(ctx context.Context) {
 		s.Eventually(func() bool {
 			stdout, _, err := itest.Telepresence(ctx, "list", "--intercepts")
+			dlog.Info(ctx, stdout)
 			return err == nil && strings.Contains(stdout, svc+": intercepted")
 		}, 30*time.Second, 3*time.Second)
 
@@ -181,14 +184,13 @@ func (s *dockerDaemonSuite) Test_DockerRun_DockerDaemon() {
 		s.Eventually(
 			// condition
 			func() bool {
-				out, err := itest.Output(ctx,
-					"docker", "run", "--network", "container:"+daemonName, "--rm", "curlimages/curl", "--silent", "--max-time", "1", svc)
+				so, _, err := itest.Telepresence(ctx, "curl", "--silent", "--max-time", "1", "http://"+svc)
+				dlog.Info(ctx, so)
 				if err != nil {
-					dlog.Errorf(ctx, "%s:%v", out, err)
+					dlog.Error(ctx, err)
 					return false
 				}
-				dlog.Info(ctx, out)
-				return expectedOutput.MatchString(out)
+				return expectedOutput.MatchString(so)
 			},
 			10*time.Second, // waitFor
 			2*time.Second,  // polling interval
@@ -209,6 +211,7 @@ func (s *dockerDaemonSuite) Test_DockerRun_DockerDaemon() {
 		soft, softCancel := context.WithCancel(dcontext.WithSoftness(ctx))
 		wch := make(chan struct{})
 		go runDockerRun(soft, wch)
+		s.CapturePodLogs(ctx, svc, "traffic-agent", s.AppNamespace())
 		assertInterceptResponse(ctx)
 		softCancel()
 		assertNotIntercepted(ctx)
@@ -219,6 +222,7 @@ func (s *dockerDaemonSuite) Test_DockerRun_DockerDaemon() {
 		ctx := s.Context()
 		wch := make(chan struct{})
 		go runDockerRun(ctx, wch)
+		s.CapturePodLogs(ctx, svc, "traffic-agent", s.AppNamespace())
 		assertInterceptResponse(ctx)
 		itest.TelepresenceOk(ctx, "leave", svc)
 		select {
@@ -234,6 +238,7 @@ func (s *dockerDaemonSuite) Test_DockerRun_DockerDaemon() {
 		ctx := s.Context()
 		wch := make(chan struct{})
 		go runDockerRun(ctx, wch)
+		s.CapturePodLogs(ctx, svc, "traffic-agent", s.AppNamespace())
 		assertInterceptResponse(ctx)
 		itest.TelepresenceDisconnectOk(ctx)
 		select {
@@ -264,10 +269,7 @@ func (s *dockerDaemonSuite) Test_DockerRun_DockerDaemon() {
 
 func (s *dockerDaemonSuite) Test_DockerRun_VolumePresent() {
 	ctx := s.Context()
-	s.KubectlOk(ctx, "create", "serviceaccount", testIamServiceAccount)
-	defer s.KubectlOk(ctx, "delete", "serviceaccount", testIamServiceAccount)
-
-	s.ApplyApp(ctx, "hello-w-volumes", "deploy/hello")
+	s.ApplyTemplate(ctx, filepath.Join("testdata", "k8s", "hello-w-volumes.goyaml"), nil)
 	defer s.DeleteSvcAndWorkload(ctx, "deploy", "hello")
 
 	s.TelepresenceConnect(ctx, "--docker")
@@ -279,4 +281,16 @@ func (s *dockerDaemonSuite) Test_DockerRun_VolumePresent() {
 	s.Empty(stderr)
 	dlog.Infof(ctx, "stdout = %s", stdout)
 	s.True(strings.HasSuffix(stdout, "\nusername"))
+}
+
+func (s *dockerDaemonSuite) Test_DockerRunCommand() {
+	ctx := s.Context()
+	require := s.Require()
+	s.TelepresenceConnect(ctx, "--docker", "--hostname", "cicero")
+	defer itest.TelepresenceQuitOk(ctx)
+
+	stdout, _, err := itest.Telepresence(ctx, "docker-run", "--rm", "busybox", "ip", "r")
+	require.NoError(err)
+	dlog.Infof(ctx, "stdout = %s", stdout)
+	s.Contains(stdout, "dev tel0")
 }

@@ -1,10 +1,10 @@
 package mutator
 
-import "github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
+import (
+	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
+)
 
 const (
-	DomainPrefix           = "telepresence.getambassador.io/"
-	InjectAnnotation       = DomainPrefix + "inject-" + agentconfig.ContainerName
-	ServiceNameAnnotation  = DomainPrefix + "inject-service-name"
-	ManualInjectAnnotation = DomainPrefix + "manually-injected"
+	InjectAnnotation      = agentconfig.DomainPrefix + "inject-" + agentconfig.ContainerName
+	ServiceNameAnnotation = agentconfig.DomainPrefix + "inject-service-name"
 )

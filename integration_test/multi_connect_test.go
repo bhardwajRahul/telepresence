@@ -2,7 +2,6 @@ package integration_test
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-json-experiment/json"
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/datawire/dlib/dlog"
@@ -18,11 +18,12 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/daemon"
 	"github.com/telepresenceio/telepresence/v2/pkg/filelocation"
 	"github.com/telepresenceio/telepresence/v2/pkg/ioutil"
+	"github.com/telepresenceio/telepresence/v2/pkg/labels"
 )
 
 type multiConnectSuite struct {
 	itest.Suite
-	itest.NamespacePair
+	itest.TrafficManager
 	appSpace2  string
 	mgrSpace2  string
 	handlerTag string
@@ -34,8 +35,8 @@ func (s *multiConnectSuite) SuiteName() string {
 
 func init() {
 	// This will give us one namespace pair with a traffic-manager installed.
-	itest.AddTrafficManagerSuite("-1", func(h itest.NamespacePair) itest.TestingSuite {
-		return &multiConnectSuite{Suite: itest.Suite{Harness: h}, NamespacePair: h}
+	itest.AddTrafficManagerSuite("-1", func(h itest.TrafficManager) itest.TestingSuite {
+		return &multiConnectSuite{Suite: itest.Suite{Harness: h}, TrafficManager: h}
 	})
 }
 
@@ -54,7 +55,7 @@ func (s *multiConnectSuite) SetupSuite() {
 	const svc = "echo"
 	appData := itest.AppData{
 		AppName: svc,
-		Image:   "jmalloc/echo-server:0.1.0",
+		Image:   "ghcr.io/telepresenceio/echo-server:latest",
 		Ports: []itest.AppPort{
 			{
 				ServicePortNumber: 80,
@@ -75,7 +76,7 @@ func (s *multiConnectSuite) SetupSuite() {
 		itest.ApplyAppTemplate(ctx, s.appSpace2, &appData)
 	}()
 
-	ctx2 := itest.WithNamespaces(ctx, &itest.Namespaces{Namespace: s.mgrSpace2, ManagedNamespaces: []string{s.appSpace2}})
+	ctx2 := itest.WithNamespaces(ctx, &itest.Namespaces{Namespace: s.mgrSpace2, Selector: labels.SelectorFromNames(s.appSpace2)})
 	err := itest.Kubectl(ctx2, s.mgrSpace2, "apply", "-f", filepath.Join(itest.GetOSSRoot(ctx2), "testdata", "k8s", "client_sa.yaml"))
 	require.NoError(err, "failed to create connect ServiceAccount")
 
@@ -94,7 +95,7 @@ func (s *multiConnectSuite) SetupSuite() {
 }
 
 func (s *multiConnectSuite) TearDownSuite() {
-	ctx2 := itest.WithNamespaces(s.Context(), &itest.Namespaces{Namespace: s.mgrSpace2, ManagedNamespaces: []string{s.appSpace2}})
+	ctx2 := itest.WithNamespaces(s.Context(), &itest.Namespaces{Namespace: s.mgrSpace2, Selector: labels.SelectorFromNames(s.appSpace2)})
 	s.UninstallTrafficManager(ctx2, s.mgrSpace2)
 	itest.DeleteNamespaces(ctx2, s.appSpace2, s.mgrSpace2)
 }
@@ -195,16 +196,15 @@ func (s *multiConnectSuite) doubleConnectCheck(ctx1, ctx2 context.Context, n1, n
 		s.Eventually(
 			// condition
 			func() bool {
-				out, err := itest.Output(ctx,
-					"docker", "run", "--network", "container:"+"tp-"+cn, "--rm", "curlimages/curl", "--silent", "--max-time", "2", svc)
+				ot, et, err := itest.Telepresence(ctx, "--use", cn, "curl", "--silent", "--max-time", "2", svc)
 				if err != nil {
-					dlog.Errorf(ctx, "%s:%v", out, err)
+					dlog.Errorf(ctx, "%s%s:%v", ot, et, err)
 					return false
 				}
-				dlog.Info(ctx, out)
-				return expectedOutput.MatchString(out)
+				dlog.Info(ctx, ot)
+				return expectedOutput.MatchString(ot)
 			},
-			10*time.Second, // waitFor
+			20*time.Second, // waitFor
 			3*time.Second,  // polling interval
 			`body of %q matches %q`, "http://"+svc, expectedOutput,
 		)

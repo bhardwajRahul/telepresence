@@ -3,13 +3,14 @@ package informer
 import (
 	"context"
 
+	"github.com/puzpuzpuz/xsync/v3"
 	"k8s.io/client-go/informers"
 
 	argorolloutsinformer "github.com/datawire/argo-rollouts-go-client/pkg/client/informers/externalversions"
-	"github.com/datawire/k8sapi/pkg/k8sapi"
+	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 )
 
-type factoryKey string
+type factoryKey struct{}
 
 func getOpts(ns string) (k8sOpts []informers.SharedInformerOption, argoOpts []argorolloutsinformer.SharedInformerOption) {
 	if ns != "" {
@@ -21,25 +22,36 @@ func getOpts(ns string) (k8sOpts []informers.SharedInformerOption, argoOpts []ar
 }
 
 func WithFactory(ctx context.Context, ns string) context.Context {
-	k8sOpts, argoOpts := getOpts(ns)
-	i := k8sapi.GetJoinedClientSetInterface(ctx)
-	k8sFactory := informers.NewSharedInformerFactoryWithOptions(i, 0, k8sOpts...)
-	argoRolloutFactory := argorolloutsinformer.NewSharedInformerFactoryWithOptions(i, 0, argoOpts...)
-	return context.WithValue(ctx, factoryKey(ns), NewDefaultGlobalFactory(k8sFactory, argoRolloutFactory))
+	if _, ok := ctx.Value(factoryKey{}).(*xsync.MapOf[string, GlobalFactory]); !ok {
+		ctx = context.WithValue(ctx, factoryKey{}, xsync.NewMapOf[string, GlobalFactory]())
+		if ns == "" {
+			// The cluster wide informer must be created when it is requested as the initial informer because it will act as a
+			// proxy for all other requested informers.
+			GetFactory(ctx, ns)
+		}
+	}
+	return ctx
 }
 
 func GetFactory(ctx context.Context, ns string) GlobalFactory {
-	if f, ok := ctx.Value(factoryKey(ns)).(GlobalFactory); ok {
-		return f
+	fm, ok := ctx.Value(factoryKey{}).(*xsync.MapOf[string, GlobalFactory])
+	if !ok {
+		return nil
 	}
-	// Check if cluster-global a factory is available, unless that was what was
-	// originally requested.
-	if ns != "" {
-		if f, ok := ctx.Value(factoryKey("")).(GlobalFactory); ok {
-			return f
+	gf, _ := fm.LoadOrCompute(ns, func() GlobalFactory {
+		if ns != "" {
+			// Return the cluster wide factory if one exists.
+			if cw, ok := fm.Load(""); ok {
+				return cw
+			}
 		}
-	}
-	return nil
+		k8sOpts, argoOpts := getOpts(ns)
+		i := k8sapi.GetJoinedClientSetInterface(ctx)
+		k8sFactory := informers.NewSharedInformerFactoryWithOptions(i, 0, k8sOpts...)
+		argoRolloutFactory := argorolloutsinformer.NewSharedInformerFactoryWithOptions(i, 0, argoOpts...)
+		return NewDefaultGlobalFactory(k8sFactory, argoRolloutFactory)
+	})
+	return gf
 }
 
 func GetK8sFactory(ctx context.Context, ns string) informers.SharedInformerFactory {

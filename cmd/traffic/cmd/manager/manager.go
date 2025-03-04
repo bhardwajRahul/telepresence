@@ -3,18 +3,17 @@ package manager
 import (
 	"context"
 	"fmt"
-	"net/http"
+	"net"
 	"os"
+	"runtime/debug"
 	"slices"
-	"strings"
+	"strconv"
 	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
-	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
@@ -24,14 +23,17 @@ import (
 	argorollouts "github.com/datawire/argo-rollouts-go-client/pkg/client/clientset/versioned"
 	"github.com/datawire/dlib/dhttp"
 	"github.com/datawire/dlib/dlog"
-	"github.com/datawire/k8sapi/pkg/k8sapi"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/manager"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/config"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/mutator"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/namespaces"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/state"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
+	"github.com/telepresenceio/telepresence/v2/pkg/grpc/server"
 	"github.com/telepresenceio/telepresence/v2/pkg/informer"
 	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
-	"github.com/telepresenceio/telepresence/v2/pkg/tracing"
+	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/v2/pkg/version"
 )
 
@@ -64,31 +66,17 @@ func Main(ctx context.Context, _ ...string) error {
 }
 
 func MainWithEnv(ctx context.Context) (err error) {
+	debug.SetTraceback("single")
 	defer runtime.RecoverFromPanic(&err)
 
 	dlog.Infof(ctx, "%s %s [uid:%d,gid:%d]", DisplayName, version.Version, os.Getuid(), os.Getgid())
 
 	env := managerutil.GetEnv(ctx)
-	var tracer *tracing.TraceServer
-
-	if env.TracingGrpcPort != 0 {
-		tracer, err = tracing.NewTraceServer(ctx, "traffic-manager",
-			attribute.String("tel2.agent-image", env.QualifiedAgentImage()),
-			attribute.String("tel2.managed-namespaces", strings.Join(env.ManagedNamespaces, ",")),
-			attribute.String("k8s.namespace", env.ManagerNamespace),
-			attribute.String("k8s.pod-ip", env.PodIP.String()),
-		)
-		if err != nil {
-			return err
-		}
-		defer tracer.Shutdown(ctx)
-	}
 
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		return fmt.Errorf("unable to get the Kubernetes InClusterConfig: %w", err)
 	}
-	cfg.WrapTransport = tracing.NewWrapperFunc()
 	ki, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		return fmt.Errorf("unable to create the Kubernetes Interface from InClusterConfig: %w", err)
@@ -97,24 +85,41 @@ func MainWithEnv(ctx context.Context) (err error) {
 	if err != nil {
 		return fmt.Errorf("unable to create the Argo Rollouts Interface from InClusterConfig: %w", err)
 	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	ctx = k8sapi.WithJoinedClientSetInterface(ctx, ki, ari)
 
-	// Ensure that the manager has access to shard informer factories for all relevant namespaces.
+	configWatcher := config.NewWatcher(env.ManagerNamespace)
+	go func() {
+		if err := configWatcher.Run(ctx); err != nil {
+			dlog.Error(ctx, err)
+		}
+		cancel()
+	}()
+
+	ctx, err = namespaces.InitContext(ctx, configWatcher.SelectorChannel())
+	if err != nil {
+		return err
+	}
+
+	// Ensure that the manager has access to shared informer factories for all relevant namespaces.
 	//
 	// This will make the informers more verbose. Good for debugging
 	// l := klog.Level(6)
 	// _ = l.Set("6")
 	mgrFactory := false
-	if len(env.ManagedNamespaces) == 0 {
-		ctx = informer.WithFactory(ctx, "")
-	} else {
-		for _, ns := range env.ManagedNamespaces {
-			ctx = informer.WithFactory(ctx, ns)
-		}
-		if !slices.Contains(env.ManagedNamespaces, env.ManagerNamespace) {
-			mgrFactory = true
-			ctx = informer.WithFactory(ctx, env.ManagerNamespace)
-		}
+	mns := namespaces.GetOrGlobal(ctx)
+	global := len(mns) == 1 && mns[0] == ""
+	if global {
+		dlog.Debug(ctx, "Using cluster wide informers")
+	}
+	for _, ns := range mns {
+		ctx = informer.WithFactory(ctx, ns)
+	}
+	if !(global || slices.Contains(mns, env.ManagerNamespace)) {
+		mgrFactory = true
+		ctx = informer.WithFactory(ctx, env.ManagerNamespace)
 	}
 
 	var injectorCertGetter mutator.InjectorCertGetter
@@ -135,16 +140,14 @@ func MainWithEnv(ctx context.Context) (err error) {
 		f.WaitForCacheSync(ctx.Done())
 	}
 
-	mgr, g, err := NewServiceFunc(ctx)
+	mgr, g, err := NewServiceFunc(ctx, configWatcher)
 	if err != nil {
 		return fmt.Errorf("unable to initialize traffic manager: %w", err)
 	}
 
-	g.Go("cli-config", mgr.runConfigWatcher)
-
 	// Serve HTTP (including gRPC)
 	g.Go("httpd", mgr.serveHTTP)
-
+	g.Go("config", namespaces.Listen)
 	g.Go("prometheus", mgr.servePrometheus)
 
 	if managerutil.AgentInjectorEnabled(ctx) {
@@ -157,12 +160,6 @@ func MainWithEnv(ctx context.Context) (err error) {
 	}
 
 	g.Go("session-gc", mgr.runSessionGCLoop)
-
-	if tracer != nil {
-		g.Go("tracer-grpc", func(c context.Context) error {
-			return tracer.ServeGrpc(c, env.TracingGrpcPort)
-		})
-	}
 
 	// Wait for exit
 	return g.Wait()
@@ -253,11 +250,11 @@ func (s *service) servePrometheus(ctx context.Context) error {
 			"Flag to indicate when an intercept is active. 1 for active, 0 for not active.", append(labels, "workload")),
 	)
 
-	s.state.SetAllClientSessionsFinalizer(func(client *rpc.ClientInfo) {
+	s.state.SetAllClientSessionsFinalizer(func(client *state.ClientSession) {
 		SetGauge(s.state.GetConnectActiveStatus(), client.Name, client.InstallId, nil, 0)
 	})
 
-	s.state.SetAllInterceptsFinalizer(func(client *rpc.ClientInfo, workload *string) {
+	s.state.SetAllInterceptsFinalizer(func(client *state.ClientSession, workload *string) {
 		SetGauge(s.state.GetInterceptActiveStatus(), client.Name, client.InstallId, workload, 0)
 	})
 
@@ -276,41 +273,18 @@ func (s *service) serveHTTP(ctx context.Context) error {
 	env := managerutil.GetEnv(ctx)
 	host := env.ServerHost
 	port := env.ServerPort
-	opts := []grpc.ServerOption{
-		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+	l, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(int(port))))
+	if err != nil {
+		return err
 	}
+
+	var opts []grpc.ServerOption
 	if mz, ok := env.MaxReceiveSize.AsInt64(); ok {
 		opts = append(opts, grpc.MaxRecvMsgSize(int(mz)))
 	}
-
-	grpcHandler := grpc.NewServer(opts...)
-	httpHandler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Hello World from: %s\n", r.URL.Path)
-	}))
-
-	lg := dlog.StdLogger(ctx, dlog.MaxLogLevel(ctx))
-	addr := iputil.JoinHostPort(host, port)
-	if host == "" {
-		lg.SetPrefix(fmt.Sprintf("grpc-api:%d", port))
-	} else {
-		lg.SetPrefix(fmt.Sprintf("grpc-api %s", addr))
-	}
-	sc := &dhttp.ServerConfig{
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.ProtoMajor == 2 && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
-				atomic.AddInt32(&s.activeGrpcRequests, 1)
-				grpcHandler.ServeHTTP(w, r)
-				atomic.AddInt32(&s.activeGrpcRequests, -1)
-			} else {
-				atomic.AddInt32(&s.activeHttpRequests, 1)
-				httpHandler.ServeHTTP(w, r)
-				atomic.AddInt32(&s.activeHttpRequests, -1)
-			}
-		}),
-		ErrorLog: lg,
-	}
-	s.self.RegisterServers(grpcHandler)
-	return sc.ListenAndServe(ctx, fmt.Sprintf("%s:%d", host, port))
+	svc := server.New(ctx, opts...)
+	s.self.RegisterServers(svc)
+	return server.Serve(ctx, svc, l)
 }
 
 func (s *service) RegisterServers(grpcHandler *grpc.Server) {

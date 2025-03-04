@@ -25,6 +25,12 @@ func (s *interceptMountSuite) Test_RestartInterceptedPod() {
 
 	// Scale down to zero pods
 	require.NoError(s.Kubectl(ctx, "scale", "deploy", s.ServiceName(), "--replicas", "0"))
+	scaleUp := true
+	defer func() {
+		if scaleUp {
+			assert.NoError(s.Kubectl(ctx, "scale", "deploy", s.ServiceName(), "--replicas", "1"))
+		}
+	}()
 
 	// Wait until the pods have terminated. This might take a long time (several minutes).
 	require.Eventually(func() bool { return len(s.runningPods(ctx)) == 0 }, 2*time.Minute, 6*time.Second)
@@ -49,6 +55,8 @@ func (s *interceptMountSuite) Test_RestartInterceptedPod() {
 
 	// Scale up again (start intercepted pod)
 	assert.NoError(s.Kubectl(ctx, "scale", "deploy", s.ServiceName(), "--replicas", "1"))
+	scaleUp = false
+
 	assert.Eventually(func() bool { return len(s.runningPods(ctx)) == 1 }, itest.PodCreateTimeout(ctx), 6*time.Second)
 	s.CapturePodLogs(ctx, s.ServiceName(), "traffic-agent", s.AppNamespace())
 
@@ -56,11 +64,15 @@ func (s *interceptMountSuite) Test_RestartInterceptedPod() {
 	assert.Eventually(func() bool {
 		stdout, _, err := itest.Telepresence(ctx, "list")
 		if err != nil {
+			dlog.Errorf(ctx, "%s: %v", stdout, err)
 			return false
 		}
 		if match := rx.FindStringSubmatch(stdout); match != nil {
-			return match[1] == "ACTIVE"
+			if match[1] == "ACTIVE" {
+				return true
+			}
 		}
+		dlog.Info(ctx, stdout)
 		return false
 	}, 30*time.Second, 3*time.Second)
 
@@ -97,7 +109,7 @@ func (s *interceptMountSuite) Test_StopInterceptedPodOfMany() {
 		assert.Eventually(
 			func() bool {
 				return len(s.runningPods(ctx)) == 1
-			}, 15*time.Second, time.Second)
+			}, time.Minute, time.Second)
 		s.CapturePodLogs(ctx, s.ServiceName(), "traffic-agent", s.AppNamespace())
 	}()
 
@@ -118,7 +130,7 @@ func (s *interceptMountSuite) Test_StopInterceptedPodOfMany() {
 				}
 			}
 			return len(pods) == 2
-		}, 15*time.Second, time.Second)
+		}, time.Minute, time.Second)
 	s.CapturePodLogs(ctx, s.ServiceName(), "traffic-agent", s.AppNamespace())
 
 	// Verify that intercept is still active
@@ -136,6 +148,7 @@ func (s *interceptMountSuite) Test_StopInterceptedPodOfMany() {
 	}, 15*time.Second, time.Second)
 
 	// Verify response from intercepting client
+	expect := s.ServiceName() + " from intercept at /"
 	require.Eventually(func() bool {
 		hc := http.Client{Timeout: time.Second}
 		resp, err := hc.Get("http://" + s.ServiceName())
@@ -147,7 +160,11 @@ func (s *interceptMountSuite) Test_StopInterceptedPodOfMany() {
 		if err != nil {
 			return false
 		}
-		return s.ServiceName()+" from intercept at /" == string(body)
+		if expect == string(body) {
+			return true
+		}
+		dlog.Infof(ctx, "%s != %s", expect, string(body))
+		return false
 	}, 30*time.Second, time.Second)
 
 	// Verify that volume mount is restored
@@ -161,5 +178,5 @@ func (s *interceptMountSuite) Test_StopInterceptedPodOfMany() {
 // that at least one container is still running. I.e. the pod might well be terminating
 // but still considered running.
 func (s *interceptMountSuite) runningPods(ctx context.Context) []string {
-	return itest.RunningPods(ctx, s.ServiceName(), s.AppNamespace())
+	return itest.RunningPodNames(ctx, s.ServiceName(), s.AppNamespace())
 }

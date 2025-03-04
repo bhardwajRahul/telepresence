@@ -9,6 +9,9 @@ func RunningInContainer() bool {
 	return false
 }
 
-func AppendOSSpecificContainerOpts(ctx context.Context, opts []string) ([]string, error) {
+func SetRunningInContainer(_ bool) {
+}
+
+func AppendOSSpecificContainerOpts(_ context.Context, opts []string) ([]string, error) {
 	return opts, nil
 }

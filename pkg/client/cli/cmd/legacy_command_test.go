@@ -85,7 +85,6 @@ func Test_legacyCommands(t *testing.T) {
 
 	for _, tc := range testCases {
 		tcName := tc.name
-		tc := tc
 		t.Run(tcName, func(t *testing.T) {
 			inputArgs := strings.Split(tc.inputLegacyCommand, " ")
 			genTPCmd, msg, _, err := translateLegacy(inputArgs)

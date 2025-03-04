@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -19,7 +21,7 @@ import (
 
 type proxyViaSuite struct {
 	itest.Suite
-	itest.NamespacePair
+	itest.TrafficManager
 }
 
 func (s *proxyViaSuite) SuiteName() string {
@@ -27,8 +29,8 @@ func (s *proxyViaSuite) SuiteName() string {
 }
 
 func init() {
-	itest.AddTrafficManagerSuite("", func(h itest.NamespacePair) itest.TestingSuite {
-		return &proxyViaSuite{Suite: itest.Suite{Harness: h}, NamespacePair: h}
+	itest.AddTrafficManagerSuite("", func(h itest.TrafficManager) itest.TestingSuite {
+		return &proxyViaSuite{Suite: itest.Suite{Harness: h}, TrafficManager: h}
 	})
 }
 
@@ -62,7 +64,7 @@ func (s *proxyViaSuite) Test_ProxyViaLoopBack() {
 	ctx := s.Context()
 	if s.IsIPv6() {
 		ctx = itest.WithConfig(ctx, func(config client.Config) {
-			config.Cluster().VirtualIPSubnet = "abac:0de0::/64"
+			config.Routing().VirtualSubnet = netip.MustParsePrefix("abac:0de0::/64")
 		})
 	}
 
@@ -76,8 +78,7 @@ func (s *proxyViaSuite) Test_ProxyViaLoopBack() {
 	}
 	defer itest.TelepresenceQuitOk(ctx)
 
-	_, virtualIPSubnet, err := net.ParseCIDR(client.GetConfig(ctx).Cluster().VirtualIPSubnet)
-	s.Require().NoError(err)
+	virtualSubnet := client.GetConfig(ctx).Routing().VirtualSubnet
 
 	tests := []struct {
 		name           string
@@ -96,13 +97,12 @@ func (s *proxyViaSuite) Test_ProxyViaLoopBack() {
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		s.Run(tt.name, func() {
 			rq := s.Require()
-			var ips []net.IP
+			var vip netip.Addr
 			rq.Eventually(func() bool {
 				// hostname will resolve to 127.0.0.1 remotely and then be translated into a virtual IP
-				ips, err = net.LookupIP(tt.hostName)
+				ips, err := net.LookupIP(tt.hostName)
 				if err != nil {
 					dlog.Error(ctx, err)
 					return false
@@ -111,11 +111,12 @@ func (s *proxyViaSuite) Test_ProxyViaLoopBack() {
 					dlog.Error(ctx, "LookupIP did not return one IP")
 					return false
 				}
-				return true
+				var ok bool
+				vip, ok = netip.AddrFromSlice(ips[0])
+				return ok
 			}, 30*time.Second, 2*time.Second)
-			vip := ips[0]
 			dlog.Infof(ctx, "%s uses IP %s", tt.hostName, vip)
-			rq.Truef(virtualIPSubnet.Contains(vip), "virtualIPSubnet %s does not contain %s", virtualIPSubnet, vip)
+			rq.Truef(virtualSubnet.Contains(vip), "virtualIPSubnet %s does not contain %s", virtualSubnet, vip)
 
 			rq.Eventually(func() bool {
 				out, err := itest.Output(ctx, "curl", "--silent", "--max-time", "2", net.JoinHostPort(tt.hostName, "8080"))
@@ -138,7 +139,7 @@ func (s *proxyViaSuite) Test_ProxyViaEverything() {
 
 	if s.IsIPv6() {
 		ctx = itest.WithConfig(ctx, func(config client.Config) {
-			config.Cluster().VirtualIPSubnet = "abac:0de0::/64"
+			config.Routing().VirtualSubnet = netip.MustParsePrefix("abac:0de0::/64")
 		})
 	}
 
@@ -164,7 +165,7 @@ func (s *proxyViaSuite) Test_ProxyViaAll() {
 	rq := s.Require()
 	if s.IsIPv6() {
 		ctx = itest.WithConfig(ctx, func(config client.Config) {
-			config.Cluster().VirtualIPSubnet = "abac:0de0::/64"
+			config.Routing().VirtualSubnet = netip.MustParsePrefix("abac:0de0::/64")
 		})
 	}
 
@@ -178,6 +179,47 @@ func (s *proxyViaSuite) Test_ProxyViaAll() {
 		dlog.Infof(ctx, "Output from echo service %s", out)
 		return err == nil
 	}, 10*time.Second, 2*time.Second)
+}
+
+func (s *proxyViaSuite) Test_ProxyViaAllAndMounts() {
+	if s.IsCI() && runtime.GOOS == "darwin" {
+		s.T().Skip("CI can't do user mounts on darwin")
+	}
+	ctx := s.Context()
+	rq := s.Require()
+	if s.IsIPv6() {
+		ctx = itest.WithConfig(ctx, func(config client.Config) {
+			config.Routing().VirtualSubnet = netip.MustParsePrefix("abac:0de0::/64")
+		})
+	}
+
+	s.TelepresenceConnect(ctx, "--proxy-via", "all=echo")
+	st := itest.TelepresenceStatusOk(ctx)
+	defer itest.TelepresenceDisconnectOk(ctx)
+	rq.NotNil(st.RootDaemon)
+	rq.Len(st.RootDaemon.Subnets, 1)
+
+	var mountPoint string
+	if runtime.GOOS == "windows" {
+		mountPoint = "T:"
+	} else {
+		var err error
+		mountPoint, err = os.MkdirTemp("", "mount-") // Don't use the testing.Tempdir() because deletion is delayed.
+		s.Require().NoError(err)
+		defer func() {
+			time.AfterFunc(time.Second, func() {
+				_ = os.RemoveAll(mountPoint)
+			})
+		}()
+	}
+
+	itest.TelepresenceOk(ctx, "intercept", "--mount", mountPoint, "echo")
+
+	// Verify that volume mount is present and functional
+	time.Sleep(3 * time.Second) // avoid a stat just when the intercept became active as it sometimes causes a hang
+	fst, err := os.Stat(filepath.Join(mountPoint, "var"))
+	rq.NoError(err, "Stat on <mount point>/var failed")
+	rq.True(fst.IsDir())
 }
 
 func (s *proxyViaSuite) Test_NeverProxySubnetIsOmitted() {

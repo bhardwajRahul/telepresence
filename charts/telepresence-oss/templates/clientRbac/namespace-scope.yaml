@@ -1,0 +1,85 @@
+{{- /*
+These are the namespace-scoped rbac roles + bindings that will be used by users
+who want to use telepresence once its components have been set
+up in the cluster.
+*/}}
+{{- with .Values.clientRbac }}
+{{- if .create }}
+{{- $subjects := .subjects }}
+{{- if (not $subjects) }}
+  {{- /* fail comes out really ugly if we just do fail "the message here" */}}
+  {{- $msg := "You must set clientRbac.subjects to a list of valid rbac subjects. See the kubernetes docs for more: https://kubernetes.io/docs/reference/access-authn-authz/rbac/#referring-to-subjects" }}
+  {{- fail $msg }}
+{{- end }}
+{{- $namespaces := .namespaces }}
+{{- if not $namespaces }}
+  {{ $namespaces = fromJsonArray (include "traffic-manager.namespaces" $) }}
+{{- end }}
+{{- $name := include "telepresence.clientRbacName" $ }}
+{{- $labels := include "telepresence.labels" $ | nindent 4 }}
+{{- range $namespaces }}
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name:  {{ $name }}
+  namespace: {{ . }}
+  labels:
+    {{- $labels }}
+rules:
+{{ include "telepresence.clientRbacInterceptRules" $ }}
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ . }}
+  labels:
+    {{- $labels }}
+subjects:
+{{- toYaml $subjects | nindent 0}}
+roleRef:
+  kind: Role
+  name: {{ $name }}
+  apiGroup: rbac.authorization.k8s.io
+
+{{- end }}
+
+{{- $managerNamespace := include "traffic-manager.namespace" $ }}
+{{- if and $namespaces (not (has $managerNamespace $namespaces)) }}
+{{- /*
+This is required only if the client should be permitted to gather the traffic-manager logs, and it
+is only required when the traffic-manager isn't managing its own namespace.
+*/}}
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: traffic-manager-logs
+  namespace: {{ $managerNamespace }}
+  labels:
+    {{- $labels }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: traffic-manager-logs
+  namespace: {{ $managerNamespace }}
+  labels:
+    {{- $labels }}
+subjects:
+{{ toYaml $subjects }}
+roleRef:
+  kind: Role
+  name: traffic-manager-logs
+  apiGroup: rbac.authorization.k8s.io
+
+{{- end }}
+{{- end }}
+{{- end }}

@@ -11,6 +11,7 @@ import (
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/manager"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
 	"github.com/telepresenceio/telepresence/v2/pkg/dnsproxy"
+	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
 )
 
 // We can use our own Rcodes in the range that is reserved for private use
@@ -20,7 +21,7 @@ const RcodeNoAgents = 3841
 
 // AgentsLookupDNS will send the given request to all agents currently intercepted by the client identified with
 // the clientSessionID, it will then wait for results to arrive, collect those results, and return the result.
-func (s *state) AgentsLookupDNS(ctx context.Context, clientSessionID string, request *rpc.DNSRequest) (dnsproxy.RRs, int, error) {
+func (s *state) AgentsLookupDNS(ctx context.Context, clientSessionID tunnel.SessionID, request *rpc.DNSRequest) (dnsproxy.RRs, int, error) {
 	rs := s.agentsLookup(ctx, clientSessionID, request)
 	if len(rs) == 0 {
 		return nil, RcodeNoAgents, nil
@@ -45,35 +46,29 @@ func (s *state) AgentsLookupDNS(ctx context.Context, clientSessionID string, req
 // PostLookupDNSResponse receives lookup responses from an agent and places them in the channel
 // that corresponds to the lookup request.
 func (s *state) PostLookupDNSResponse(ctx context.Context, response *rpc.DNSAgentResponse) {
-	request := response.GetRequest()
-	rid := requestId(request)
-	s.mu.RLock()
-	as, ok := s.GetSession(response.GetSession().SessionId).(*agentSessionState)
-	if ok {
-		var rch chan<- *rpc.DNSResponse
-		if rch, ok = as.dnsResponses[rid]; ok {
+	rid := requestId(response.GetRequest())
+	as := s.GetAgent(tunnel.SessionID(response.GetSession().SessionId))
+	if as != nil {
+		if rch, ok := as.dnsResponses.Load(rid); ok {
 			select {
 			case rch <- response.GetResponse():
 			default:
-				ok = false
 			}
 		}
-	}
-	s.mu.RUnlock()
-	if !ok {
+	} else {
 		dlog.Debugf(ctx, "attempted to post lookup response failed because there was no recipient. ID=%s", rid)
 	}
 }
 
-func (s *state) WatchLookupDNS(agentSessionID string) <-chan *rpc.DNSRequest {
-	ss, ok := s.GetSession(agentSessionID).(*agentSessionState)
-	if ok {
-		return ss.dnsRequests
+func (s *state) WatchLookupDNS(agentSessionID tunnel.SessionID) <-chan *rpc.DNSRequest {
+	as := s.GetAgent(agentSessionID)
+	if as != nil {
+		return as.dnsRequests
 	}
 	return nil
 }
 
-func (s *state) agentsLookup(ctx context.Context, clientSessionID string, request *rpc.DNSRequest) []*rpc.DNSResponse {
+func (s *state) agentsLookup(ctx context.Context, clientSessionID tunnel.SessionID, request *rpc.DNSRequest) []*rpc.DNSResponse {
 	agents := s.getAgentsInterceptedByClient(clientSessionID)
 	if len(agents) == 0 {
 		if client, ok := s.clients.Load(clientSessionID); ok {
@@ -101,7 +96,7 @@ func (s *state) agentsLookup(ctx context.Context, clientSessionID string, reques
 	wg := sync.WaitGroup{}
 	wg.Add(aCount)
 	for aID := range agents {
-		go func(aID string) {
+		go func(aID tunnel.SessionID) {
 			rid := requestId(request)
 			defer func() {
 				s.endLookup(aID, rid)
@@ -134,48 +129,37 @@ func (s *state) agentsLookup(ctx context.Context, clientSessionID string, reques
 	return rs
 }
 
-func (s *state) startLookup(agentSessionID, rid string, request *rpc.DNSRequest) <-chan *rpc.DNSResponse {
-	var (
-		rch chan *rpc.DNSResponse
-		as  *agentSessionState
-		ok  bool
-	)
-	s.mu.Lock()
-	if as, ok = s.GetSession(agentSessionID).(*agentSessionState); ok {
-		if rch, ok = as.dnsResponses[rid]; !ok {
-			rch = make(chan *rpc.DNSResponse)
-			as.dnsResponses[rid] = rch
+func (s *state) startLookup(agentSessionID tunnel.SessionID, rid string, request *rpc.DNSRequest) <-chan *rpc.DNSResponse {
+	as := s.GetAgent(agentSessionID)
+	if as == nil {
+		return nil
+	}
+	rch, _ := as.dnsResponses.LoadOrCompute(rid, func() chan *rpc.DNSResponse {
+		return make(chan *rpc.DNSResponse)
+	})
+
+	// The as.dnsRequests channel may be closed at this point, so guard for panic. And no, we can't read that
+	// channel to check if it is closed, because we're not the intended recipient.
+	defer func() {
+		if r := recover(); r != nil {
+			select {
+			case <-rch:
+				// rch is already closed
+			default:
+				close(rch)
+			}
 		}
-	}
-	s.mu.Unlock()
-	if as != nil {
-		// the as.dnsRequests channel may be closed at this point, so guard for panic
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					select {
-					case <-rch:
-						// rch is already closed
-					default:
-						close(rch)
-					}
-				}
-			}()
-			as.dnsRequests <- request
-		}()
-	}
+	}()
+	as.dnsRequests <- request
 	return rch
 }
 
-func (s *state) endLookup(agentSessionID, rid string) {
-	s.mu.Lock()
-	if as, ok := s.GetSession(agentSessionID).(*agentSessionState); ok {
-		if rch, ok := as.dnsResponses[rid]; ok {
-			delete(as.dnsResponses, rid)
+func (s *state) endLookup(agentSessionID tunnel.SessionID, rid string) {
+	if as := s.GetAgent(agentSessionID); as != nil {
+		if rch, loaded := as.dnsResponses.LoadAndDelete(rid); loaded {
 			close(rch)
 		}
 	}
-	s.mu.Unlock()
 }
 
 func requestId(request *rpc.DNSRequest) string {

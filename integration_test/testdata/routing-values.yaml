@@ -1,4 +1,4 @@
-clinet:
+client:
   routing:
     # add the following subnets to the client's virtual network interface
     # array of strings

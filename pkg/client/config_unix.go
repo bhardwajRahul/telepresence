@@ -2,8 +2,10 @@
 
 package client
 
-// defaultVirtualIPSubnet A randomly chosen class E subnet.
-const defaultVirtualIPSubnet = "246.246.0.0/16"
+import "net/netip"
+
+// defaultVirtualSubnet A randomly chosen class E subnet.
+var defaultVirtualSubnet = netip.MustParsePrefix("246.246.0.0/16") //nolint:gochecknoglobals // constant
 
 type OSSpecificConfig struct{}
 

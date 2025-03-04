@@ -25,6 +25,7 @@ func quit() *cobra.Command {
 			}
 			return nil
 		},
+		ValidArgsFunction: cobra.NoFileCompletions,
 	}
 	flags := cmd.Flags()
 	flags.BoolVarP(&quitDaemons, "stop-daemons", "s", false, "stop all local telepresence daemons")

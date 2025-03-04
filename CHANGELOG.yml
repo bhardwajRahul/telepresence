@@ -1,9 +1,11 @@
 # The YAML in this file should contain:
 #
-# changelog: An (optional) URL to the CHANGELOG for the product.
 # items: An array of releases with the following attributes:
 #     - version: The (optional) version number of the release, if applicable.
-#     - date: The date of the release in the format YYYY-MM-DD.
+#     - date: >-
+#         The date of the release in the format YYYY-MM-DD.
+#         If the date is (SUPERSEDED), then the release didn't happen, which means
+#         that its notes belong to the next release.
 #     - notes: An array of noteworthy changes included in the release, each having the following attributes:
 #         - type: The type of change, one of `bugfix`, `feature`, `security` or `change`.
 #         - title: A short title of the noteworthy change.
@@ -19,27 +21,472 @@
 #             `FOO/releaseNotes.yml`, then the image paths are
 #             relative to `FOO/release-notes/`.
 #         - docs: The path to the documentation page where additional information can be found.
-#         - href: A path from the root to a resource on the getambassador website, takes precedence over a docs link.
 #
 # For older changes, see CHANGELOG.OLD.md
-docTitle: Telepresence Release Notes
-docDescription: >-
-  Release notes for Telepresence by Ambassador Labs, a CNCF project
-  that enables developers to iterate rapidly on Kubernetes
-  microservices by arming them with infinite-scale development
-  environments, access to instantaneous feedback loops, and highly
-  customizable development environments.
 items:
-  - version: 2.20.0
+  - version: 2.22.0
     date: (TBD)
     notes:
+      - type: feature
+        title: New telepresence replace command.
+        body: |-
+          The new `telepresence replace` command simplifies and clarifies container replacement.
+          
+          Previously, the `--replace` flag within the `telepresence intercept` command was used to replace containers.
+          However, this approach introduced inconsistencies and limitations:
+          
+          * **Confusion:** Using a flag to modify the core function of a command designed for traffic interception led
+            to ambiguity.
+          * **Inaccurate Behavior:** Replacement was not possible when no incoming traffic was intercepted, as the
+            command's design focused on traffic routing.
+          
+          To address these issues, the `--replace` flag within `telepresence intercept` has been deprecated. The new
+          `telepresence replace` command provides a dedicated and consistent method for replacing containers, enhancing
+          clarity and reliability.
+
+          Key differences between `replace` and `intercept`:
+          
+          1. **Scope:** The `replace` command targets and affects an entire container, impacting all its traffic, while
+             an `intercept` targets specific services and/or service/container ports.
+          2. **Port Declarations:** Remote ports specified using the `--port` flag are container ports. 
+          3. **No Default Port:** A `replace` can occur without intercepting any ports.
+          4. **Container State:** During a `replace`, the original container is no longer active within the cluster.
+          
+          The deprecated `--replace` flag still works, but is hidden from the `telepresence intercept` command help, and
+          will print a deprecation warning when used.
+      - type: feature
+        title: Add json-schema for the Telepresence Helm Chart
+        body: |-
+          Helm can validate a chart using a json-schema using the command `helm lint`, and this schema can be part of
+          the actual Helm chart. The telepresence-oss Helm chart now includes such a schema, and a new
+          `telepresence helm lint` command was added so that linting can be performed using the embedded chart.
+      - type: feature
+        title: No dormant container present during replace.
+        body: |-
+          Telepresence will no longer inject a dormant container during a `telepresence replace` operation. Instead, the
+          Traffic Agent now directly serves as the replacement container, eliminating the need to forward traffic to the
+          original application container. This simplification offers several advantages when using the `--replace` flag:
+          
+          - **Removal of the init-container:** The need for a separate init-container is no longer necessary.
+          - **Elimination of port renames:** Port renames within the intercepted pod are no longer required.
+      - type: feature
+        title: One single invocation of the Telepresence intercept command can now intercept multiple ports.
+        body: >-
+          It is now possible to intercept multiple ports with one single invocation of `telepresence intercept` by just
+          repeating the `--port` flag.
+      - type: feature
+        title: Unify how Traffic Manager selects namespaces
+        body: |-
+          The definition of what namespaces that a Traffic Manager would manage use was scattered into several Helm
+          chart values, such as `manager.Rbac.namespaces`, `client.Rbac.namespaces`, and
+          `agentInjector.webhook.namespaceSelector`. The definition is now unified to the mutual exclusive top-level
+          Helm chart values `namespaces` and `namespaceSelector`.
+          
+          The `namespaces` value is just for convenience and a short form of expressing:
+          ```yaml
+          namespaceSelector:
+            matchExpressions:
+             - key: kubernetes.io/metadata.name
+               operator: in
+               values: <namespaces>`.
+          ```
+        docs: install/manager#static-versus-dynamic-namespace-selection
+      - type: feature
+        title: List output includes workload kind.
+        body: >-
+          The output of the `telepresence list` command will now include the workload kind (deployment, replicaset,
+          statefulset, or rollout) in all entries.
+      - type: feature
+        title: Add ability to override the default securityContext for the Telepresence init-container
+        body: >-
+          Users can now use the Helm value `agent.initSecurityContext` to override the default securityContext for the
+          Telepresence init-container.
+      - type: change
+        title: Make the DNS recursion check configurable and turn it off by default.
+        body: >-
+          Very few systems experience a DNS recursion lookup problem. It can only occur when the cluster runs locally
+          and the cluster's DNS is configured to somehow use DNS server that is started by Telepresence. The check
+          is therefore now configurable through the client setting `dns.recursionCheck`, and it is `false` by default.
+      - type: change
+        title: Trigger the mutating webhook with Kubernetes eviction objects instead of patching workloads.
+        body: >-
+          Instead of patching workloads, or scaling the workloads down to zero and up again, Telepresence will now
+          create policy/v1 Eviction objects to trigger the mutating webhook. This causes a slight change in the
+          traffic-manager RBAC. The `patch` permissions are no longer needed. Instead, the traffic-manager must be
+          able to create "pod/eviction" objects.
+      - type: change
+        title: The telepresence-agents configmap is no longer used.
+        body: >-
+          The traffic-agent configuration was moved into a pod-annotation. This avoids sync problems between the
+          telepresence-agents (which is no no longer present) and the pods.
+      - type: change
+        title: Drop deprecated current-cluster-id command.
+        body: >-
+          The clusterID was deprecated some time ago, and replaced by the ID of the namespace where the traffic-manager
+          is installed.
+      - type: bugfix
+        title: Rename charts/telepresence to charts/telepresence-oss.
+        body: >-
+          The Helm chart name "telepresence-oss" was inconsistent with its contained folder "telepresence". As a result,
+          attempts to install the chart using an argo ApplicationSet failed. The contained folder was renamed to match
+          the chart name.
+      - type: bugfix
+        title: Conflict detection between namespaced and cluster-wide install.
+        body: >-
+          The namespace conflict detection mechanism would only discover conflicts between two _namespaced_ Traffic
+          Managers trying to manage the same namespace. This is now fixed so that all types conflicts are discovered.
+        docs: install/manager#namespace-collision-detection
+      - type: bugfix
+        title: Don't dispatch DNS discovery queries to the cluster.
+        body: >-
+          macOS based systems will often PTR queries using nameslike `b._dns-sd._udp`, lb._dns-sd._udp, or
+          `db-dns-sd._udp`. Those queries are no longer dispatched to the cluster.
+      - type: bugfix
+        title: Using the --namespace option with telepresence causes a deadlock.
+        body: >-
+          Using `telepresence list --namespace <ns> with a namespace different from the one that telepresence was
+          connected to, would cause a deadlock, and then produce an empty list.
+      - type: bugfix
+        title: Fix problem with exclude-suffix being hidden by DNS search path.
+        body: >-
+          In some situations, a name ending with an exclude-suffix like "xyz.com" would be expanded by a search path
+          into "xyz.com.<connected namespace>" and therefore not be excluded. Instead, the name was sent to the cluster
+          to be resolved, causing an unnecessary load on its DNS server.
+  - version: 2.21.3
+    date: 2025-02-06
+    notes:
+      - type: bugfix
+        title: Using the --proxy-via flag would sometimes cause connection timeouts.
+        body: >-
+          Typically, a `telepresence connect --proxy-via <subnet>=<workflow>` would fail with a "deadline exceeded"
+          message when several workloads were present in the namespace, the one targeted by the proxy-via didn't yet
+          have an agent installed, and other workloads had an agent. This was due to a race condition in the logic
+          for the agent-based port-forwards in the root daemon. The conditions causing this race are now eliminated.
+      - type: bugfix
+        title: Fix panic in root daemon when using the "allow conflicting subnets" feature on macOS.
+        body: >-
+          A regression was introduced in version 2.21.0, causing a panic due to an unimplemented method in the
+          TUN-device on macOS based clients.
+      - type: bugfix
+        title: Ensure that annotation enabled traffic-agents are uninstall when uninstalling the traffic-manager.
+        body: >-
+          A traffic-agent injected because the workload had the inject annotation enabled would sometimes not get
+          uninstalled when the traffic-manager was uninstalled.
+  - version: 2.21.2
+    date: 2025-01-26
+    notes:
+      - type: bugfix
+        title: Fix panic when agentpf.client creates a Tunnel
+        body: >-
+          A race could occur where several requests where made to `agentpf.client.Tunnel` on a client that had errored
+          when creating its port-forward to the agent. The implementation could handle one such requests but not
+          several, resulting in a panic in situations where multiple simultaneous requests were made to the same client
+          during a very short time period,
+      - type: bugfix
+        title: Fix goroutine leak in dialer.
+        body: >-
+          The context passed to the `Tunnel` call that creates a stream for a dialer, was not cancelled when the dialer
+          was finished, so the stream was never properly closed, leading to one dormant goroutine for each stream.
+  - version: 2.21.1
+    date: 2024-12-17
+    notes:
+      - type: bugfix
+        title: Allow ingest of serverless deployments without specifying an inject-container-ports annotation
+        body: >-
+          The ability to intercept a workload without a service is built around the
+          `telepresence.getambassador.io/inject-container-ports` annotation, and it was also required in order to ingest
+          such a workload. This was counterintuitive and the requirement was removed. An ingest doesn't use a port.
+        docs: https://github.com/telepresenceio/telepresence/issues/3741
+      - type: bugfix
+        title: Upgrade module dependencies to get rid of critical vulnerability.
+        body: >-
+          Upgrade module dependencies to latest available stable. This includes upgrading golang.org/x/crypto, which
+          had critical issues, from 0.30.0 to 0.31.0 where those issues are resolved.
+  - version: 2.21.0
+    date: 2024-12-13
+    notes:
+      - type: feature
+        title: Automatic VPN conflict avoidance
+        body: >-
+          Telepresence not only detects subnet conflicts between the cluster and workstation VPNs but also resolves them
+          by performing network address translation to move conflicting subnets out of the way.
+        docs: reference/vpn
+      - type: feature
+        title: Virtual Address Translation (VNAT).
+        body: >-
+          It is now possible to use a virtual subnet without routing the affected IPs to a specific workload. A new
+          `telepresence connect --vnat CIDR` flag was added that will perform virtual network address translation of
+          cluster IPs. This flag is very similar to the `--proxy-via CIDR=WORKLOAD` introduced in 2.19, but without
+          the need to specify a workload.
+        docs: reference/vpn
+      - type: feature
+        title: Intercepts targeting a specific container
+        body: |-
+          In certain scenarios, the container owning the intercepted port differs
+          from the container the intercept targets. This port owner's sole purpose
+          is to route traffic from the service to the intended container, often
+          using a direct localhost connection.
+
+          This update introduces a `--container <name>` option to the intercept
+          command. While this option doesn't influence the port selection, it
+          guarantees that the environment variables and mounts propagated to the
+          client originate from the specified container. Additionally, if the
+          `--replace` option is used, it ensures that this container is replaced.
+        docs: reference/engagements/container
+      - type: feature
+        title: New telepresence ingest command
+        body: >-
+          The new `telepresence ingest` command, similar to `telepresence intercept`, provides local access to the
+          volume mounts and environment variables of a targeted container. However, unlike `telepresence intercept`,
+          `telepresence ingest` does not redirect traffic to the container and ensures that the mounted volumes are
+          read-only.
+
+          An ingest requires a traffic-agent to be installed in the pods of the targeted workload. Beyond that, it's
+          a client-side operation. This allows developers to have multiple simultaneous ingests on the same container.
+        docs: howtos/intercepts#ingest-your-service
+      - type: feature
+        title: New telepresence curl command
+        body: >-
+          The new `telepresence curl` command runs curl from within a container. The command requires that a connection
+          has been established using `telepresence connect --docker`, and the container that runs `curl` will share the
+          same network as the containerized telepresence daemon.
+        docs: reference/docker-run#the-telepresence-curl-command
+      - type: feature
+        title: New telepresence docker-run command
+        body: >-
+          The new `telepresence docker-run <flags and arguments>` requires that a connection has been established using
+          `telepresence connect --docker` It will perform a `docker run <flags and arguments>` and add the flag necessary
+          to ensure that started container shares the same network as the containerized telepresence daemon.
+        docs: reference/docker-run#the-telepresence-docker-run-command
+      - type: feature
+        title: Mount everything read-only during intercept
+        body: >-
+          It is now possible to append ":ro" to the intercept `--mount` flag value. This ensures that all remote volumes
+          that the intercept mounts are read-only.
+      - type: feature
+        title: Unify client configuration
+        body: >-
+          Previously, client configuration was divided between the config.yml file and a Kubernetes extension. DNS and
+          routing settings were initially found only in the extension. However, the Helm client structure allowed
+          entries from both.
+
+          To simplify this, we've now aligned the config.yml and Kubernetes extension with the Helm client structure.
+          This means DNS and routing settings are now included in both. The Kubernetes extension takes precedence over
+          the config.yml and Helm client object.
+
+          While the old-style Kubernetes extension is still supported for compatibility, it cannot be used with the new
+          style.
+        docs: reference/config
+      - type: feature
+        title: Use WebSockets for port-forward instead of the now deprecated SPDY.
+        body: >-
+          Telepresence will now use WebSockets instead of SPDY when creating port-forwards to the Kubernetes Cluster, and
+          will fall back to SPDY when connecting to clusters that don't support SPDY. Use of the deprecated SPDY can be
+          forced by setting `cluster.forceSPDY=true` in the `config.yml`.
+
+          See [Streaming Transitions from SPDY to WebSockets](https://kubernetes.io/blog/2024/08/20/websockets-transition/)
+          for more information about this transition.
+      - type: feature
+        title: Make usage data collection configurable using an extension point, and default to no-ops
+        body: >-
+          The OSS code-base will no longer report usage data to the proprietary collector at Ambassador Labs. The actual calls
+          to the collector remain, but will be no-ops unless a proper collector client is installed using an extension point.
+      - type: feature
+        title: Add deployments, statefulSets, replicaSets to workloads Helm chart value
+        body: >-
+          The Helm chart value `workloads` now supports the kinds `deployments.enabled`, `statefulSets.enabled`, `replicaSets.enabled`.
+          and `rollouts.enabled`. All except `rollouts` are enabled by default. The traffic-manager will ignore workloads, and
+          Telepresence will not be able to intercept them, if the `enabled` of the corresponding kind is set to `false`.
+        docs: reference/engagements/sidecar#disable-workloads
+      - type: feature
+        title: Improved command auto-completion
+        body: >-
+          The auto-completion of namespaces, services, and containers have been added where appropriate, and the default
+          file auto completion has been removed from most commands.
+      - type: feature
+        title: Docker run flags --publish, --expose, and --network now work with docker mode connections
+        body: >-
+          After establishing a connection to a cluster using `telepresence connect --docker`, you can run new containers that share
+          the same network as the containerized daemon that maintains the connection. This enables seamless communication between
+          your local development environment and the remote services.
+
+          Normally, Docker has a limitation that prevents combining a shared network configuration with custom networks
+          and exposing ports. However, Telepresence now elegantly circumvents this limitation so that a container started with
+          `telepresence docker-run`, `telepresence intercept --docker-run`, or `telepresence ingest --docker-run` can use flags
+          like `--network`, `--publish`, or `--expose`.
+
+          To achieve this, Telepresence temporarily adds the necessary network to the containerized daemon. This allows the new
+          container to join the same network. Additionally, Telepresence starts extra socat containers to handle port mapping,
+          ensuring that the desired ports are exposed to the local environment.
+        docs: reference/docker-run#the-telepresence-docker-run-command
+      - type: feature
+        title: Prevent recursion in the Telepresence Virtual Network Interface (VIF)
+        body: >-
+          Network problems may arise when running Kubernetes locally (e.g., Docker Desktop, Kind, Minikube, k3s),
+          because the VIF on the host is also accessible from the cluster's nodes. A request that isn't handled by a
+          cluster resource might be routed back into the VIF and cause a recursion.
+
+          These recursions can now be prevented by setting the client configuration property
+          `routing.recursionBlockDuration` so that new connection attempts are temporarily blocked for a specific
+          IP:PORT pair immediately after an initial attempt, thereby effectively ending the recursion.
+        docs: howtos/cluster-in-vm
+      - type: feature
+        title: Allow Helm chart to be included as a sub-chart
+        body: >-
+          The Helm chart previously had the unnecessary restriction that the .Release.Name under which telepresence is installed is literally
+          called "traffic-manager".  This restriction was preventing telepresence from being included as a sub-chart in a parent chart
+          called anything but "traffic-manager". This restriction has been lifted.
+      - type: feature
+        title: Add Windows arm64 client build
+        body: >-
+          Telepresence client is now available for Windows ARM64.
+          Updated the release workflow files in github actions to build and publish the Windows ARM64 client.
+      - type: change
+        title: The --agents flag to telepresence uninstall is now the default.
+        body: >-
+          The `telepresence uninstall` was once capable of uninstalling the traffic-manager as well as traffic-agents.
+          This behavior has been deprecated for some time now and in this release, the command is all about uninstalling
+          the agents. Therefore the `--agents` flag was made redundant and whatever arguments that are given to the
+          command must be name of workloads that have an agent installed unless the `--all-agents` is used, in which
+          case no arguments are allowed.
+      - type: change
+        title: Performance improvement for the telepresence list command
+        body: >-
+          The `telepresence list` command will now retrieve its data from the traffic-manager, which significantly
+          improves its performance when used on namespaces that have a lot of workloads.
+      - type: change
+        title: During an intercept, the local port defaults to the targeted port of the intercepted container instead of 8080.
+        body: >-
+          Telepresence mimics the environment of a target container during an intercept, so it's only natural that the default
+          for the local port is determined by the targeted container port rather than just defaulting to 8080.
+
+          A default can still be explicitly defined using the `config.intercept.defaultPort` setting.
+      - type: change
+        title: Move the telepresence-intercept-env configmap data into traffic-manager configmap.
+        body: >-
+          There's no need for two configmaps that store configuration data for the traffic manager. The traffic-manager
+          configmap is also watched, so consolidating the configuration there saves some k8s API calls.
+      - type: change
+        title: Tracing was removed.
+        body: >-
+          The ability to collect trace has been removed along with the `telepresence gather-traces` and
+          `telepresence upload-traces` commands. The underlying code was complex and has not been well maintained since
+          its inception in 2022. We have received no feedback on it and seen no indication that it has ever been used.
+      - type: bugfix
+        title: Remove obsolete code checking the Docker Bridge for DNS
+        body: >-
+          The DNS resolver checked the Docker bridge for messages on Linux. This code was obsolete and caused problems
+          when running in Codespaces.
+      - type: bugfix
+        title: Fix telepresence connect confusion caused by /.dockerenv file
+        body: >-
+          A `/.dockerenv` will be present when running in a GitHub Codespaces environment. That doesn't mean that
+          telepresence cannot use docker, or that the root daemon shouldn't start.
+      - type: bugfix
+        title: Cap timeouts.connectivityCheck at 5 seconds.
+        body: >-
+          The timeout value of `timeouts.connectivityCheck` is used when checking if a cluster is already reachable
+          without Telepresence setting up an additional network route. If it is, this timeout should be high enough to
+          cover the delay when establishing a connection. If this delay is higher than a second, then chances are very
+          low that the cluster already is reachable, and if it can, that all accesses to it will be very slow. In such
+          cases, Telepresence will create its own network interface and do perform its own tunneling.
+
+          The default timeout for the check remains at 500 millisecond, which is more than sufficient for the majority
+          of cases.
+      - type: bugfix
+        title: Prevent that traffic-manager injects a traffic-agent into itself.
+        body: >-
+          The traffic-manager can never be a subject for an intercept, ingest, or proxy-via, because that means that
+          it injects the traffic-agent into itself, and it is not designed to do that. A user attempting this will
+          now see a meaningful error message.
+      - type: bugfix
+        title: Don't include pods in the kube-system namespace when computing pod-subnets from pod IPs
+        body: >-
+          A user would normally never access pods in the `kube-system` namespace directly, and automatically including pods
+          included there when computing the subnets will often lead to problems when running the cluster locally. This namespace
+          is therefore now excluded in situations when the pod subnets are computed from the IPs of pods. Services in this
+          namespace will still be available through the service subnet.
+
+          If a user should require the pod-subnet to be mapped, it can be added to the `client.routing.alsoProxy`
+          list in the helm chart.
+      - type: bugfix
+        title: Let routes belonging to an allowed conflict be added as a static route on Linux.
+        body: >-
+          The `allowConflicting` setting didn't always work on Linux because the conflicting subnet was just added as a
+          link to the TUN device, and therefore didn't get subjected to routing rule used to assign priority to the
+          given subnet.
+  - version: 2.20.3
+    date: 2024-11-18
+    notes:
+      - type: bugfix
+        title: Ensure that Telepresence works with GitHub Codespaces
+        body: >-
+          GitHub Codespaces runs in a container, but not as root. Telepresence didn't handle this situation
+          correctly and only started the user daemon. The root daemon was never started.
+        docs: https://github.com/telepresenceio/telepresence/issues/3722
+      - type: bugfix
+        title: Mounts not working correctly when connected with --proxy-via
+        body: >-
+          A mount would try to connect to the sftp/ftp server using the original (cluster side) IP although that
+          IP was translated into a virtual IP when using `--proxy-via`.
+        docs: https://github.com/telepresenceio/telepresence/issues/3715
+  - version: 2.20.2
+    date: 2024-10-21
+    notes:
+      - type: bugfix
+        title: Crash in traffic-manager configured with agentInjector.enabled=false
+        body: >-
+          A traffic-manager that was installed with the Helm value `agentInjector.enabled=false` crashed when a
+          client used the commands `telepresence version` or `telepresence status`. Those commands would call
+          a method on the traffic-manager that panicked if no traffic-agent was present. This method will now
+          instead return the standard `Unavailable` error code, which is expected by the caller.
+  - version: 2.20.1
+    date: 2024-10-10
+    notes:
+      - type: bugfix
+        title: Some workloads missing in the telepresence list output (typically replicasets owned by rollouts).
+        body: >-
+          Version 2.20.0 introduced a regression in the `telepresence list` command, resulting in the omission of
+          all workloads that were owned by another workload. The correct behavior is to just omit those workloads
+          that are owned by the supported workload kinds `Deployment`, `ReplicaSet`, `StatefulSet`, and `Rollout`.
+          Furthermore, the `Rollout` kind must only be considered supported when the Argo Rollouts feature is
+          enabled in the traffic-manager.
+      - type: bugfix
+        title: Allow comma separated list of daemons for the gather-logs command.
+        body: >-
+          The name of the `telepresence gather-logs` flag `--daemons` suggests that the argument can contain more
+          than one daemon, but prior to this fix, it couldn't. It is now possible to use a comma separated
+          list, e.g. `telepresence gather-logs --daemons root,user`.
+  - version: 2.20.0
+    date: 2024-10-03
+    notes:
+      - type: feature
+        title: Add timestamp to telepresence_logs.zip filename.
+        body: >-
+          Telepresence is now capable of easily find telepresence gather-logs by certain timestamp.
+      - type: feature
+        title: Enable intercepts of workloads that have no service.
+        body: >-
+          Telepresence is now capable of intercepting workloads that have no associated service. The intercept will then target container port
+          instead of a service port. The new behavior is enabled by adding a <code>telepresence.getambassador.io/inject-container-ports</code>
+          annotation where the value is a comma separated list of port identifiers consisting of either the name or the port number of a container
+          port, optionally suffixed with `/TCP` or `/UDP`.
+        docs: https://telepresence.io/docs/reference/engagements/cli#intercepting-without-a-service
       - type: feature
         title: Publish the OSS version of the telepresence Helm chart
         body: >-
           The OSS version of the telepresence helm chart is now available at ghcr.io/telepresenceio/telepresence-oss, and
-          can be installed using the command:<br>
+          can be installed using the command:<br/>
           <code>helm install traffic-manager oci://ghcr.io/telepresenceio/telepresence-oss --namespace ambassador --version 2.20.0</code>
           The chart documentation is published at <a href="https://artifacthub.io/packages/helm/telepresence-oss/telepresence-oss">ArtifactHUB</a>.
+        docs: https://artifacthub.io/packages/helm/telepresence-oss/telepresence-oss
+      - type: feature
+        title: Control the syntax of the environment file created with the intercept flag --env-file
+        body: >-
+          A new <code>--env-syntax &lt;syntax&gt;</code> was introduced to allow control over the syntax of the file created when using the intercept
+          flag <code>--env-file &lt;file&gt;</code>. Valid syntaxes are &quot;docker&quot;, &quot;compose&quot;, &quot;sh&quot;, &quot;csh&quot;, &quot;cmd&quot;,
+          and &quot;ps&quot;; where &quot;sh&quot;, &quot;csh&quot;, and &quot;ps&quot; can be suffixed with &quot;:export&quot;.
+        docs: https://telepresence.io/docs/reference/environment
       - type: feature
         title: Add support for Argo Rollout workloads.
         body: >-
@@ -47,12 +494,26 @@ items:
           The behavior is controlled by `workloads.argoRollouts.enabled` Helm chart value.
           It is recommended to set the following annotation <code>telepresence.getambassador.io/inject-traffic-agent: enabled</code>
           to avoid creation of unwanted revisions.
-      - type: change
-        title: Use ghcr.io/telepresenceio instead of docker.io/datawire for OSS images.
+      - type: bugfix
+        title: Enable intercepts of containers that bind to podIP
         body: >-
-          All OSS telepresence images are now published at the public registry ghcr.io/telepresenceio
+          In previous versions, the traffic-agent would route traffic to localhost during periods when an intercept wasn't
+          active. This made it impossible for an application to bind to the pod's IP, and it also meant that service meshes binding
+          to the podIP would get bypassed, both during and after an intercept had been made.
+          This is now changed, so that the traffic-agent instead forwards non intercepted requests to the pod's IP, thereby
+          enabling the application to either bind to localhost or to that IP.
+      - type: change
+        title: Use ghcr.io/telepresenceio instead of docker.io/datawire for OSS images and the telemount Docker volume plugin.
+        body: >-
+          All OSS telepresence images and the telemount Docker plugin are now published at the public registry ghcr.io/telepresenceio
           and all references from the client and traffic-manager has been updated to use this registry
           instead of the one at docker.io/datawire.
+      - title: Use nftables instead of iptables-legacy
+        type: change
+        body: >-
+          Some time ago, we introduced iptables-legacy because users had problems using Telepresence with Fly.io where nftables
+          wasn't supported by the kernel. Fly.io has since fixed this, so Telepresence will now use nftables again. This in turn,
+          ensures that modern systems that lack support iptables-legacy will work.
       - type: bugfix
         title: Root daemon wouldn't start when sudo timeout was zero.
         body: >-
@@ -75,7 +536,7 @@ items:
         title: Add brew support for the OSS version of Telepresence.
         body: >-
           The Open-Source Software version of Telepresence can now be installed using the brew formula
-          via <code>brew install datawire/blackbird/telepresence-oss</code>.
+          via <code>brew install telepresenceio/telepresence/telepresence-oss</code>.
         docs: https://github.com/telepresenceio/telepresence/issues/3609
       - type: feature
         title: Add --create-namespace flag to the telepresence helm install command.
@@ -161,7 +622,7 @@ items:
           was the Windows host running Docker Desktop. The fix for this was to use the local IP of the default route instead of
           <code>host.docker.internal</code> when running under WSL..
   - version: 2.18.6
-    date: (TBD)
+    date: (SUPERSEDED)
     notes:
       - type: bugfix
         title: Fix bug in workload cache, causing endless recursion when a workload uses the same name as its owner.
@@ -177,7 +638,7 @@ items:
           available&quot; although those events indicate a recoverable condition and kill the wait. This is now fixed so
           that the events are logged but the wait continues.
   - version: 2.18.5
-    date: (TBD)
+    date: (SUPERSEDED)
     notes:
       - type: bugfix
         title: Improve how the traffic-manager resolves DNS when no agent is installed.
@@ -265,7 +726,7 @@ items:
           This resolves a bug that did not test all subnets in a private range, sometimes resulting in the warning,
           "DNS doesn't seem to work properly."
   - version: 2.18.4
-    date: (TBD)
+    date: (SUPERSEDED)
     notes:
       - type: bugfix
         title: Docker aliases deprecation caused failure to detect Kind cluster.
@@ -275,7 +736,7 @@ items:
           network that a Kind cluster sets up. In Docker versions from 26 and up, this value is no longer used, but the
           corresponding info can instead be found in the new <code>DNSNames</code> field.
   - version: 2.18.3
-    date: (TBD)
+    date: (SUPERSEDED)
     notes:
       - type: bugfix
         title: Creation of individual pods was blocked by the agent-injector webhook.
@@ -284,7 +745,7 @@ items:
           <code>kubectl run -i busybox --rm --image=curlimages/curl --restart=Never -- curl echo-easy.default</code>
           would be blocked from executing.
   - version: 2.18.2
-    date: (TBD)
+    date: (SUPERSEDED)
     notes:
       - type: bugfix
         title: Fix panic due to root daemon not running.
@@ -294,7 +755,7 @@ items:
           was set up. This is now fixed so that the initial <code>telepresence connect</code> is refused unless the root
           daemon is running.
   - version: 2.18.1
-    date: (TBD)
+    date: (SUPERSEDED)
     notes:
       - type: bugfix
         title: Get rid of telemount plugin stickiness
@@ -355,12 +816,12 @@ items:
           are then routed (with reverse translation) via the pod's of a given workload. This makes it possible to handle
           custom DNS servers that resolve domains into loopback IPs. The flag may also be used in cases where the
           cluster's subnets are in conflict with the workstation's VPN.</p>
-          <p>The CIDR can also be a symbolic name that identifies a subnet or list of subnets:<table>
+          <p>The CIDR can also be a symbolic name that identifies a subnet or list of subnets:</p><table><tbody>
           <tr><td><code>also</code></td><td>All subnets added with --also-proxy</td></tr>
           <tr><td><code>service</code></td><td>The cluster's service subnet</td></tr>
           <tr><td><code>pods</code></td><td>The cluster's pod subnets.</td></tr>
           <tr><td><code>all</code></td><td>All of the above.</td></tr>
-          </table></p>
+          </tbody></table>
       - type: bugfix
         title: Ensure that agent.appProtocolStrategy is propagated correctly.
         body: >-
@@ -518,7 +979,7 @@ items:
         title: Additional Prometheus metrics to track intercept/connect activity
         body: >-
           This feature adds the following metrics to the Prometheus endpoint: <code>connect_count</code>,
-          <code>connect_active_status</code>, <code>intercept_count</code>, and <code>intercept_active_status</code.
+          <code>connect_active_status</code>, <code>intercept_count</code>, and <code>intercept_active_status</code>.
           These are labeled by client/install_id.
           Additionally, the <code>intercept_count</code> metric has been renamed to <code>active_intercept_count</code>
           for clarity.
@@ -587,7 +1048,7 @@ items:
       - type: bugfix
         title: Backward compatibility for pod template TLS annotations.
         body: >-
-          Users of Telepresence < 2.9.0 that make use of the pod template TLS annotations were unable to upgrade because
+          Users of Telepresence &lt; 2.9.0 that make use of the pod template TLS annotations were unable to upgrade because
           the annotation names have changed (now prefixed by "telepresence."), and the environment expansion of the
           annotation values was dropped. This fix restores support for the old names (while retaining the new ones) and
           the environment expansion.
@@ -707,7 +1168,7 @@ items:
         body: >-
           Upgrading the traffic-manager using <code>telepresence helm upgrade</code> would sometimes
           result in a helm error message <q>executing "telepresence/templates/intercept-env-configmap.yaml"
-          at <.Values.intercept.environment.excluded>: nil pointer evaluating interface {}.excluded"</q>
+          at &lt;.Values.intercept.environment.excluded&gt;: nil pointer evaluating interface {}.excluded"</q>
         docs: https://github.com/telepresenceio/telepresence/issues/3313
   - version: 2.14.2
     date: "2023-07-26"
@@ -745,7 +1206,7 @@ items:
         body: >-
           Fixes a regression introduced in version 2.10.5, making it impossible to set the traffic-manager namespace
           using the telepresence.io kubeconfig extension.
-        docs: https://www.getambassador.io/docs/telepresence/latest/reference/config#manager
+        docs: https://www.telepresence.io/docs/reference/config#manager
   - version: 2.14.0
     date: "2023-06-12"
     notes:

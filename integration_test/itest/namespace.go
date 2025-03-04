@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,7 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/datawire/dlib/dlog"
+	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/dos"
+	"github.com/telepresenceio/telepresence/v2/pkg/labels"
 )
 
 type NamespacePair interface {
@@ -22,9 +23,11 @@ type NamespacePair interface {
 	ApplyApp(ctx context.Context, name, workload string)
 	ApplyEchoService(ctx context.Context, name string, port int)
 	ApplyTemplate(ctx context.Context, path string, values any)
+	DeleteApp(ctx context.Context, name string)
 	DeleteTemplate(ctx context.Context, path string, values any)
 	AppNamespace() string
 	TelepresenceConnect(ctx context.Context, args ...string) string
+	TelepresenceTryConnect(ctx context.Context, args ...string) (string, error)
 	DeleteSvcAndWorkload(ctx context.Context, workload, name string)
 	Kubectl(ctx context.Context, args ...string) error
 	KubectlOk(ctx context.Context, args ...string) string
@@ -35,33 +38,8 @@ type NamespacePair interface {
 }
 
 type Namespaces struct {
-	Namespace         string   `json:"namespace,omitempty"`
-	ManagedNamespaces []string `json:"managedNamespaces,omitempty"`
-}
-
-func (n *Namespaces) HelmString() string {
-	var sb strings.Builder
-	sb.WriteByte('{')
-	sb.WriteString(n.Namespace)
-	for _, m := range n.ManagedNamespaces {
-		if m != n.Namespace {
-			sb.WriteByte(',')
-			sb.WriteString(m)
-		}
-	}
-	sb.WriteByte('}')
-	return sb.String()
-}
-
-func (n *Namespaces) UniqueList() []string {
-	ul := make([]string, 0, len(n.ManagedNamespaces)+1)
-	ul = append(ul, n.Namespace)
-	for _, m := range n.ManagedNamespaces {
-		if m != n.Namespace {
-			ul = append(ul, m)
-		}
-	}
-	return ul
+	Namespace string           `json:"namespace,omitempty"`
+	Selector  *labels.Selector `json:"managedNamespaces,omitempty"`
 }
 
 type namespacesContextKey struct{}
@@ -85,7 +63,7 @@ type nsPair struct {
 	Namespaces
 }
 
-// TelepresenceConnect connects using the AppNamespace and ManagerNamespace.
+// TelepresenceConnect connects using the AppNamespace and ManagerNamespace and requires the result to be OK.
 func (s *nsPair) TelepresenceConnect(ctx context.Context, args ...string) string {
 	return TelepresenceOk(ctx,
 		append(
@@ -93,11 +71,20 @@ func (s *nsPair) TelepresenceConnect(ctx context.Context, args ...string) string
 			args...)...)
 }
 
+// TelepresenceTryConnect connects using the AppNamespace and ManagerNamespace and returns an error on failure.
+func (s *nsPair) TelepresenceTryConnect(ctx context.Context, args ...string) (string, error) {
+	stdout, _, err := Telepresence(ctx,
+		append(
+			[]string{"connect", "--namespace", s.AppNamespace(), "--manager-namespace", s.ManagerNamespace()},
+			args...)...)
+	return stdout, err
+}
+
 func WithNamespacePair(ctx context.Context, suffix string, f func(NamespacePair)) {
 	s := &nsPair{}
 	var namespace string
 	namespace, s.Namespace = AppAndMgrNSName(suffix)
-	s.ManagedNamespaces = []string{namespace}
+	s.Selector = labels.SelectorFromNames(namespace)
 	getT(ctx).Run(fmt.Sprintf("Test_Namespaces_%s", suffix), func(t *testing.T) {
 		ctx = WithT(ctx, t)
 		ctx = WithUser(ctx, s.Namespace+":"+TestUser)
@@ -108,8 +95,6 @@ func WithNamespacePair(ctx context.Context, suffix string, f func(NamespacePair)
 		f(s)
 	})
 }
-
-const purposeLabel = "tp-cli-testing"
 
 func (s *nsPair) setup(ctx context.Context) bool {
 	CreateNamespaces(ctx, s.AppNamespace(), s.Namespace)
@@ -146,15 +131,24 @@ func (s *nsPair) tearDown(ctx context.Context) {
 func (s *nsPair) RollbackTM(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	err := Command(ctx, "helm", "rollback", "--no-hooks", "--wait", "--namespace", s.ManagerNamespace(), "traffic-manager").Run()
+	err := Command(ctx, "helm", "rollback", "--no-hooks", "--wait", "--namespace", s.ManagerNamespace(), agentmap.ManagerAppName).Run()
 	t := getT(ctx)
 	require.NoError(t, err)
-	require.NoError(t, RolloutStatusWait(ctx, s.Namespace, "deploy/traffic-manager"))
-	s.CapturePodLogs(ctx, "traffic-manager", "", s.Namespace)
+	require.NoError(t, RolloutStatusWait(ctx, s.Namespace, "deploy/"+agentmap.ManagerAppName))
+	assert.Eventually(t, func() bool {
+		return len(RunningPodNames(ctx, agentmap.ManagerAppName, s.Namespace)) == 1
+	}, 30*time.Second, 5*time.Second)
+	s.CapturePodLogs(ctx, agentmap.ManagerAppName, "", s.Namespace)
 }
 
 func (s *nsPair) AppNamespace() string {
-	return s.ManagedNamespaces[0]
+	if len(s.Selector.MatchExpressions) == 1 {
+		m := s.Selector.MatchExpressions[0]
+		if m.Key == labels.NameLabelKey && m.Operator == labels.OperatorIn {
+			return m.Values[0]
+		}
+	}
+	return ""
 }
 
 func (s *nsPair) ManagerNamespace() string {
@@ -171,6 +165,13 @@ func (s *nsPair) ApplyEchoService(ctx context.Context, name string, port int) {
 func (s *nsPair) ApplyApp(ctx context.Context, name, workload string) {
 	getT(ctx).Helper()
 	ApplyApp(ctx, name, s.AppNamespace(), workload)
+}
+
+// DeleteApp calls kubectl delete -n <namespace> -f on the given app + .yaml found in testdata/k8s relative
+// to the directory returned by GetCurrentDirectory.
+func (s *nsPair) DeleteApp(ctx context.Context, name string) {
+	getT(ctx).Helper()
+	DeleteApp(ctx, name, s.AppNamespace())
 }
 
 func (s *nsPair) RolloutStatusWait(ctx context.Context, workload string) error {

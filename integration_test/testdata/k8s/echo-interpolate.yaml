@@ -37,7 +37,7 @@ spec:
     spec:
       containers:
         - name: echo-interpolate
-          image: jmalloc/echo-server
+          image: ghcr.io/telepresenceio/echo-server:latest
           envFrom:
             - configMapRef:
                 name: interpolate-config

@@ -2,16 +2,14 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/rpc/v2/connector"
-	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/ann"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/connect"
@@ -19,20 +17,21 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/intercept"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/output"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
+	"github.com/telepresenceio/telepresence/v2/pkg/ioutil"
+)
+
+const (
+	includeIntercepts = iota
+	includeIngests
+	includeReplacements
 )
 
 type listCommand struct {
-	onlyIntercepts    bool
-	onlyAgents        bool
-	onlyInterceptable bool
-	debug             bool
-	namespace         string
-	watch             bool
-}
-
-type workloadJSONOutput struct {
-	*connector.WorkloadInfo
-	Sidecar *agentconfig.Sidecar `json:"sidecar,omitempty"`
+	inclusions [3]bool
+	onlyAgents bool
+	debug      bool
+	namespace  string
+	watch      bool
 }
 
 func list() *cobra.Command {
@@ -46,13 +45,20 @@ func list() *cobra.Command {
 		Annotations: map[string]string{
 			ann.Session: ann.Required,
 		},
+		ValidArgsFunction: cobra.NoFileCompletions,
 	}
 	flags := cmd.Flags()
-	flags.BoolVarP(&s.onlyIntercepts, "intercepts", "i", false, "intercepts only")
+	flags.BoolVarP(&s.inclusions[includeIntercepts], "intercepts", "i", false, "intercepts")
+	flags.BoolVarP(&s.inclusions[includeIngests], "ingests", "g", false, "ingests")
+	flags.BoolVarP(&s.inclusions[includeReplacements], "replacements", "r", false, "replacements")
 	flags.BoolVarP(&s.onlyAgents, "agents", "a", false, "with installed agents only")
-	flags.BoolVarP(&s.onlyInterceptable, "only-interceptable", "o", true, "interceptable workloads only")
 	flags.BoolVar(&s.debug, "debug", false, "include debugging information")
 	flags.StringVarP(&s.namespace, "namespace", "n", "", "If present, the namespace scope for this CLI request")
+
+	flags.BoolP("only-interceptable", "o", false, "")
+	of := flags.Lookup("only-interceptable")
+	of.Hidden = true
+	of.Deprecated = "Redundant since all workloads are eligible for ingest, intercept, or replace"
 
 	flags.BoolVarP(&s.watch, "watch", "w", false, "watch a namespace. --agents and --intercepts are disabled if this flag is set")
 	wf := flags.Lookup("watch")
@@ -94,16 +100,21 @@ func (s *listCommand) list(cmd *cobra.Command, _ []string) error {
 	stdout := cmd.OutOrStdout()
 	ctx := cmd.Context()
 	userD := daemon.GetUserClient(ctx)
-	var filter connector.ListRequest_Filter
-	switch {
-	case s.onlyIntercepts:
-		filter = connector.ListRequest_INTERCEPTS
-	case s.onlyAgents:
+	filter := connector.ListRequest_UNSPECIFIED
+	for i := range s.inclusions {
+		if s.inclusions[i] {
+			switch i {
+			case includeIntercepts:
+				filter |= connector.ListRequest_INTERCEPTS
+			case includeReplacements:
+				filter |= connector.ListRequest_REPLACEMENTS
+			case includeIngests:
+				filter |= connector.ListRequest_INGESTS
+			}
+		}
+	}
+	if filter == connector.ListRequest_UNSPECIFIED && s.onlyAgents {
 		filter = connector.ListRequest_INSTALLED_AGENTS
-	case s.onlyInterceptable:
-		filter = connector.ListRequest_INTERCEPTABLE
-	default:
-		filter = connector.ListRequest_EVERYTHING
 	}
 
 	cfg := client.GetConfig(ctx)
@@ -165,64 +176,52 @@ func (s *listCommand) printList(ctx context.Context, workloads []*connector.Work
 		if formattedOut {
 			output.Object(ctx, []struct{}{}, false)
 		} else {
-			fmt.Fprintln(stdout, "No Workloads (Deployments, StatefulSets, ReplicaSets or Rollouts)")
+			ioutil.Println(stdout, "No Workloads (Deployments, StatefulSets, ReplicaSets, or Rollouts)")
 		}
 		return
 	}
 
 	state := func(workload *connector.WorkloadInfo) string {
-		if iis := workload.InterceptInfos; len(iis) > 0 {
-			return intercept.DescribeIntercepts(ctx, iis, "", s.debug)
+		if iis, igs := workload.InterceptInfos, workload.IngestInfos; len(iis)+len(igs) > 0 {
+			return intercept.DescribeIntercepts(ctx, iis, igs, nil, s.debug)
 		}
-		ai := workload.Sidecar
-		if ai != nil {
-			return "ready to intercept (traffic-agent already installed)"
+		if workload.NotInterceptableReason == "Progressing" {
+			return "progressing..."
+		}
+		if workload.AgentVersion != "" {
+			return "ready to engage (traffic-agent already installed)"
 		}
 		if workload.NotInterceptableReason != "" {
-			return "not interceptable (traffic-agent not installed): " + workload.NotInterceptableReason
+			return "unable to engage (traffic-agent not installed): " + workload.NotInterceptableReason
 		} else {
-			return "ready to intercept (traffic-agent not yet installed)"
+			return "ready to engage (traffic-agent not yet installed)"
 		}
 	}
 
 	if formattedOut {
-		o := make([]*workloadJSONOutput, len(workloads))
-		for i, v := range workloads {
-			l := workloadJSONOutput{WorkloadInfo: v}
-
-			if v.Sidecar != nil {
-				var sidecar agentconfig.Sidecar
-				_ = json.Unmarshal(v.Sidecar.Json, &sidecar)
-				l.Sidecar = &sidecar
-			}
-
-			o[i] = &l
-		}
-
-		output.Object(ctx, o, false)
+		output.Object(ctx, workloads, false)
 	} else {
 		includeNs := false
 		ns := s.namespace
 		for _, dep := range workloads {
 			depNs := dep.Namespace
-			if depNs == "" {
-				// Local-only, so use namespace of first intercept
-				depNs = dep.InterceptInfos[0].Spec.Namespace
-			}
 			if ns != "" && depNs != ns {
 				includeNs = true
 				break
 			}
 			ns = depNs
 		}
+		typeLen := 0
+
 		nameLen := 0
 		for _, dep := range workloads {
-			n := dep.Name
-			if n == "" {
-				// Local-only, so use name of first intercept
-				n = dep.InterceptInfos[0].Spec.Name
-			}
+			n := dep.WorkloadResourceType
 			nl := len(n)
+			if nl > typeLen {
+				typeLen = nl
+			}
+			n = dep.Name
+			nl = len(n)
 			if includeNs {
 				nl += len(dep.Namespace) + 1
 			}
@@ -231,20 +230,12 @@ func (s *listCommand) printList(ctx context.Context, workloads []*connector.Work
 			}
 		}
 		for _, workload := range workloads {
-			if workload.Name == "" {
-				// Local-only, so use name of first intercept
-				n := workload.InterceptInfos[0].Spec.Name
-				if includeNs {
-					n += "." + workload.Namespace
-				}
-				fmt.Fprintf(stdout, "%-*s: local-only intercept\n", nameLen, n)
-			} else {
-				n := workload.Name
-				if includeNs {
-					n += "." + workload.Namespace
-				}
-				fmt.Fprintf(stdout, "%-*s: %s\n", nameLen, n, state(workload))
+			t := workload.WorkloadResourceType
+			n := workload.Name
+			if includeNs {
+				n += "." + workload.Namespace
 			}
+			ioutil.Printf(stdout, "%-*s %-*s: %s\n", typeLen, strings.ToLower(t), nameLen, n, state(workload))
 		}
 	}
 }

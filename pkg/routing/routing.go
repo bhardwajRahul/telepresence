@@ -5,21 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"time"
 
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
-
 	"github.com/datawire/dlib/dlog"
-	"github.com/telepresenceio/telepresence/v2/pkg/tracing"
 )
 
 type Route struct {
-	LocalIP   net.IP
-	RoutedNet *net.IPNet
+	LocalIP   netip.Addr
+	RoutedNet netip.Prefix
 	Interface *net.Interface
-	Gateway   net.IP
+	Gateway   netip.Addr
 	Default   bool
 }
 
@@ -76,7 +72,7 @@ func GetRoutingTable(ctx context.Context) ([]*Route, error) {
 	return nil, errInconsistentRT
 }
 
-func (r *Route) Routes(ip net.IP) bool {
+func (r *Route) Routes(ip netip.Addr) bool {
 	return r.RoutedNet.Contains(ip)
 }
 
@@ -85,45 +81,46 @@ func (r *Route) String() string {
 	if !r.Default {
 		isDefault = ""
 	}
-	return fmt.Sprintf("%s via %s dev %s, gw %s%s", r.RoutedNet, r.LocalIP, r.Interface.Name, r.Gateway, isDefault)
+	gw := ""
+	if r.Gateway.IsValid() {
+		gw = fmt.Sprintf(", gw %s", r.Gateway)
+	}
+	return fmt.Sprintf("%s via %s dev %s%s%s", r.RoutedNet, r.LocalIP, r.Interface.Name, gw, isDefault)
 }
 
 // AddStatic adds a specific route. This can be used to prevent certain IP addresses
 // from being routed to the route's interface.
 func (r *Route) AddStatic(ctx context.Context) (err error) {
 	dlog.Debugf(ctx, "Adding static route %s", r)
-	ctx, span := otel.GetTracerProvider().Tracer("").Start(ctx, "AddStatic", trace.WithAttributes(attribute.Stringer("tel2.route", r)))
-	defer tracing.EndAndRecord(span, err)
 	return r.addStatic(ctx)
 }
 
 // RemoveStatic removes a specific route added via AddStatic.
 func (r *Route) RemoveStatic(ctx context.Context) (err error) {
 	dlog.Debugf(ctx, "Dropping static route %s", r)
-	ctx, span := otel.GetTracerProvider().Tracer("").Start(ctx, "RemoveStaticRoute", trace.WithAttributes(attribute.Stringer("tel2.route", r)))
-	defer tracing.EndAndRecord(span, err)
 	return r.removeStatic(ctx)
 }
 
-func interfaceLocalIP(iface *net.Interface, ipv4 bool) (net.IP, error) {
-	addrs, err := iface.Addrs()
+func interfaceLocalIP(iface *net.Interface, ipv4 bool) (netip.Addr, error) {
+	ias, err := iface.Addrs()
 	if err != nil {
-		return net.IP{}, fmt.Errorf("unable to get interface addresses for interface %s: %w", iface.Name, err)
+		return netip.Addr{}, fmt.Errorf("unable to get interface addresses for interface %s: %w", iface.Name, err)
 	}
-	for _, addr := range addrs {
-		ip, _, err := net.ParseCIDR(addr.String())
+	for _, ia := range ias {
+		pfx, err := netip.ParsePrefix(ia.String())
 		if err != nil {
-			return net.IP{}, fmt.Errorf("unable to parse address %s: %v", addr.String(), err)
+			return netip.Addr{}, fmt.Errorf("unable to parse address %s: %v", ia.String(), err)
 		}
-		if ip4 := ip.To4(); ip4 != nil {
+		ip := pfx.Addr()
+		if ip.Is4() {
 			if !ipv4 {
 				continue
 			}
-			return ip4, nil
+			return ip, nil
 		} else if ipv4 {
 			continue
 		}
 		return ip, nil
 	}
-	return nil, nil
+	return netip.Addr{}, nil
 }

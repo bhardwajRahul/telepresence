@@ -2,12 +2,12 @@ package itest
 
 import (
 	"context"
-	"encoding/json"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/go-json-experiment/json"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -16,7 +16,7 @@ import (
 )
 
 func ApplyEchoService(ctx context.Context, name, namespace string, port int) {
-	ApplyService(ctx, name, namespace, "jmalloc/echo-server:0.1.0", port, 8080)
+	ApplyService(ctx, name, namespace, "ghcr.io/telepresenceio/echo-server:latest", port, 8080)
 }
 
 func ApplyService(ctx context.Context, name, namespace, image string, port, targetPort int) {
@@ -41,6 +41,15 @@ func ApplyApp(ctx context.Context, name, namespace, workload string) {
 	manifest := filepath.Join("testdata", "k8s", name+".yaml")
 	require.NoError(t, Kubectl(ctx, namespace, "apply", "-f", manifest), "failed to apply %s", manifest)
 	require.NoError(t, RolloutStatusWait(ctx, namespace, workload))
+}
+
+// DeleteApp calls kubectl delete -n <namespace> -f on the given app + .yaml found in testdata/k8s relative
+// to the directory returned by GetWorkingDir.
+func DeleteApp(ctx context.Context, name, namespace string) {
+	t := getT(ctx)
+	t.Helper()
+	manifest := filepath.Join("testdata", "k8s", name+".yaml")
+	require.NoError(t, Kubectl(ctx, namespace, "delete", "-f", manifest), "failed to delete %s", manifest)
 }
 
 type AppPort struct {

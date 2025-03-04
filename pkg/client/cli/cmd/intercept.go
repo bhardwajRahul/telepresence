@@ -20,8 +20,8 @@ func interceptCmd() *cobra.Command {
 		SilenceUsage:      true,
 		SilenceErrors:     true,
 		RunE:              ic.Run,
-		ValidArgsFunction: ic.ValidArgs,
+		ValidArgsFunction: intercept.ValidArgs,
 	}
-	ic.AddFlags(cmd)
+	ic.AddInterceptFlags(cmd)
 	return cmd
 }

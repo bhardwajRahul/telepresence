@@ -86,3 +86,13 @@ func Initializer(ctx context.Context) (context.Context, error) {
 	}
 	return ctx, nil
 }
+
+func GetOptionalSession(cmd *cobra.Command) (context.Context, *daemon.Session, error) {
+	cmd.Annotations[ann.Session] = ann.Optional
+	err := InitCommand(cmd)
+	if err != nil {
+		return nil, nil, err
+	}
+	ctx := cmd.Context()
+	return ctx, daemon.GetSession(ctx), nil
+}

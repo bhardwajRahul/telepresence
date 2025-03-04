@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -16,9 +16,9 @@ import (
 	"github.com/datawire/dlib/dtime"
 	"github.com/telepresenceio/telepresence/v2/pkg/dnsproxy"
 	"github.com/telepresenceio/telepresence/v2/pkg/forwarder"
-	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 	"github.com/telepresenceio/telepresence/v2/pkg/proc"
 	"github.com/telepresenceio/telepresence/v2/pkg/shellquote"
+	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
 	"github.com/telepresenceio/telepresence/v2/pkg/vif"
 )
 
@@ -32,7 +32,7 @@ const (
 
 var errResolveDNotConfigured = errors.New("resolved not configured")
 
-func (s *Server) Worker(c context.Context, dev vif.Device, configureDNS func(net.IP, *net.UDPAddr)) error {
+func (s *Server) Worker(c context.Context, dev vif.Device, configureDNS func(netip.Addr, *net.UDPAddr)) error {
 	if proc.RunningInContainer() {
 		// Don't bother with systemd-resolved when running in a docker container
 		return s.runOverridingServer(c, dev)
@@ -50,16 +50,20 @@ func (s *Server) Worker(c context.Context, dev vif.Device, configureDNS func(net
 }
 
 func (s *Server) runOverridingServer(c context.Context, dev vif.Device) error {
-	if s.localIP == nil {
+	if !s.LocalIP.IsValid() {
 		rf, err := dnsproxy.ReadResolveFile("/etc/resolv.conf")
 		if err != nil {
 			return err
 		}
 		dlog.Debug(c, rf.String())
 		if len(rf.Nameservers) > 0 {
-			ip := iputil.Parse(rf.Nameservers[0])
-			s.localIP = ip
-			dlog.Infof(c, "Automatically set -dns=%s", ip)
+			nsAddr := rf.Nameservers[0]
+			addr, err := netip.ParseAddr(nsAddr)
+			if err != nil {
+				return fmt.Errorf("nameserver IP %q in /etc/resolv.conf is invalid: %v", nsAddr, err)
+			}
+			s.LocalIP = addr
+			dlog.Infof(c, "Automatically set -dns=%s", addr)
 		}
 
 		// The search entries in /etc/resolv.conf are not intended for this resolver so
@@ -80,7 +84,7 @@ func (s *Server) runOverridingServer(c context.Context, dev vif.Device) error {
 			}
 		}
 	}
-	if s.localIP == nil {
+	if !s.LocalIP.IsValid() {
 		return errors.New("couldn't determine dns ip from /etc/resolv.conf")
 	}
 
@@ -97,7 +101,7 @@ func (s *Server) runOverridingServer(c context.Context, dev vif.Device) error {
 	// Create the connection pool later used for fallback. We need to create this before the firewall
 	// rule because the rule must exclude the local address of this connection in order to
 	// let it reach the original destination and not cause an endless loop.
-	pool, err := NewConnPool(s.localIP.String(), 10)
+	pool, err := NewConnPool(s.LocalIP, 10)
 	if err != nil {
 		return err
 	}
@@ -115,7 +119,7 @@ func (s *Server) runOverridingServer(c context.Context, dev vif.Device) error {
 			s.flushDNS()
 			return nil
 		}, dev)
-		return s.Run(c, serverStarted, listeners, pool, s.resolveInCluster)
+		return s.Run(c, serverStarted, listeners, pool)
 	})
 
 	if proc.RunningInContainer() {
@@ -132,7 +136,7 @@ func (s *Server) runOverridingServer(c context.Context, dev vif.Device) error {
 					return nil
 				}
 				go func() {
-					if err = forwarder.ForwardUDP(c, pc.(*net.UDPConn), dnsResolverAddr); err != nil {
+					if err = forwarder.ForwardUDP(c, tunnel.ClientToDNS, pc.(*net.UDPConn), dnsResolverAddr); err != nil {
 						dlog.Error(c, err)
 					}
 				}()
@@ -148,7 +152,7 @@ func (s *Server) runOverridingServer(c context.Context, dev vif.Device) error {
 			// Give DNS server time to start before rerouting NAT
 			dtime.SleepWithContext(c, time.Millisecond)
 
-			err := routeDNS(c, s.localIP, dnsResolverAddr, pool.LocalAddrs())
+			err := routeDNS(c, s.LocalIP, dnsResolverAddr, pool.LocalAddrs())
 			if err != nil {
 				return err
 			}
@@ -170,80 +174,7 @@ func (s *Server) dnsListeners(c context.Context) ([]net.PacketConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	listeners := []net.PacketConn{listener}
-	if proc.RunningInContainer() {
-		// Inside docker. Don't add docker bridge
-		return listeners, nil
-	}
-
-	// This is the default docker bridge. We need to listen here because the nat logic we use to intercept
-	// dns packets will divert the packet to the interface it originates from, which in the case of
-	// containers is the docker bridge. Without this dns won't work from inside containers.
-	output, err := dexec.CommandContext(c, "docker", "inspect", "bridge",
-		"-f", "{{(index .IPAM.Config 0).Gateway}}").Output()
-	if err != nil {
-		dlog.Info(c, "not listening on docker bridge")
-		return listeners, nil
-	}
-
-	localAddr, err := splitToUDPAddr(listener.LocalAddr())
-	if err != nil {
-		return nil, err
-	}
-
-	dockerGatewayIP := net.ParseIP(strings.TrimSpace(string(output)))
-	if dockerGatewayIP == nil || dockerGatewayIP.Equal(localAddr.IP) {
-		return listeners, nil
-	}
-
-	// Check that the dockerGatewayIP is registered as an interface on this machine. When running WSL2 on
-	// a Windows box, the gateway is managed by Windows and never visible to the Linux host and hence
-	// will not be affected by the nat logic. Also, any attempt to listen to it will fail.
-	found := false
-	ifAddrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return nil, err
-	}
-	for _, ifAddr := range ifAddrs {
-		_, network, err := net.ParseCIDR(ifAddr.String())
-		if err != nil {
-			continue
-		}
-		if network.Contains(dockerGatewayIP) {
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		dlog.Infof(c, "docker gateway %s is not visible as a network interface", dockerGatewayIP)
-		return listeners, nil
-	}
-
-	for {
-		extraAddr := &net.UDPAddr{IP: dockerGatewayIP, Port: localAddr.Port}
-		ls, err := net.ListenPacket("udp", extraAddr.String())
-		if err == nil {
-			dlog.Infof(c, "listening to docker bridge at %s", dockerGatewayIP)
-			return append(listeners, ls), nil
-		}
-
-		// the extraAddr was busy, try next available port
-		for localAddr.Port++; localAddr.Port <= math.MaxUint16; localAddr.Port++ {
-			if ls, err = net.ListenPacket("udp", localAddr.String()); err == nil {
-				if localAddr, err = splitToUDPAddr(ls.LocalAddr()); err != nil {
-					ls.Close()
-					return nil, err
-				}
-				_ = listeners[0].Close()
-				listeners = []net.PacketConn{ls}
-				break
-			}
-		}
-		if localAddr.Port > math.MaxUint16 {
-			return nil, fmt.Errorf("unable to find a free port for both %s and %s", localAddr.IP, extraAddr.IP)
-		}
-	}
+	return []net.PacketConn{listener}, nil
 }
 
 // runNatTableCmd runs "iptables -t nat ...".
@@ -263,7 +194,7 @@ const tpDNSChain = "TELEPRESENCE_DNS"
 // that all packets sent to the currently configured DNS service are rerouted to our local
 // DNS service. Another rule ensures that when our local DNS service cannot resolve and
 // uses a fallback, that fallback reaches the original DNS service.
-func routeDNS(c context.Context, dnsIP net.IP, toAddr *net.UDPAddr, localDNSs []*net.UDPAddr) (err error) {
+func routeDNS(c context.Context, dnsIP netip.Addr, toAddr *net.UDPAddr, localDNSs []*net.UDPAddr) (err error) {
 	// create the chain
 	unrouteDNS(c)
 

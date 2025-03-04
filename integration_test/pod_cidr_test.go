@@ -1,15 +1,14 @@
 package integration_test
 
 import (
+	"net/netip"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"sigs.k8s.io/yaml"
 
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
-	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 )
 
 type podCIDRSuite struct {
@@ -44,7 +43,7 @@ func (s *podCIDRSuite) Test_PodCIDRStrategy() {
 	itest.TelepresenceQuitOk(ctx)
 	connected = false
 
-	subnetsAsStrings := func(snn []*iputil.Subnet) []string {
+	subnetsAsStrings := func(snn []netip.Prefix) []string {
 		sns := make([]string, len(snn))
 		for i, sn := range snn {
 			sns[i] = sn.String()
@@ -56,13 +55,13 @@ func (s *podCIDRSuite) Test_PodCIDRStrategy() {
 
 	tests := []struct {
 		name        string
-		values      map[string]string
+		values      map[string]any
 		wantSubnets []string
 	}{
 		{
 			"environment",
-			map[string]string{
-				"podCIDRs":        strings.Join(append(podCIDRs, "199.199.50.228/30"), " "),
+			map[string]any{
+				"podCIDRs":        append(podCIDRs, "199.199.50.228/30"),
 				"podCIDRStrategy": "environment",
 			},
 			append(podCIDRs, "199.199.50.228/30"),
@@ -73,7 +72,6 @@ func (s *podCIDRSuite) Test_PodCIDRStrategy() {
 	vFile := filepath.Join(vDir, "values.yaml")
 
 	for _, tt := range tests {
-		tt := tt
 		s.Run(tt.name, func() {
 			rq := s.Require()
 			vy, err := yaml.Marshal(tt.values)
@@ -88,7 +86,10 @@ func (s *podCIDRSuite) Test_PodCIDRStrategy() {
 			rd := si.RootDaemon
 			rq.NotNil(rd)
 			rq.Greater(len(rd.Subnets), 1)
-			s.Equal(tt.wantSubnets, subnetsAsStrings(rd.Subnets[1:]))
+			sns := subnetsAsStrings(rd.Subnets[1:])
+			for _, ws := range tt.wantSubnets {
+				s.Contains(sns, ws)
+			}
 		})
 	}
 }

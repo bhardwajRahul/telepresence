@@ -2,7 +2,6 @@ package kubeauth
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -11,17 +10,18 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/go-json-experiment/json"
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/datawire/dlib/dgroup"
-	"github.com/datawire/dlib/dhttp"
 	"github.com/datawire/dlib/dlog"
 	authGrpc "github.com/telepresenceio/telepresence/v2/pkg/authenticator/grpc"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/logging"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
+	"github.com/telepresenceio/telepresence/v2/pkg/grpc/server"
 )
 
 const (
@@ -31,10 +31,10 @@ const (
 )
 
 type authService struct {
-	portFile    string
-	kubeFlags   *genericclioptions.ConfigFlags
-	cancel      context.CancelFunc
-	configFiles []string
+	portFile     string
+	kubeFlags    *genericclioptions.ConfigFlags
+	configFiles  []string
+	clientConfig clientcmd.ClientConfig
 }
 
 type PortFile struct {
@@ -73,15 +73,15 @@ func (as *authService) run(cmd *cobra.Command, _ []string) error {
 		return errcat.NoDaemonLogs.Newf("unable to open a port on localhost: %w", err)
 	}
 
-	ctx, err = logging.InitContext(ctx, "kubeauth", logging.RotateNever, false)
+	ctx, err = logging.InitContext(ctx, "kubeauth", logging.RotateNever, false, false)
 	if err != nil {
 		return err
 	}
 	addr := grpcListener.Addr().(*net.TCPAddr)
 	dlog.Infof(ctx, "kubeauth listening on address %s", addr)
 
-	config := as.kubeFlags.ToRawKubeConfigLoader()
-	as.configFiles = config.ConfigAccess().GetLoadingPrecedence()
+	as.clientConfig = as.kubeFlags.ToRawKubeConfigLoader()
+	as.configFiles = as.clientConfig.ConfigAccess().GetLoadingPrecedence()
 	p := PortFile{
 		Port:       addr.Port,
 		Kubeconfig: strings.Join(as.configFiles, string(filepath.ListSeparator)),
@@ -94,17 +94,28 @@ func (as *authService) run(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	ctx, as.cancel = context.WithCancel(ctx)
-	g := dgroup.NewGroup(ctx, dgroup.GroupConfig{})
+	g := dgroup.NewGroup(ctx, dgroup.GroupConfig{
+		EnableSignalHandling: true,
+		ShutdownOnNonError:   true,
+		SoftShutdownTimeout:  time.Second,
+	})
 	g.Go("portfile-alive", as.keepPortFileAlive)
 	g.Go("portfile-watcher", as.watchFiles)
 	g.Go("grpc-server", func(ctx context.Context) error {
-		grpcHandler := grpc.NewServer()
-		authGrpc.RegisterAuthenticatorServer(grpcHandler, config)
-		sc := &dhttp.ServerConfig{Handler: grpcHandler}
-		return sc.Serve(ctx, grpcListener)
+		svc := server.New(ctx)
+		authGrpc.RegisterAuthenticatorServer(svc, as)
+		return server.Serve(ctx, svc, grpcListener)
 	})
-	return g.Wait()
+	if err = g.Wait(); err != nil {
+		dlog.Errorf(ctx, "kubeauth exiting with error: %v", err)
+	} else {
+		dlog.Info(ctx, "kubeauth exiting")
+	}
+	return err
+}
+
+func (as *authService) ClientConfig() (clientcmd.ClientConfig, error) {
+	return as.clientConfig, nil
 }
 
 func (as *authService) keepPortFileAlive(ctx context.Context) error {
@@ -121,8 +132,6 @@ func (as *authService) keepPortFileAlive(ctx context.Context) error {
 				return fmt.Errorf("failed to update timestamp on %s: %v", as.portFile, err)
 			}
 			// File is removed, so stop trying to update its timestamps and die
-			dlog.Info(ctx, "kubeauth exiting")
-			as.cancel()
 			return nil
 		}
 		select {
@@ -178,7 +187,7 @@ func (as *authService) watchFiles(ctx context.Context) error {
 		case event := <-watcher.Events:
 			if event.Op&(fsnotify.Remove|fsnotify.Write|fsnotify.Create) != 0 && isOfInterest(event.Name, files) {
 				dlog.Infof(ctx, "Terminated due to %s in %s", event.Op, event.Name)
-				as.cancel()
+				return nil
 			}
 		}
 	}

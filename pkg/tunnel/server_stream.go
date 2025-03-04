@@ -6,8 +6,8 @@ import (
 	"fmt"
 )
 
-func NewServerStream(ctx context.Context, grpcStream GRPCStream) (Stream, error) {
-	s := &stream{tag: "SRV", grpcStream: grpcStream, syncRatio: 8, ackWindow: 1}
+func NewServerStream(ctx context.Context, tag Tag, grpcStream GRPCStream) (Stream, error) {
+	s := &stream{tag: tag, grpcStream: grpcStream, syncRatio: 8, ackWindow: 1}
 	m, err := s.Receive(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read initial StreamInfo message: %w", err)

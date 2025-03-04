@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 
 	"github.com/spf13/cobra"
 
@@ -30,15 +31,20 @@ func InitContext(ctx context.Context) context.Context {
 	ctx = client.WithEnv(ctx, env)
 	switch client.ProcessName() {
 	case userd.ProcessName:
+		client.DisplayName = "OSS User Daemon"
 		if proc.RunningInContainer() {
-			client.DisplayName = "OSS Daemon in container"
-		} else {
-			client.DisplayName = "OSS User Daemon"
+			if slices.Contains(os.Args, "--embed-network") {
+				client.DisplayName = "OSS Daemon in container"
+			} else {
+				// False positive, likely due to a /.dockerenv file in CodesSpace
+				proc.SetRunningInContainer(false)
+			}
 		}
 		ctx = userd.WithNewServiceFunc(ctx, userDaemon.NewService)
 		ctx = userd.WithNewSessionFunc(ctx, trafficmgr.NewSession)
 	case rootd.ProcessName:
 		client.DisplayName = "OSS Root Daemon"
+		proc.SetRunningInContainer(false) // We never start the root daemon as a container.
 		ctx = rootd.WithNewServiceFunc(ctx, rootd.NewService)
 		ctx = rootd.WithNewSessionFunc(ctx, rootd.NewSession)
 	default:

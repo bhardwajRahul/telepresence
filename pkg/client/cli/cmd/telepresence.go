@@ -28,7 +28,7 @@ func Telepresence(ctx context.Context) *cobra.Command {
 		os.Exit(1)
 	}
 	ctx = client.WithConfig(ctx, cfg)
-	if ctx, err = logging.InitContext(ctx, "cli", logging.RotateDaily, false); err != nil {
+	if ctx, err = logging.InitContext(ctx, "cli", logging.RotateDaily, false, false); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
 	}
@@ -42,6 +42,7 @@ func Telepresence(ctx context.Context) *cobra.Command {
 		SilenceErrors:      true, // main() will handle it after .ExecuteContext() returns
 		SilenceUsage:       true, // our FlagErrorFunc will handle it
 		DisableFlagParsing: true, // Bc of the legacyCommand parsing, see legacy_command.go
+		ValidArgsFunction:  cobra.NoFileCompletions,
 	}
 	rootCmd.SetContext(ctx)
 	AddSubCommands(rootCmd)
@@ -134,9 +135,26 @@ func OnlySubcommands(cmd *cobra.Command, args []string) error {
 
 func WithSubCommands(ctx context.Context) context.Context {
 	return MergeSubCommands(ctx,
-		configCmd(), connectCmd(), currentClusterId(), gatherLogs(), gatherTraces(), genYAML(), helmCmd(),
-		interceptCmd(), kubeauthCmd(), leave(), list(), listContexts(), listNamespaces(), loglevel(), quit(), statusCmd(),
-		testVPN(), uninstall(), uploadTraces(), version(), listNamespaces(), listContexts(),
+		configCmd(),
+		connectCmd(),
+		curlCmd(),
+		dockerRunCmd(),
+		gatherLogs(),
+		genYAML(),
+		helmCmd(),
+		ingestCmd(),
+		interceptCmd(),
+		kubeauthCmd(),
+		leave(),
+		list(),
+		listContexts(),
+		listNamespaces(),
+		loglevel(),
+		quit(),
+		replaceCmd(),
+		statusCmd(),
+		uninstall(),
+		version(),
 	)
 }
 

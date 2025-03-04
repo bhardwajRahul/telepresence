@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "traffic-manager.name" $ }}
+  namespace:  {{ include "traffic-manager.namespace" $ }}
+  labels:
+    {{- include "telepresence.labels" $ | nindent 4 }}
+data:
+{{- if .Values.client }}
+  client.yaml: |
+    {{- toYaml .Values.client | nindent 4 }}
+{{- end }}
+{{- with .Values.intercept }}
+{{- if .environment }}
+  agent-env.yaml: |
+    {{- toYaml .environment | nindent 4 }}
+{{- end }}
+{{- end }}
+  namespace-selector.yaml: |
+    {{- toYaml (mustFromJson (include "traffic-manager.namespaceSelector" $)) | nindent 4 }}

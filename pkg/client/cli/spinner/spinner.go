@@ -65,8 +65,8 @@ func (n noop) IsNoOp() bool {
 func (n noop) DoneMsg(string) {
 }
 
-func (n noop) Error(error) error {
-	return nil
+func (n noop) Error(err error) error {
+	return err
 }
 
 func (n noop) Message(string) {

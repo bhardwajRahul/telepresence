@@ -18,11 +18,15 @@ import (
 
 // userdToManagerShortcut overcomes one minor problem, namely that even though a connector.ManagerProxyClient implements a subset
 // of the manager.ManagerClient interface, we cannot pass the real thing as the proxy. In the Go implementation, the interface returned
-// from a stream function is tightly coupled to the owner of that function and therefore have a different name in the proxy, even though
+// from a stream function is tightly coupled to the owner of that function and therefore has a different name in the proxy, even though
 // its methods are exactly the same. That's why the two affected functions are overridden here, seemingly doing nothing at all. They
 // make it possible to pass the manager.ManagerClient as a connector.ManagerProxyClient.
 type userdToManagerShortcut struct {
 	manager.ManagerClient
+}
+
+func (m *userdToManagerShortcut) EnsureAgent(ctx context.Context, in *manager.EnsureAgentRequest, opts ...grpc.CallOption) (*manager.AgentInfoSnapshot, error) {
+	return m.ManagerClient.EnsureAgent(ctx, in, opts...)
 }
 
 func (m *userdToManagerShortcut) WatchClusterInfo(ctx context.Context, in *manager.SessionInfo, opts ...grpc.CallOption) (connector.ManagerProxy_WatchClusterInfoClient, error) {
@@ -52,16 +56,14 @@ func (rd *InProcSession) Version(context.Context, *empty.Empty, ...grpc.CallOpti
 	}, nil
 }
 
-func (rd *InProcSession) Status(context.Context, *empty.Empty, ...grpc.CallOption) (*rpc.DaemonStatus, error) {
-	nc := rd.getNetworkConfig()
+func (rd *InProcSession) Status(ctx context.Context, _ *empty.Empty, _ ...grpc.CallOption) (*rpc.DaemonStatus, error) {
 	return &rpc.DaemonStatus{
 		Version: &common.VersionInfo{
 			ApiVersion: client.APIVersion,
 			Version:    client.Version(),
 			Name:       client.DisplayName,
 		},
-		Subnets:        nc.Subnets,
-		OutboundConfig: nc.OutboundInfo,
+		OutboundConfig: rd.getNetworkConfig(ctx),
 	}, nil
 }
 
@@ -70,7 +72,7 @@ func (rd *InProcSession) Quit(context.Context, *empty.Empty, ...grpc.CallOption)
 	return &empty.Empty{}, nil
 }
 
-func (rd *InProcSession) Connect(ctx context.Context, _ *rpc.OutboundInfo, opts ...grpc.CallOption) (*rpc.DaemonStatus, error) {
+func (rd *InProcSession) Connect(ctx context.Context, _ *rpc.NetworkConfig, opts ...grpc.CallOption) (*rpc.DaemonStatus, error) {
 	return rd.Status(ctx, nil, opts...)
 }
 
@@ -79,8 +81,8 @@ func (rd *InProcSession) Disconnect(context.Context, *empty.Empty, ...grpc.CallO
 	return &empty.Empty{}, nil
 }
 
-func (rd *InProcSession) GetNetworkConfig(context.Context, *empty.Empty, ...grpc.CallOption) (*rpc.NetworkConfig, error) {
-	return rd.getNetworkConfig(), nil
+func (rd *InProcSession) GetNetworkConfig(ctx context.Context, _ *empty.Empty, _ ...grpc.CallOption) (*rpc.NetworkConfig, error) {
+	return rd.getNetworkConfig(ctx), nil
 }
 
 func (rd *InProcSession) SetDNSTopLevelDomains(ctx context.Context, in *rpc.Domains, _ ...grpc.CallOption) (*empty.Empty, error) {
@@ -103,6 +105,11 @@ func (rd *InProcSession) SetLogLevel(context.Context, *manager.LogLevelRequest, 
 	return &empty.Empty{}, nil
 }
 
+func (rd *InProcSession) TranslateEnvIPs(ctx context.Context, in *rpc.Environment, opts ...grpc.CallOption) (*rpc.Environment, error) {
+	in = rd.translateEnvIPs(ctx, in)
+	return in, nil
+}
+
 func (rd *InProcSession) WaitForNetwork(ctx context.Context, _ *empty.Empty, _ ...grpc.CallOption) (*empty.Empty, error) {
 	if err, ok := <-rd.networkReady(ctx); ok {
 		return &empty.Empty{}, status.Error(codes.Unavailable, err.Error())
@@ -110,7 +117,7 @@ func (rd *InProcSession) WaitForNetwork(ctx context.Context, _ *empty.Empty, _ .
 	return &empty.Empty{}, nil
 }
 
-func (rd *InProcSession) WaitForAgentIP(ctx context.Context, request *rpc.WaitForAgentIPRequest, _ ...grpc.CallOption) (*empty.Empty, error) {
+func (rd *InProcSession) WaitForAgentIP(ctx context.Context, request *rpc.WaitForAgentIPRequest, _ ...grpc.CallOption) (*rpc.WaitForAgentIPResponse, error) {
 	return rd.waitForAgentIP(ctx, request)
 }
 
@@ -118,16 +125,16 @@ func (rd *InProcSession) WaitForAgentIP(ctx context.Context, request *rpc.WaitFo
 // when the user daemon runs in a docker container with NET_ADMIN capabilities.
 func NewInProcSession(
 	ctx context.Context,
-	mi *rpc.OutboundInfo,
+	mi *rpc.NetworkConfig,
 	mc manager.ManagerClient,
 	ver semver.Version,
 	isPodDaemon bool,
-) (*InProcSession, error) {
+) (context.Context, *InProcSession, error) {
 	ctx, cancel := context.WithCancel(ctx)
-	session, err := newSession(ctx, mi, &userdToManagerShortcut{mc}, ver, isPodDaemon)
+	ctx, session, err := newSession(ctx, mi, &userdToManagerShortcut{mc}, ver, isPodDaemon)
 	if err != nil {
 		cancel()
-		return nil, err
+		return ctx, nil, err
 	}
-	return &InProcSession{Session: session, cancel: cancel}, nil
+	return ctx, &InProcSession{Session: session, cancel: cancel}, nil
 }

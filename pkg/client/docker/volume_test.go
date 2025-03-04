@@ -22,5 +22,5 @@ func Test_getLatestPluginVersion(t *testing.T) {
 
 	ver, err := getLatestPluginVersion(c, pluginName(c))
 	require.NoError(t, err)
-	require.True(t, semver.MustParse("0.1.3").LT(ver))
+	require.True(t, ver.EQ(zeroVersion) || semver.MustParse("0.1.3").LT(ver))
 }

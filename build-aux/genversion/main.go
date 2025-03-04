@@ -20,13 +20,16 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+
 	//nolint:depguard // This short script has no logging and no Contexts.
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/blang/semver/v4"
 	ignore "github.com/sabhiram/go-gitignore"
+	"sigs.k8s.io/yaml"
 )
 
 // isReleased returns true if a release tag exist for the given version
@@ -68,6 +71,37 @@ func dirMD5(root string) ([]byte, error) {
 	return d.Sum(make([]byte, 0, md5.Size)), nil
 }
 
+func getLatestChangelogVersion() (v semver.Version, released bool, err error) {
+	data, err := os.ReadFile("CHANGELOG.yml")
+	if err != nil {
+		return v, false, err
+	}
+	notes := struct {
+		Items []map[string]any `json:"items"`
+	}{}
+	if err = yaml.Unmarshal(data, &notes); err != nil {
+		return v, false, err
+	}
+	if len(notes.Items) == 0 {
+		return v, false, fmt.Errorf("no versions in CHANGELOG.yml")
+	}
+	top := notes.Items[0]
+	vs, ok := top["version"].(string)
+	if !ok {
+		return v, false, fmt.Errorf("no version in top entry ofCHANGELOG.yml")
+	}
+	v, err = semver.Parse(vs)
+	if err != nil {
+		return v, false, err
+	}
+	if date, ok := top["date"].(string); ok {
+		if _, dateErr := time.Parse("2006-01-02", date); dateErr == nil {
+			released = true
+		}
+	}
+	return v, released, nil
+}
+
 func Main() error {
 	cmd := exec.Command("git", "describe", "--tags", "--match=v*")
 	cmd.Stderr = os.Stderr
@@ -81,10 +115,21 @@ func Main() error {
 		return fmt.Errorf("unable to parse semver %s: %w", gitDescStr, err)
 	}
 
+	clv, released, err := getLatestChangelogVersion()
+	if err == nil {
+		gitDescVer.Major = clv.Major
+		gitDescVer.Minor = clv.Minor
+		gitDescVer.Patch = clv.Patch
+	} else {
+		released = isReleased(gitDescVer)
+	}
+
 	// Bump to next patch version only if the version has been released.
-	if isReleased(gitDescVer) {
+	if released {
 		gitDescVer.Patch++
 	}
+
+	out := os.Stdout
 
 	// If an additional arg has been used, we include it in the tag
 	if len(os.Args) >= 2 {
@@ -97,7 +142,7 @@ func Main() error {
 		if err != nil {
 			return fmt.Errorf("unable to git rev-parse: %w", err)
 		}
-		if _, err := fmt.Printf("v%d.%d.%d-%s-%s\n", gitDescVer.Major, gitDescVer.Minor, gitDescVer.Patch, os.Args[1], shortHash); err != nil {
+		if _, err = fmt.Fprintf(out, "v%d.%d.%d-%s-%s\n", gitDescVer.Major, gitDescVer.Minor, gitDescVer.Patch, os.Args[1], shortHash); err != nil {
 			return fmt.Errorf("unable to printf: %w", err)
 		}
 		return nil
@@ -120,9 +165,9 @@ func Main() error {
 		b64 := base64.RawURLEncoding.EncodeToString(md5Out)
 		b64 = strings.ReplaceAll(b64, "_", "Z")
 		b64 = strings.ReplaceAll(b64, "-", "z")
-		_, err = fmt.Printf("v%s-%s\n", gitDescVer, b64)
+		_, err = fmt.Fprintf(out, "v%s-%s\n", gitDescVer, b64)
 	} else {
-		_, err = fmt.Printf("v%s\n", gitDescVer)
+		_, err = fmt.Fprintf(out, "v%s\n", gitDescVer)
 	}
 	return err
 }

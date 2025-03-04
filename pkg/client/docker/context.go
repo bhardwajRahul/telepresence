@@ -18,7 +18,7 @@ type clientHandle struct {
 	cli *client.Client
 }
 
-func (h *clientHandle) GetClient(ctx context.Context) (*client.Client, error) {
+func (h *clientHandle) getClient(ctx context.Context) (*client.Client, error) {
 	h.Lock()
 	defer h.Unlock()
 	if h.cli == nil {
@@ -49,7 +49,7 @@ func EnableClient(ctx context.Context) context.Context {
 
 func GetClient(ctx context.Context) (*client.Client, error) {
 	if h, ok := ctx.Value(clientKey{}).(*clientHandle); ok {
-		return h.GetClient(ctx)
+		return h.getClient(ctx)
 	}
 	panic("docker client not initialized")
 }

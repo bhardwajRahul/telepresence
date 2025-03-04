@@ -12,11 +12,19 @@ then
    exit 1
 fi
 
+if [ -z "$GOARCH" ]
+then
+   echo "Must set GOARCH"
+   exit 1
+fi
+
 SCRIPT_DIR=$( dirname -- "${BASH_SOURCE[0]}")
 
 WINFSP_VERSION=1.11.22176
 SSHFS_WIN_VERSION=3.7.21011
 WINTUN_VERSION=0.14.1
+# SHA2-256 Checksum for wintun-0.14.1.zip
+WINTUN_CHECKSUM=07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51
 BINDIR="${BINDIR:-./build-output/bin}"
 
 rm -f "${BINDIR}/telepresence.zip"
@@ -38,7 +46,8 @@ curl -L -o "${ZIPDIR}/sshfs-win.msi" "https://github.com/billziss-gh/sshfs-win/r
 
 # Download wintun
 curl -L -o "${BINDIR}/wintun.zip" "https://www.wintun.net/builds/wintun-${WINTUN_VERSION}.zip"
-unzip -p -C "${BINDIR}/wintun.zip" wintun/bin/amd64/wintun.dll > "${ZIPDIR}/wintun.dll"
+echo "${WINTUN_CHECKSUM}  ${BINDIR}/wintun.zip" | sha256sum -c -
+unzip -p -C "${BINDIR}/wintun.zip" "wintun/bin/${GOARCH}/wintun.dll" > "${ZIPDIR}/wintun.dll"
 
 cp "${BINDIR}/telepresence.exe" "${ZIPDIR}/telepresence.exe"
 

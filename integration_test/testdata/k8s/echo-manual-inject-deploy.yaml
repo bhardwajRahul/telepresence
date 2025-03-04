@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: echo-container
-          image: jmalloc/echo-server
+          image: ghcr.io/telepresenceio/echo-server:latest
           ports:
             - containerPort: 80
           resources: {}

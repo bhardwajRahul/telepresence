@@ -17,10 +17,11 @@ func listNamespaces() *cobra.Command {
 	lnc := &listNamespacesCommand{}
 
 	cmd := &cobra.Command{
-		Use:   "list-namespaces",
-		Args:  cobra.NoArgs,
-		Short: "Show all namespaces",
-		RunE:  lnc.run,
+		Use:               "list-namespaces",
+		Args:              cobra.NoArgs,
+		Short:             "Show all namespaces",
+		RunE:              lnc.run,
+		ValidArgsFunction: cobra.NoFileCompletions,
 	}
 	lnc.rq = daemon.InitRequest(cmd)
 	return cmd

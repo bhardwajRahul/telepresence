@@ -4,12 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"time"
 
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
@@ -51,13 +48,8 @@ func NewStack(ctx context.Context, dev stack.LinkEndpoint, streamCreator tunnel.
 	return s, nil
 }
 
-const (
-	myWindowScale    = 6
-	maxReceiveWindow = 1 << (myWindowScale + 14) // 1MiB
-)
-
 // maxInFlight specifies the max number of in-flight connection attempts.
-const maxInFlight = 512
+const maxInFlight = 1024
 
 // keepAliveIdle is used as the very first alive interval. Subsequent intervals
 // use keepAliveInterval.
@@ -124,22 +116,11 @@ func forwardTCP(ctx context.Context, streamCreator tunnel.StreamCreator, fr *tcp
 	var ep tcpip.Endpoint
 	var err tcpip.Error
 	id := fr.ID()
-
-	ctx, span := otel.GetTracerProvider().Tracer("").Start(ctx, "TCPHandler",
-		trace.WithNewRoot(),
-		trace.WithAttributes(
-			attribute.String("tel2.remote-ip", id.RemoteAddress.String()),
-			attribute.String("tel2.local-ip", id.LocalAddress.String()),
-			attribute.Int("tel2.local-port", int(id.LocalPort)),
-			attribute.Int("tel2.remote-port", int(id.RemotePort)),
-		))
 	defer func() {
 		if err != nil {
 			msg := fmt.Sprintf("forward TCP %s: %s", idStringer(id), err)
-			span.SetStatus(codes.Error, msg)
 			dlog.Error(ctx, msg)
 		}
-		span.End()
 	}()
 
 	wq := waiter.Queue{}
@@ -195,7 +176,7 @@ func setTCPHandler(ctx context.Context, s *stack.Stack, streamCreator tunnel.Str
 	mo := tcpip.TCPModerateReceiveBufferOption(true)
 	s.SetTransportProtocolOption(tcp.ProtocolNumber, &mo)
 
-	f := tcp.NewForwarder(s, maxReceiveWindow, maxInFlight, func(fr *tcp.ForwarderRequest) {
+	f := tcp.NewForwarder(s, 0, maxInFlight, func(fr *tcp.ForwarderRequest) {
 		forwardTCP(ctx, streamCreator, fr)
 	})
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, f.HandlePacket)
@@ -209,19 +190,7 @@ var blockedUDPPorts = map[uint16]bool{ //nolint:gochecknoglobals // constant
 
 func forwardUDP(ctx context.Context, streamCreator tunnel.StreamCreator, fr *udp.ForwarderRequest) {
 	id := fr.ID()
-	ctx, span := otel.GetTracerProvider().Tracer("").Start(ctx, "UDPHandler",
-		trace.WithNewRoot(),
-		trace.WithAttributes(
-			attribute.String("tel2.remote-ip", id.RemoteAddress.To4().String()),
-			attribute.String("tel2.local-ip", id.LocalAddress.To4().String()),
-			attribute.Int("tel2.local-port", int(id.LocalPort)),
-			attribute.Int("tel2.remote-port", int(id.RemotePort)),
-			attribute.Bool("tel2.port-blocked", false),
-		))
-	defer span.End()
-
 	if _, ok := blockedUDPPorts[id.LocalPort]; ok {
-		span.SetAttributes(attribute.Bool("tel2.port-blocked", true))
 		return
 	}
 
@@ -229,7 +198,6 @@ func forwardUDP(ctx context.Context, streamCreator tunnel.StreamCreator, fr *udp
 	ep, err := fr.CreateEndpoint(&wq)
 	if err != nil {
 		msg := fmt.Sprintf("forward UDP %s: %s", idStringer(id), err)
-		span.SetStatus(codes.Error, msg)
 		dlog.Error(ctx, msg)
 		return
 	}
@@ -243,8 +211,15 @@ func setUDPHandler(ctx context.Context, s *stack.Stack, streamCreator tunnel.Str
 	s.SetTransportProtocolHandler(udp.ProtocolNumber, f.HandlePacket)
 }
 
+func tcpAddrToAddr(addr tcpip.Address) netip.Addr {
+	if addr.BitLen() == 32 {
+		return netip.AddrFrom4(addr.As4())
+	}
+	return netip.AddrFrom16(addr.As16())
+}
+
 func newConnID(proto tcpip.TransportProtocolNumber, id stack.TransportEndpointID) tunnel.ConnID {
-	return tunnel.NewConnID(int(proto), id.RemoteAddress.AsSlice(), id.LocalAddress.AsSlice(), id.RemotePort, id.LocalPort)
+	return tunnel.NewConnID(int(proto), netip.AddrPortFrom(tcpAddrToAddr(id.RemoteAddress), id.RemotePort), netip.AddrPortFrom(tcpAddrToAddr(id.LocalAddress), id.LocalPort))
 }
 
 func dispatchToStream(ctx context.Context, id tunnel.ConnID, conn net.Conn, streamCreator tunnel.StreamCreator) {

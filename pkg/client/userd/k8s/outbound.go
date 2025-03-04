@@ -12,10 +12,9 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 
 	"github.com/datawire/dlib/dlog"
-	"github.com/datawire/k8sapi/pkg/k8sapi"
-	"github.com/telepresenceio/telepresence/v2/pkg/client/k8sclient"
+	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/userd"
-	"github.com/telepresenceio/telepresence/v2/pkg/slice"
+	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 )
 
 // StartNamespaceWatcher runs a Kubernetes Watcher that provide information about the cluster's namespaces'.
@@ -84,76 +83,25 @@ func (kc *Cluster) namespacesEventHandler(ctx context.Context, evCh <-chan watch
 // canGetDefaultTrafficManagerService answers the question if this client has the RBAC permissions
 // necessary to get the traffic-manager in the default namespace.
 func canGetDefaultTrafficManagerService(ctx context.Context) bool {
-	ok, err := k8sclient.CanI(ctx, &auth.ResourceAttributes{
+	ok, err := k8sapi.CanI(ctx, &auth.ResourceAttributes{
 		Verb:      "get",
 		Resource:  "services",
-		Name:      "traffic-manager",
+		Name:      agentmap.ManagerAppName,
 		Namespace: defaultManagerNamespace,
 	})
 	return err == nil && ok
 }
 
 // canAccessNS answers the question if this client has the RBAC permissions
-// necessary to list and intercept workloads the namespace.
+// necessary to get a pod in the given namespace.
 func canAccessNS(ctx context.Context, namespace string) bool {
-	authHandler := k8sapi.GetK8sInterface(ctx).AuthorizationV1().SelfSubjectRulesReviews()
-	review := auth.SelfSubjectRulesReview{Spec: auth.SelfSubjectRulesReviewSpec{Namespace: namespace}}
-	rr, err := authHandler.Create(ctx, &review, meta.CreateOptions{})
-	if err != nil {
-		dlog.Errorf(ctx, `unable to do "can-i --list" on namespace %s`, namespace)
-	}
-	if rr.Status.Incomplete {
-		// Incomplete is most commonly encountered when an authorizer, such as an external authorizer, doesn't support rules evaluation.
-		// When this happens, we must default to using standard can-i semantics and only check deployments (checking every single
-		// resource here takes a long time, so this is a best-effort).
-		ok, err := k8sclient.CanI(ctx, &auth.ResourceAttributes{
-			Namespace: namespace,
-			Verb:      "get",
-			Resource:  "deployments",
-			Group:     "apps",
-		})
-		return err == nil && ok
-	}
-	ras := []*auth.ResourceAttributes{
-		{
-			Resource: "services",
-			Verb:     "list",
-		},
-		{
-			Resource: "services",
-			Verb:     "watch",
-		},
-	}
-	for _, r := range []string{"deployments", "replicasets", "statefulsets"} {
-		for _, v := range []string{"get", "watch", "list"} {
-			ras = append(ras, &auth.ResourceAttributes{
-				Group:    "apps",
-				Resource: r,
-				Verb:     v,
-			})
-		}
-	}
-
-	sliceMatch := func(vs []string, s string) bool {
-		return slice.Contains(vs, "*") || slice.Contains(vs, s)
-	}
-	// canDo will just compare the group, verb, and resource property. We know that the namespace is correct, and
-	// we don't care about names or sub-resources.
-	canDo := func(ra *auth.ResourceAttributes) bool {
-		for _, rule := range rr.Status.ResourceRules {
-			if sliceMatch(rule.APIGroups, ra.Group) && sliceMatch(rule.Verbs, ra.Verb) && sliceMatch(rule.Resources, ra.Resource) {
-				return true
-			}
-		}
-		return false
-	}
-	for _, ra := range ras {
-		if !canDo(ra) {
-			dlog.Errorf(ctx, `client can't do %s %s/%s in namespace %s`, ra.Verb, ra.Group, ra.Resource, namespace)
-			return false
-		}
-	}
-	return true
+	ok, err := k8sapi.CanI(ctx, &auth.ResourceAttributes{
+		Namespace: namespace,
+		Verb:      "get",
+		Resource:  "pods",
+		Group:     "",
+	})
+	return err == nil && ok
 }
 
 func sortedStringSlicesEqual(as, bs []string) bool {

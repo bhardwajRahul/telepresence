@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"k8s.io/client-go/tools/clientcmd/api"
 
+	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
 	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
@@ -15,7 +16,7 @@ import (
 
 type unqualifiedHostNameDNSSuite struct {
 	itest.Suite
-	itest.NamespacePair
+	itest.TrafficManager
 }
 
 func (s *unqualifiedHostNameDNSSuite) SuiteName() string {
@@ -23,8 +24,8 @@ func (s *unqualifiedHostNameDNSSuite) SuiteName() string {
 }
 
 func init() {
-	itest.AddTrafficManagerSuite("", func(h itest.NamespacePair) itest.TestingSuite {
-		return &unqualifiedHostNameDNSSuite{Suite: itest.Suite{Harness: h}, NamespacePair: h}
+	itest.AddTrafficManagerSuite("", func(h itest.TrafficManager) itest.TestingSuite {
+		return &unqualifiedHostNameDNSSuite{Suite: itest.Suite{Harness: h}, TrafficManager: h}
 	})
 }
 
@@ -35,7 +36,7 @@ func (s *unqualifiedHostNameDNSSuite) TearDownTest() {
 func (s *unqualifiedHostNameDNSSuite) Test_UHNExcludes() {
 	// given
 	ctx := s.Context()
-	serviceName := "echo"
+	serviceName := "hey"
 	port, svcCancel := itest.StartLocalHttpEchoServer(ctx, serviceName)
 	defer svcCancel()
 
@@ -43,9 +44,9 @@ func (s *unqualifiedHostNameDNSSuite) Test_UHNExcludes() {
 	defer s.DeleteSvcAndWorkload(ctx, "deploy", serviceName)
 
 	excludes := []string{
-		"echo",
-		fmt.Sprintf("echo.%s", s.AppNamespace()),
-		fmt.Sprintf("echo.%s.svc.cluster.local", s.AppNamespace()),
+		serviceName,
+		fmt.Sprintf("%s.%s", serviceName, s.AppNamespace()),
+		fmt.Sprintf("%s.%s.svc.cluster.local", serviceName, s.AppNamespace()),
 	}
 	ctx = itest.WithKubeConfigExtension(ctx, func(cluster *api.Cluster) map[string]any {
 		return map[string]any{"dns": map[string][]string{
@@ -59,8 +60,9 @@ func (s *unqualifiedHostNameDNSSuite) Test_UHNExcludes() {
 	// then
 	for _, excluded := range excludes {
 		s.Eventually(func() bool {
-			conn, err := net.DialTimeout("tcp", iputil.JoinHostPort(excluded, uint16(port)), 5000*time.Millisecond)
+			conn, err := net.DialTimeout("tcp", iputil.JoinHostPort(excluded, uint16(port)), 2*time.Second)
 			if err == nil {
+				dlog.Errorf(ctx, "excluded DNS name %s resolved to %s", excluded, conn.RemoteAddr())
 				_ = conn.Close()
 			}
 			return err != nil

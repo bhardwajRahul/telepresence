@@ -30,7 +30,7 @@ spec:
     spec:
       containers:
         - name: echo-easy
-          image: jmalloc/echo-server
+          image: ghcr.io/telepresenceio/echo-server:latest
           env:
             - name: TEST
               value: "DATA"

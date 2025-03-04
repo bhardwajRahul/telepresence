@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
+	"github.com/telepresenceio/telepresence/v2/pkg/labels"
 )
 
 type helmSuite struct {
@@ -50,20 +51,17 @@ func (s *helmSuite) Test_HelmCanInterceptInManagedNamespace() {
 	s.Contains(stdout, s.ServiceName()+": intercepted")
 }
 
-func (s *helmSuite) Test_HelmCannotInterceptInUnmanagedNamespace() {
+func (s *helmSuite) Test_HelmCannotConnectToUnmanagedNamespace() {
 	ctx := s.Context()
-	itest.TelepresenceDisconnectOk(ctx)
-	itest.TelepresenceOk(ctx, "connect", "--namespace", s.appSpace2, "--manager-namespace", s.ManagerNamespace())
 	defer func() {
-		itest.TelepresenceDisconnectOk(ctx)
+		ctx := s.Context()
+		_, _, _ = itest.Telepresence(ctx, "disconnect") //nolint:dogsled // X
 		s.TelepresenceConnect(ctx)
 	}()
-	_, stderr, err := itest.Telepresence(itest.WithUser(ctx, "default"), "intercept", "--mount", "false", s.ServiceName(), "--port", "9090")
+	itest.TelepresenceDisconnectOk(ctx)
+	_, stderr, err := itest.Telepresence(ctx, "connect", "--namespace", s.appSpace2, "--manager-namespace", s.ManagerNamespace())
 	s.Error(err)
-	s.True(
-		strings.Contains(stderr, `No interceptable deployment, replicaset, or statefulset matching echo found`) ||
-			strings.Contains(stderr, `cannot get resource "deployments" in API group "apps" in the namespace`),
-		"stderr = %s", stderr)
+	s.True(strings.Contains(stderr, fmt.Sprintf(`namespace %s is not managed`, s.appSpace2)))
 }
 
 func (s *helmSuite) Test_HelmWebhookInjectsInManagedNamespace() {
@@ -71,9 +69,13 @@ func (s *helmSuite) Test_HelmWebhookInjectsInManagedNamespace() {
 	s.ApplyApp(ctx, "echo-auto-inject", "deploy/echo-auto-inject")
 	defer s.DeleteSvcAndWorkload(ctx, "deploy", "echo-auto-inject")
 
+	verb := "engage"
+	if !s.ClientIsVersion(">2.21.x") {
+		verb = "intercept"
+	}
 	s.Eventually(func() bool {
 		stdout, _, err := itest.Telepresence(ctx, "list", "--agents")
-		return err == nil && strings.Contains(stdout, "echo-auto-inject: ready to intercept (traffic-agent already installed)")
+		return err == nil && strings.Contains(stdout, fmt.Sprintf("echo-auto-inject: ready to %s (traffic-agent already installed)", verb))
 	},
 		20*time.Second, // waitFor
 		2*time.Second,  // polling interval
@@ -85,9 +87,13 @@ func (s *helmSuite) Test_HelmWebhookDoesntInjectInUnmanagedNamespace() {
 	itest.ApplyApp(ctx, "echo-auto-inject", s.appSpace2, "deploy/echo-auto-inject")
 	defer itest.DeleteSvcAndWorkload(ctx, "deploy", "echo-auto-inject", s.appSpace2)
 
+	verb := "engage"
+	if !s.ClientIsVersion(">2.21.x") {
+		verb = "intercept"
+	}
 	s.Never(func() bool {
 		stdout, _, err := itest.Telepresence(ctx, "list", "--namespace", s.appSpace2, "--agents")
-		return err == nil && strings.Contains(stdout, "echo-auto-inject: ready to intercept (traffic-agent already installed)")
+		return err == nil && strings.Contains(stdout, fmt.Sprintf("echo-auto-inject: ready to %s (traffic-agent already installed)", verb))
 	},
 		10*time.Second, // waitFor
 		2*time.Second,  // polling interval
@@ -104,8 +110,8 @@ func (s *helmSuite) Test_HelmMultipleInstalls() {
 
 	s.Run("Installs Successfully", func() {
 		ctx := itest.WithNamespaces(s.Context(), &itest.Namespaces{
-			Namespace:         s.mgrSpace2,
-			ManagedNamespaces: []string{s.appSpace2},
+			Namespace: s.mgrSpace2,
+			Selector:  labels.SelectorFromNames(s.appSpace2),
 		})
 		s.NoError(itest.Kubectl(ctx, s.mgrSpace2, "apply", "-f", filepath.Join("testdata", "k8s", "client_sa.yaml")))
 		itest.TelepresenceDisconnectOk(ctx)
@@ -142,8 +148,8 @@ func (s *helmSuite) Test_CollidingInstalls() {
 		s.TelepresenceConnect(ctx)
 	}()
 	ctx := itest.WithNamespaces(s.Context(), &itest.Namespaces{
-		Namespace:         s.AppNamespace(),
-		ManagedNamespaces: []string{s.appSpace2},
+		Namespace: s.AppNamespace(),
+		Selector:  labels.SelectorFromNames(s.appSpace2),
 	})
 	_, err := s.TelepresenceHelmInstall(ctx, false)
 	s.Error(err)

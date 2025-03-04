@@ -32,7 +32,16 @@ type State interface {
 	SetManager(ctx context.Context, sessionInfo *manager.SessionInfo, manager manager.ManagerClient, version semver.Version)
 	FtpPort() uint16
 	SftpPort() uint16
-	NewInterceptState(forwarder forwarder.Interceptor, target InterceptTarget, mountPoint string, env map[string]string) InterceptState
+	NewInterceptState(forwarder forwarder.Interceptor, target InterceptTarget, container string) InterceptState
+	AddContainerState(containerName string, containerState ContainerState)
+}
+
+type ContainerState interface {
+	State
+	Name() string
+	ReplaceContainer() bool
+	MountPoint() string
+	Env() map[string]string
 }
 
 // An InterceptState implements what's needed to intercept one target port.
@@ -47,8 +56,8 @@ type state struct {
 	Config
 	ftpPort          uint16
 	sftpPort         uint16
-	dialWatchers     *xsync.MapOf[string, chan *manager.DialRequest]
-	awaitingForwards *xsync.MapOf[string, *xsync.MapOf[tunnel.ConnID, *awaitingForward]]
+	dialWatchers     *xsync.MapOf[tunnel.SessionID, chan *manager.DialRequest]
+	awaitingForwards *xsync.MapOf[tunnel.SessionID, *xsync.MapOf[tunnel.ConnID, *awaitingForward]]
 
 	// The sessionInfo and manager client are needed when forwarders establish their
 	// tunnel to the traffic-manager.
@@ -57,6 +66,7 @@ type state struct {
 	mgrVer      semver.Version
 
 	interceptStates []InterceptState
+	containerStates map[string]ContainerState
 	agent.UnimplementedAgentServer
 }
 
@@ -80,13 +90,18 @@ func (s *state) SessionInfo() *manager.SessionInfo {
 func NewState(config Config) State {
 	return &state{
 		Config:           config,
-		dialWatchers:     xsync.NewMapOf[string, chan *manager.DialRequest](),
-		awaitingForwards: xsync.NewMapOf[string, *xsync.MapOf[tunnel.ConnID, *awaitingForward]](),
+		containerStates:  make(map[string]ContainerState),
+		dialWatchers:     xsync.NewMapOf[tunnel.SessionID, chan *manager.DialRequest](),
+		awaitingForwards: xsync.NewMapOf[tunnel.SessionID, *xsync.MapOf[tunnel.ConnID, *awaitingForward]](),
 	}
 }
 
 func (s *state) AddInterceptState(is InterceptState) {
 	s.interceptStates = append(s.interceptStates, is)
+}
+
+func (s *state) AddContainerState(containerName string, containerState ContainerState) {
+	s.containerStates[containerName] = containerState
 }
 
 func (s *state) AgentState() restapi.AgentState {
@@ -99,17 +114,37 @@ func (s *state) InterceptStates() []InterceptState {
 
 func (s *state) HandleIntercepts(ctx context.Context, iis []*manager.InterceptInfo) []*manager.ReviewInterceptRequest {
 	var rs []*manager.ReviewInterceptRequest
+
+	// Keep track of all InterceptInfos handled by interceptStates
+	handled := make([]bool, len(iis))
 	for _, ist := range s.interceptStates {
 		ms := make([]*manager.InterceptInfo, 0, len(iis))
-		for _, ii := range iis {
-			ic := ist.Target()
-			if ic.MatchForSpec(ii.Spec) {
-				dlog.Debugf(ctx, "intercept id %s svc=%q, svcPortId=%q matches target protocol=%s, agentPort=%d, containerPort=%d",
-					ii.Id, ii.Spec.ServiceName, ii.Spec.ServicePortIdentifier, ic.Protocol(), ic.AgentPort(), ic.ContainerPort())
-				ms = append(ms, ii)
+		for i, ii := range iis {
+			if !handled[i] {
+				ic := ist.Target()
+				if ic.MatchForSpec(ii.Spec) {
+					dlog.Debugf(ctx, "intercept id %s svc=%q, portId=%q matches target protocol=%s, agentPort=%d, containerPort=%d",
+						ii.Id, ii.Spec.ServiceName, ii.Spec.PortIdentifier, ic.Protocol(), ic.AgentPort(), ic.ContainerPort())
+					ms = append(ms, ii)
+					handled[i] = true
+				}
 			}
 		}
 		rs = append(rs, ist.HandleIntercepts(ctx, ms)...)
+	}
+
+	// Collect InterceptInfos weren't handled by interceptStates
+	var unhandled []*manager.InterceptInfo
+	for i, ok := range handled {
+		if !ok {
+			unhandled = append(unhandled, iis[i])
+		}
+	}
+	if len(unhandled) > 0 {
+		// Let containerStates handle the rest.
+		for _, cn := range s.containerStates {
+			rs = append(rs, cn.HandleIntercepts(ctx, unhandled)...)
+		}
 	}
 	return rs
 }

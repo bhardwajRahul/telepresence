@@ -7,18 +7,16 @@ import (
 )
 
 // NewPipe creates a pair of Streams connected using two channels.
-func NewPipe(id ConnID, sessionID string) (Stream, Stream) {
+func NewPipe(id ConnID, sessionID SessionID) (Stream, Stream) {
 	out := make(chan Message, 1)
 	in := make(chan Message, 1)
 	return &channelStream{
 			id:     id,
-			tag:    "SND",
 			sid:    sessionID,
 			recvCh: in,
 			sendCh: out,
 		}, &channelStream{
 			id:     id,
-			tag:    "RCV",
 			sid:    sessionID,
 			recvCh: out,
 			sendCh: in,
@@ -27,14 +25,16 @@ func NewPipe(id ConnID, sessionID string) (Stream, Stream) {
 
 type channelStream struct {
 	id     ConnID
-	tag    string
-	sid    string
+	sid    SessionID
 	recvCh <-chan Message
 	sendCh chan<- Message
 }
 
-func (s channelStream) Tag() string {
-	return s.tag
+func (s channelStream) SetTag(_ Tag) {
+}
+
+func (s channelStream) Tag() Tag {
+	return "AcB"
 }
 
 func (s channelStream) ID() ConnID {
@@ -70,7 +70,7 @@ func (s channelStream) PeerVersion() uint16 {
 	return 2
 }
 
-func (s channelStream) SessionID() string {
+func (s channelStream) SessionID() SessionID {
 	return s.sid
 }
 

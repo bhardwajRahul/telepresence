@@ -15,6 +15,7 @@ import (
 // The dialer takes care of dispatching messages between gRPC and UDP connections.
 type udpListener struct {
 	TimedHandler
+	tag        Tag
 	conn       *net.UDPConn
 	connected  int32
 	done       chan struct{}
@@ -23,13 +24,14 @@ type udpListener struct {
 	creator    func(context.Context, ConnID) (Stream, error)
 }
 
-func NewUDPListener(conn *net.UDPConn, targetAddr *net.UDPAddr, creator func(context.Context, ConnID) (Stream, error)) Endpoint {
+func NewUDPListener(conn *net.UDPConn, tag Tag, targetAddr *net.UDPAddr, creator func(context.Context, ConnID) (Stream, error)) Endpoint {
 	state := notConnected
 	if conn != nil {
 		state = connecting
 	}
 	return &udpListener{
 		TimedHandler: NewTimedHandler("", udpConnTTL, nil),
+		tag:          tag,
 		conn:         conn,
 		connected:    state,
 		done:         make(chan struct{}),
@@ -52,7 +54,7 @@ func (h *udpListener) Start(ctx context.Context) {
 
 func (h *udpListener) connToStreamLoop(ctx context.Context) {
 	ch := make(chan UdpReadResult)
-	go UdpReader(ctx, h.conn, ch)
+	go UdpReader(ctx, h.tag, h.conn, ch)
 	for atomic.LoadInt32(&h.connected) == connected {
 		select {
 		case <-ctx.Done():
@@ -70,7 +72,7 @@ func (h *udpListener) connToStreamLoop(ctx context.Context) {
 				if err != nil {
 					return nil, err
 				}
-				dlog.Debugf(ctx, "   LIS %s conn-to-stream loop started", id)
+				dlog.Debugf(ctx, "-> %s %s conn-to-stream loop started", h.tag, id)
 				return &udpStream{
 					TimedHandler: NewTimedHandler(id, udpConnTTL, release),
 					udpListener:  h,
@@ -78,14 +80,14 @@ func (h *udpListener) connToStreamLoop(ctx context.Context) {
 				}, nil
 			})
 			if err != nil {
-				dlog.Errorf(ctx, "!! MGR udp %s get target: %v", id, err)
+				dlog.Errorf(ctx, ">! %s udp %s get target: %v", h.tag, id, err)
 				return
 			}
 			ps := target.(*udpStream)
-			dlog.Tracef(ctx, "-> MGR %s, len %d", id, len(rr.Payload))
+			dlog.Tracef(ctx, "-> %s %s, len %d", h.tag, id, len(rr.Payload))
 			err = ps.stream.Send(ctx, NewMessage(Normal, rr.Payload))
 			if err != nil {
-				dlog.Errorf(ctx, "!! MGR udp %s write: %v", id, err)
+				dlog.Errorf(ctx, ">! %s udp %s write: %v", h.tag, id, err)
 				return
 			}
 		}
@@ -107,10 +109,10 @@ func (p *udpStream) getStream() Stream {
 }
 
 func (p *udpStream) reply(data []byte) (int, error) {
-	return p.conn.WriteTo(data, p.ID.SourceAddr())
+	return p.conn.WriteTo(data, net.UDPAddrFromAddrPort(p.ID.Source()))
 }
 
-func (p *udpStream) startDisconnect(ctx context.Context, s string) {
+func (p *udpStream) startDisconnect(context.Context, string, bool) {
 }
 
 func (p *udpStream) Stop(ctx context.Context) {
@@ -119,7 +121,7 @@ func (p *udpStream) Stop(ctx context.Context) {
 
 func (p *udpStream) Start(ctx context.Context) {
 	p.TimedHandler.Start(ctx)
-	go readLoop(ctx, p, nil)
+	go readLoop(ctx, p.stream.Tag(), p, nil)
 }
 
 type UdpReadResult struct {
@@ -136,12 +138,12 @@ func IsTimeout(err error) bool {
 // UdpReader continuously reads from a net.PacketConn and writes the resulting payload and
 // reply address to a channel. The loop is cancelled when the connection is closed or when
 // the context is done, at which time the channel is closed.
-func UdpReader(ctx context.Context, conn net.PacketConn, ch chan<- UdpReadResult) {
+func UdpReader(ctx context.Context, tag Tag, conn net.PacketConn, ch chan<- UdpReadResult) {
 	defer close(ch)
 	var endReason string
 	endLevel := dlog.LogLevelTrace
 	defer func() {
-		dlog.Logf(ctx, endLevel, "   LIS %s UDP read loop ended because %s", conn.LocalAddr(), endReason)
+		dlog.Logf(ctx, endLevel, "<- %s %s UDP read loop ended because %s", tag, conn.LocalAddr(), endReason)
 	}()
 	buf := [0x10000]byte{}
 	for {

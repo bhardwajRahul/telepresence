@@ -71,6 +71,7 @@ func isAdmin() bool {
 	if err != nil {
 		return false
 	}
+	defer windows.FreeSid(sid) //nolint:errcheck // The return value here is irrelevant
 	adm, err := windows.GetCurrentProcessToken().IsMember(sid)
 	return err == nil && adm
 }

@@ -6,20 +6,18 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/spf13/cobra"
-	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dgroup"
-	"github.com/datawire/dlib/dhttp"
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/rpc/v2/common"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/daemon"
@@ -30,10 +28,10 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/client/socket"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
 	"github.com/telepresenceio/telepresence/v2/pkg/filelocation"
+	"github.com/telepresenceio/telepresence/v2/pkg/grpc/server"
 	"github.com/telepresenceio/telepresence/v2/pkg/log"
 	"github.com/telepresenceio/telepresence/v2/pkg/pprof"
 	"github.com/telepresenceio/telepresence/v2/pkg/proc"
-	"github.com/telepresenceio/telepresence/v2/pkg/tracing"
 	"github.com/telepresenceio/telepresence/v2/pkg/vif"
 )
 
@@ -81,7 +79,7 @@ type sessionReply struct {
 type Service struct {
 	rpc.UnsafeDaemonServer
 	quit            context.CancelFunc
-	connectCh       chan *rpc.OutboundInfo
+	connectCh       chan *rpc.NetworkConfig
 	connectReplyCh  chan sessionReply
 	sessionLock     sync.RWMutex
 	sessionCancel   context.CancelFunc
@@ -94,7 +92,7 @@ type Service struct {
 func NewService(cfg client.Config) *Service {
 	return &Service{
 		timedLogLevel:  log.NewTimedLevel(cfg.LogLevels().RootDaemon.String(), log.SetLevel),
-		connectCh:      make(chan *rpc.OutboundInfo),
+		connectCh:      make(chan *rpc.NetworkConfig),
 		connectReplyCh: make(chan sessionReply),
 	}
 }
@@ -131,7 +129,7 @@ func (s *Service) Version(_ context.Context, _ *emptypb.Empty) (*common.VersionI
 	}, nil
 }
 
-func (s *Service) Status(_ context.Context, _ *emptypb.Empty) (*rpc.DaemonStatus, error) {
+func (s *Service) Status(context.Context, *emptypb.Empty) (*rpc.DaemonStatus, error) {
 	s.sessionLock.RLock()
 	defer s.sessionLock.RUnlock()
 	r := &rpc.DaemonStatus{
@@ -142,25 +140,14 @@ func (s *Service) Status(_ context.Context, _ *emptypb.Empty) (*rpc.DaemonStatus
 		},
 	}
 	if s.session != nil {
-		nc := s.session.getNetworkConfig()
-		r.Subnets = nc.Subnets
-		r.OutboundConfig = nc.OutboundInfo
+		r.OutboundConfig = s.session.getNetworkConfig(s.sessionContext)
 	}
 	return r, nil
 }
 
 func (s *Service) Quit(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
 	dlog.Debug(ctx, "Received gRPC Quit")
-	if !s.sessionLock.TryRLock() {
-		// A running session is blocking with a write-lock. Give it some time to quit, then kill it
-		time.Sleep(2 * time.Second)
-		if !s.sessionLock.TryRLock() {
-			s.quit()
-			return &emptypb.Empty{}, nil
-		}
-	}
-	defer s.sessionLock.RUnlock()
-	s.cancelSessionReadLocked()
+	s.cancelSession()
 	s.quit()
 	return &emptypb.Empty{}, nil
 }
@@ -189,7 +176,7 @@ func (s *Service) SetDNSMappings(ctx context.Context, req *rpc.SetDNSMappingsReq
 	return &emptypb.Empty{}, err
 }
 
-func (s *Service) Connect(ctx context.Context, info *rpc.OutboundInfo) (*rpc.DaemonStatus, error) {
+func (s *Service) Connect(ctx context.Context, info *rpc.NetworkConfig) (*rpc.DaemonStatus, error) {
 	dlog.Debug(ctx, "Received gRPC Connect")
 	select {
 	case <-ctx.Done():
@@ -219,6 +206,14 @@ func (s *Service) Disconnect(ctx context.Context, _ *emptypb.Empty) (*emptypb.Em
 	return &emptypb.Empty{}, nil
 }
 
+func (s *Service) TranslateEnvIPs(ctx context.Context, environment *rpc.Environment) (result *rpc.Environment, err error) {
+	err = s.WithSession(func(ctx context.Context, session *Session) error {
+		result = session.translateEnvIPs(ctx, environment)
+		return nil
+	})
+	return result, err
+}
+
 func (s *Service) WaitForNetwork(ctx context.Context, e *emptypb.Empty) (*emptypb.Empty, error) {
 	err := s.WithSession(func(ctx context.Context, session *Session) error {
 		if err, ok := <-session.networkReady(ctx); ok {
@@ -229,25 +224,15 @@ func (s *Service) WaitForNetwork(ctx context.Context, e *emptypb.Empty) (*emptyp
 	return &emptypb.Empty{}, err
 }
 
-func (s *Service) cancelSessionReadLocked() {
-	if s.sessionCancel != nil {
-		s.sessionCancel()
-	}
-}
-
 func (s *Service) cancelSession() {
-	if !atomic.CompareAndSwapInt32(&s.sessionQuitting, 0, 1) {
-		return
+	if atomic.CompareAndSwapInt32(&s.sessionQuitting, 0, 1) {
+		if s.sessionCancel != nil {
+			s.sessionCancel()
+		}
+		s.session = nil
+		s.sessionCancel = nil
+		atomic.StoreInt32(&s.sessionQuitting, 0)
 	}
-	s.sessionLock.RLock()
-	s.cancelSessionReadLocked()
-	s.sessionLock.RUnlock()
-
-	s.sessionLock.Lock()
-	s.session = nil
-	s.sessionCancel = nil
-	atomic.StoreInt32(&s.sessionQuitting, 0)
-	s.sessionLock.Unlock()
 }
 
 func (s *Service) WithSession(f func(context.Context, *Session) error) error {
@@ -264,22 +249,19 @@ func (s *Service) WithSession(f func(context.Context, *Session) error) error {
 
 func (s *Service) GetNetworkConfig(ctx context.Context, e *emptypb.Empty) (nc *rpc.NetworkConfig, err error) {
 	err = s.WithSession(func(ctx context.Context, session *Session) error {
-		nc = session.getNetworkConfig()
+		nc = session.getNetworkConfig(s.sessionContext)
 		return nil
 	})
-	dlog.Debugf(ctx, "Returning session %v", nc.OutboundInfo.Session)
+	dlog.Debugf(ctx, "Returning session %v", nc.Session)
 	return
 }
 
-func (s *Service) WaitForAgentIP(ctx context.Context, request *rpc.WaitForAgentIPRequest) (*emptypb.Empty, error) {
-	err := s.WithSession(func(ctx context.Context, session *Session) error {
-		_, err := session.waitForAgentIP(ctx, request)
+func (s *Service) WaitForAgentIP(ctx context.Context, request *rpc.WaitForAgentIPRequest) (rsp *rpc.WaitForAgentIPResponse, err error) {
+	err = s.WithSession(func(ctx context.Context, session *Session) error {
+		rsp, err = session.waitForAgentIP(ctx, request)
 		return err
 	})
-	if err != nil {
-		return nil, err
-	}
-	return &emptypb.Empty{}, nil
+	return rsp, err
 }
 
 func (s *Service) SetLogLevel(ctx context.Context, request *manager.LogLevelRequest) (*emptypb.Empty, error) {
@@ -291,13 +273,8 @@ func (s *Service) SetLogLevel(ctx context.Context, request *manager.LogLevelRequ
 }
 
 func (s *Service) configReload(c context.Context) error {
-	return client.Watch(c, func(c context.Context) error {
-		s.sessionLock.RLock()
-		defer s.sessionLock.RUnlock()
-		if s.session == nil {
-			return client.RestoreDefaults(c, true)
-		}
-		return s.session.applyConfig(c)
+	return client.WatchConfig(c, func(c context.Context) error {
+		return client.ReloadDaemonLogLevel(c, true)
 	})
 }
 
@@ -309,7 +286,6 @@ func (s *Service) manageSessions(c context.Context) error {
 	// terminates this function, it terminates the whole process.
 	wg := sync.WaitGroup{}
 	defer wg.Wait()
-	c, s.quit = context.WithCancel(c)
 
 	for {
 		// Wait for a connection request
@@ -331,7 +307,7 @@ func (s *Service) manageSessions(c context.Context) error {
 	}
 }
 
-func (s *Service) startSession(ctx context.Context, oi *rpc.OutboundInfo, wg *sync.WaitGroup) sessionReply {
+func (s *Service) startSession(parentCtx context.Context, oi *rpc.NetworkConfig, wg *sync.WaitGroup) sessionReply {
 	s.sessionLock.Lock() // Locked during creation
 	defer s.sessionLock.Unlock()
 	reply := sessionReply{
@@ -343,12 +319,12 @@ func (s *Service) startSession(ctx context.Context, oi *rpc.OutboundInfo, wg *sy
 		},
 	}
 	if s.session != nil {
-		reply.status.OutboundConfig = s.session.getNetworkConfig().OutboundInfo
-		dlog.Debugf(ctx, "Returning session %v from existing session", reply.status.OutboundConfig.Session)
+		reply.status.OutboundConfig = s.session.getNetworkConfig(s.sessionContext)
+		dlog.Debugf(parentCtx, "Returning session %v from existing session", reply.status.OutboundConfig.Session)
 		return reply
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(parentCtx)
 	ctx, session, err := GetNewSessionFunc(ctx)(ctx, oi)
 	if session == nil || ctx.Err() != nil || err != nil {
 		cancel()
@@ -364,13 +340,19 @@ func (s *Service) startSession(ctx context.Context, oi *rpc.OutboundInfo, wg *sy
 	s.sessionContext = ctx
 	s.sessionCancel = func() {
 		cancel()
-		<-session.Done()
+		select {
+		case <-session.Done():
+		case <-time.After(5 * time.Second):
+			// Something is wrong. The session doesn't die.
+			if dlog.MaxLogLevel(ctx) >= dlog.LogLevelDebug {
+				buf := make([]byte, 1024*1024)
+				n := runtime.Stack(buf, true)
+				dlog.Debug(ctx, string(buf[:n]))
+			}
+		}
 	}
-	if err := s.session.applyConfig(ctx); err != nil {
-		dlog.Warnf(ctx, "failed to apply config from traffic-manager: %v", err)
-	}
-
-	reply.status.OutboundConfig = s.session.getNetworkConfig().OutboundInfo
+	_ = client.ReloadDaemonLogLevel(ctx, true)
+	reply.status.OutboundConfig = s.session.getNetworkConfig(ctx)
 	dlog.Debugf(ctx, "Returning session from new session %v", reply.status.OutboundConfig.Session)
 
 	initErrCh := make(chan error, 1)
@@ -380,18 +362,8 @@ func (s *Service) startSession(ctx context.Context, oi *rpc.OutboundInfo, wg *sy
 	wg.Add(1)
 	go func() {
 		defer func() {
-			if r := recover(); r != nil {
-				s.sessionLock.TryLock()
-				s.sessionLock.Unlock()
-				dlog.Errorf(ctx, "%+v", derror.PanicToError(r))
-			}
-			s.sessionLock.Lock()
-			s.session = nil
-			s.sessionCancel = nil
-			if err := client.RestoreDefaults(ctx, true); err != nil {
-				dlog.Warn(ctx, err)
-			}
-			s.sessionLock.Unlock()
+			s.cancelSession()
+			_ = client.ReloadDaemonLogLevel(parentCtx, true)
 			wg.Done()
 		}()
 		if err := s.session.run(s.sessionContext, initErrCh); err != nil {
@@ -403,42 +375,22 @@ func (s *Service) startSession(ctx context.Context, oi *rpc.OutboundInfo, wg *sy
 	case err := <-initErrCh:
 		if err != nil {
 			reply.err = err
-			s.cancelSessionReadLocked()
+			s.cancelSession()
 		}
 	}
 	return reply
 }
 
-func (s *Service) serveGrpc(c context.Context, l net.Listener, tracer common.TracingServer) error {
-	defer func() {
-		// Error recovery.
-		if perr := derror.PanicToError(recover()); perr != nil {
-			dlog.Errorf(c, "%+v", perr)
-		}
-	}()
-
-	opts := []grpc.ServerOption{
-		grpc.StatsHandler(otelgrpc.NewServerHandler()),
-	}
+func (s *Service) serveGrpc(c context.Context, l net.Listener) error {
+	var opts []grpc.ServerOption
 	cfg := client.GetConfig(c)
 	if mz := cfg.Grpc().MaxReceiveSize(); mz > 0 {
 		opts = append(opts, grpc.MaxRecvMsgSize(int(mz)))
 	}
-	svc := grpc.NewServer(opts...)
+	c, s.quit = context.WithCancel(c)
+	svc := server.New(c, opts...)
 	rpc.RegisterDaemonServer(svc, s)
-	common.RegisterTracingServer(svc, tracer)
-
-	sc := &dhttp.ServerConfig{
-		Handler: svc,
-	}
-	dlog.Info(c, "gRPC server started")
-	err := sc.Serve(c, l)
-	if err != nil {
-		dlog.Errorf(c, "gRPC server ended with: %v", err)
-	} else {
-		dlog.Debug(c, "gRPC server ended")
-	}
-	return err
+	return server.Serve(c, svc, l)
 }
 
 // run is the main function when executing as the daemon.
@@ -474,12 +426,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	c = dgroup.WithGoroutineName(c, "/"+ProcessName)
-	c, err = logging.InitContext(c, ProcessName, logging.RotateDaily, true)
-	if err != nil {
-		return err
-	}
-
-	tracer, err := tracing.NewTraceServer(c, "root-daemon")
+	c, err = logging.InitContext(c, ProcessName, logging.RotateDaily, true, false)
 	if err != nil {
 		return err
 	}
@@ -509,7 +456,7 @@ func run(cmd *cobra.Command, args []string) error {
 	vif.InitLogger(c)
 
 	g := dgroup.NewGroup(c, dgroup.GroupConfig{
-		SoftShutdownTimeout:  2 * time.Second,
+		SoftShutdownTimeout:  5 * time.Second,
 		EnableSignalHandling: true,
 		ShutdownOnNonError:   true,
 	})
@@ -517,7 +464,7 @@ func run(cmd *cobra.Command, args []string) error {
 	// Add a reload function that triggers on create and write of the config.yml file.
 	g.Go("config-reload", d.configReload)
 	g.Go("session", d.manageSessions)
-	g.Go("server-grpc", func(c context.Context) error { return d.serveGrpc(c, grpcListener, tracer) })
+	g.Go("server-grpc", func(c context.Context) error { return d.serveGrpc(c, grpcListener) })
 	g.Go("metriton", scout.Run)
 	err = g.Wait()
 	if err != nil {

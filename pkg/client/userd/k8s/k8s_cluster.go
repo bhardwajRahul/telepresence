@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"sort"
 	"strings"
 	"sync"
@@ -15,12 +16,12 @@ import (
 	argorollouts "github.com/datawire/argo-rollouts-go-client/pkg/client/clientset/versioned"
 	"github.com/datawire/dlib/dlog"
 	"github.com/datawire/dlib/dtime"
-	"github.com/datawire/k8sapi/pkg/k8sapi"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/connector"
+	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
-	"github.com/telepresenceio/telepresence/v2/pkg/client/k8sclient"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/userd"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
+	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 )
 
 const (
@@ -124,15 +125,15 @@ func (kc *Cluster) namespaceAccessible(namespace string) (exists bool) {
 	return ok
 }
 
-func NewCluster(c context.Context, kubeFlags *client.Kubeconfig, namespaces []string) (*Cluster, error) {
+func NewCluster(c context.Context, kubeFlags *client.Kubeconfig, namespaces []string) (context.Context, *Cluster, error) {
 	rs := kubeFlags.RestConfig
 	cs, err := kubernetes.NewForConfig(rs)
 	if err != nil {
-		return nil, err
+		return c, nil, err
 	}
 	acs, err := argorollouts.NewForConfig(rs)
 	if err != nil {
-		return nil, err
+		return c, nil, err
 	}
 	c = k8sapi.WithJoinedClientSetInterface(c, cs, acs)
 
@@ -146,7 +147,7 @@ func NewCluster(c context.Context, kubeFlags *client.Kubeconfig, namespaces []st
 	timedC, cancel := cfg.Timeouts().TimeoutContext(c, client.TimeoutClusterConnect)
 	defer cancel()
 	if err = ret.check(timedC); err != nil {
-		return nil, err
+		return c, nil, err
 	}
 
 	dlog.Infof(c, "Context: %s", ret.Context)
@@ -159,23 +160,41 @@ func NewCluster(c context.Context, kubeFlags *client.Kubeconfig, namespaces []st
 		namespaces = cfg.Cluster().MappedNamespaces
 	}
 	if len(namespaces) == 0 {
-		if k8sclient.CanWatchNamespaces(c) {
+		if k8sapi.CanWatchNamespaces(c) {
 			ret.StartNamespaceWatcher(c)
 		}
 	} else {
 		ret.SetMappedNamespaces(c, namespaces)
 	}
-	if ret.GetManagerNamespace() == "" {
-		ret.KubeconfigExtension.Manager.Namespace, err = ret.determineTrafficManagerNamespace(c)
+	if GetManagerNamespace(c) == "" {
+		tns, err := ret.determineTrafficManagerNamespace(c)
 		if err != nil {
-			return nil, err
+			return c, nil, err
 		}
+		nc := client.GetDefaultConfig()
+		nc.Cluster().DefaultManagerNamespace = tns
+		c = client.WithConfig(c, cfg.Merge(nc))
 	}
-	dlog.Infof(c, "Will look for traffic manager in namespace %s", ret.GetManagerNamespace())
-	return ret, nil
+	dlog.Infof(c, "Will look for traffic manager in namespace %s", GetManagerNamespace(c))
+	return c, ret, nil
 }
 
-func ConnectCluster(c context.Context, cr *rpc.ConnectRequest, config *client.Kubeconfig) (*Cluster, error) {
+func parseCIDR(cidr []string) ([]netip.Prefix, error) {
+	if len(cidr) == 0 {
+		return nil, nil
+	}
+	result := make([]netip.Prefix, len(cidr))
+	for i := range cidr {
+		ipNet, err := netip.ParsePrefix(cidr[i])
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse CIDR %s: %w", cidr[i], err)
+		}
+		result[i] = ipNet
+	}
+	return result, nil
+}
+
+func ConnectCluster(c context.Context, cr *rpc.ConnectRequest, config *client.Kubeconfig) (context.Context, *Cluster, error) {
 	mappedNamespaces := cr.MappedNamespaces
 	if len(mappedNamespaces) == 1 && mappedNamespaces[0] == "all" {
 		mappedNamespaces = nil
@@ -183,11 +202,35 @@ func ConnectCluster(c context.Context, cr *rpc.ConnectRequest, config *client.Ku
 		sort.Strings(mappedNamespaces)
 	}
 
-	cluster, err := NewCluster(c, config, mappedNamespaces)
+	c, cluster, err := NewCluster(c, config, mappedNamespaces)
 	if err != nil {
-		return nil, err
+		return c, nil, err
 	}
-	return cluster, nil
+
+	extraAlsoProxy, err := parseCIDR(cr.GetAlsoProxy())
+	if err != nil {
+		return c, nil, fmt.Errorf("failed to parse extra also proxy: %w", err)
+	}
+
+	extraNeverProxy, err := parseCIDR(cr.GetNeverProxy())
+	if err != nil {
+		return c, nil, fmt.Errorf("failed to parse extra never proxy: %w", err)
+	}
+
+	extraAllow, err := parseCIDR(cr.GetAllowConflictingSubnets())
+	if err != nil {
+		return c, nil, fmt.Errorf("failed to parse extra allow conflicting subnets: %w", err)
+	}
+	if len(extraAlsoProxy)+len(extraNeverProxy)+len(extraAllow) > 0 {
+		cfg := client.GetConfig(c).Merge(client.GetDefaultConfig())
+		rt := cfg.Routing()
+		rt.AllowConflicting = append(rt.AllowConflicting, extraAllow...)
+		rt.AlsoProxy = append(rt.AlsoProxy, extraAlsoProxy...)
+		rt.NeverProxy = append(rt.NeverProxy, extraNeverProxy...)
+		c = client.WithConfig(c, cfg)
+	}
+
+	return c, cluster, nil
 }
 
 // determineTrafficManagerNamespace finds the namespace for the traffic-manager. It is determined by the following steps:
@@ -200,7 +243,7 @@ func (kc *Cluster) determineTrafficManagerNamespace(c context.Context) (string, 
 	// Search for the traffic-manager in mapped namespaces
 	nss := kc.GetCurrentNamespaces(true)
 	for _, ns := range nss {
-		if _, err := k8sapi.GetService(c, "traffic-manager", ns); err == nil {
+		if _, err := k8sapi.GetService(c, agentmap.ManagerAppName, ns); err == nil {
 			return ns, nil
 		}
 	}
@@ -221,7 +264,7 @@ func (kc *Cluster) determineTrafficManagerNamespace(c context.Context) (string, 
 // GetCurrentNamespaces returns the names of the namespaces that this client
 // is mapping. If the forClientAccess is true, then the namespaces are restricted
 // to those where an intercept can take place, i.e. the namespaces where this
-// client can Watch and get services and deployments.
+// client can WatchConfig and get services and deployments.
 func (kc *Cluster) GetCurrentNamespaces(forClientAccess bool) []string {
 	kc.nsLock.Lock()
 	nss := make([]string, 0, len(kc.currentMappedNamespaces))
@@ -241,14 +284,13 @@ func (kc *Cluster) GetCurrentNamespaces(forClientAccess bool) []string {
 	return nss
 }
 
-func (kc *Cluster) GetClusterId(ctx context.Context) string {
-	clusterID, _ := k8sapi.GetClusterID(ctx)
-	return clusterID
+func (kc *Cluster) GetManagerInstallId(ctx context.Context) string {
+	managerID, _ := k8sapi.GetNamespaceID(ctx, GetManagerNamespace(ctx))
+	return managerID
 }
 
-func (kc *Cluster) GetManagerInstallId(ctx context.Context) string {
-	managerID, _ := k8sapi.GetNamespaceID(ctx, kc.GetManagerNamespace())
-	return managerID
+func GetManagerNamespace(ctx context.Context) string {
+	return client.GetConfig(ctx).Cluster().DefaultManagerNamespace
 }
 
 func (kc *Cluster) WithJoinedClientSetInterface(c context.Context) context.Context {

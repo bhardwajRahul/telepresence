@@ -17,10 +17,11 @@ func listContexts() *cobra.Command {
 	lcc := &listContextsCommand{}
 
 	cmd := &cobra.Command{
-		Use:   "list-contexts",
-		Args:  cobra.NoArgs,
-		Short: "Show all contexts",
-		RunE:  lcc.run,
+		Use:               "list-contexts",
+		Args:              cobra.NoArgs,
+		Short:             "Show all contexts",
+		RunE:              lcc.run,
+		ValidArgsFunction: cobra.NoFileCompletions,
 	}
 	lcc.rq = daemon.InitRequest(cmd)
 	return cmd

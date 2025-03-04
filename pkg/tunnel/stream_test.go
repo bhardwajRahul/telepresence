@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync"
 	"testing"
 	"time"
@@ -17,7 +18,6 @@ import (
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/rpc/v2/manager"
 	"github.com/telepresenceio/telepresence/v2/pkg/ipproto"
-	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 	"github.com/telepresenceio/telepresence/v2/pkg/log"
 )
 
@@ -112,14 +112,14 @@ func TestStream_Connect(t *testing.T) {
 	defer cancel()
 
 	tunnel := newBidi(10, ctx.Done())
-	id := NewConnID(ipproto.TCP, iputil.Parse("127.0.0.1"), iputil.Parse("192.168.0.1"), 1001, 8080)
-	si := uuid.New().String()
+	id := NewConnID(ipproto.TCP, netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), 1001), netip.AddrPortFrom(netip.AddrFrom4([4]byte{192, 168, 0, 1}), 8080))
+	si := SessionID(uuid.New().String())
 
 	wg := sync.WaitGroup{}
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		client, err := NewClientStream(ctx, tunnel.clientSide(), id, si, 0, 0)
+		client, err := NewClientStream(ctx, ClientToManager, tunnel.clientSide(), id, si, 0, 0)
 		require.NoError(t, err)
 		assert.Equal(t, Version, client.PeerVersion())
 		assert.NoError(t, client.CloseSend(ctx))
@@ -127,7 +127,7 @@ func TestStream_Connect(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		server, err := NewServerStream(ctx, tunnel.serverSide())
+		server, err := NewServerStream(ctx, ManagerToClient, tunnel.serverSide())
 		require.NoError(t, err)
 		assert.Equal(t, id, server.ID())
 		assert.Equal(t, Version, server.PeerVersion())
@@ -213,8 +213,8 @@ func TestStream_Xfer(t *testing.T) {
 	ctx, cancel := testContext(t, 30*time.Second)
 	defer cancel()
 
-	id := NewConnID(ipproto.TCP, iputil.Parse("127.0.0.1"), iputil.Parse("192.168.0.1"), 1001, 8080)
-	si := uuid.New().String()
+	id := NewConnID(ipproto.TCP, netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), 1001), netip.AddrPortFrom(netip.AddrFrom4([4]byte{192, 168, 0, 1}), 8080))
+	si := SessionID(uuid.New().String())
 	b := make([]byte, 0x1000)
 	for i := range b {
 		b[i] = byte(i & 0xff)
@@ -229,7 +229,7 @@ func TestStream_Xfer(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			if client, err := NewClientStream(ctx, tunnel.clientSide(), id, si, 0, 0); err != nil {
+			if client, err := NewClientStream(ctx, ClientToManager, tunnel.clientSide(), id, si, 0, 0); err != nil {
 				errs <- err
 			} else {
 				produce(ctx, client, large, errs)
@@ -237,7 +237,7 @@ func TestStream_Xfer(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			if server, err := NewServerStream(ctx, tunnel.serverSide()); err != nil {
+			if server, err := NewServerStream(ctx, ManagerToClient, tunnel.serverSide()); err != nil {
 				errs <- err
 			} else {
 				consume(ctx, server, b, errs)
@@ -253,7 +253,7 @@ func TestStream_Xfer(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			if server, err := NewServerStream(ctx, tunnel.serverSide()); err != nil {
+			if server, err := NewServerStream(ctx, ManagerToClient, tunnel.serverSide()); err != nil {
 				errs <- err
 			} else {
 				produce(ctx, server, large, errs)
@@ -261,7 +261,7 @@ func TestStream_Xfer(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			if client, err := NewClientStream(ctx, tunnel.clientSide(), id, si, 0, 0); err != nil {
+			if client, err := NewClientStream(ctx, ClientToManager, tunnel.clientSide(), id, si, 0, 0); err != nil {
 				errs <- err
 			} else {
 				consume(ctx, client, b, errs)
@@ -282,7 +282,7 @@ func TestStream_Xfer(t *testing.T) {
 		wg.Add(5)
 		go func() {
 			defer wg.Done()
-			if s, err := NewServerStream(ctx, ta.serverSide()); err != nil {
+			if s, err := NewServerStream(ctx, ManagerToClient, ta.serverSide()); err != nil {
 				errs <- err
 				close(aCh)
 			} else {
@@ -291,7 +291,7 @@ func TestStream_Xfer(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			if s, err := NewServerStream(ctx, tb.serverSide()); err != nil {
+			if s, err := NewServerStream(ctx, ManagerToClient, tb.serverSide()); err != nil {
 				errs <- err
 				close(bCh)
 			} else {
@@ -300,7 +300,7 @@ func TestStream_Xfer(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			if server, err := NewClientStream(ctx, ta.clientSide(), id, si, 0, 0); err != nil {
+			if server, err := NewClientStream(ctx, ClientToManager, ta.clientSide(), id, si, 0, 0); err != nil {
 				errs <- err
 			} else {
 				produce(ctx, server, large, errs)
@@ -308,7 +308,7 @@ func TestStream_Xfer(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			if client, err := NewClientStream(ctx, tb.clientSide(), id, si, 0, 0); err != nil {
+			if client, err := NewClientStream(ctx, ClientToManager, tb.clientSide(), id, si, 0, 0); err != nil {
 				errs <- err
 			} else {
 				consume(ctx, client, b, errs)

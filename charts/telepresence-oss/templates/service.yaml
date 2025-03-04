@@ -1,0 +1,56 @@
+{{- with .Values }}
+{{- if not (and .rbac .rbac.only) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "traffic-manager.name" $ }}
+  namespace: {{ include "traffic-manager.namespace" $ }}
+  labels:
+    {{- include "telepresence.labels" $ | nindent 4 }}
+spec:
+  type: {{ .service.type }}
+  clusterIP: None
+  ports:
+  - name: api
+    port: {{ .apiPort }}
+    targetPort: api
+  selector:
+    {{- include "telepresence.selectorLabels" $ | nindent 4 }}
+{{- if .agentInjector.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .agentInjector.name }}
+  namespace: {{ include "traffic-manager.namespace" $ }}
+  labels:
+    {{- include "telepresence.labels" $ | nindent 4 }}
+spec:
+  type: {{ .service.type }}
+  ports:
+  - name: https
+    port: {{ .agentInjector.webhook.port }}
+    targetPort: https
+  selector:
+    {{- include "telepresence.selectorLabels" $ | nindent 4 }}
+{{- end }}
+{{- if .prometheus.port }} # 0 is false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: telepresence-prometheus
+  namespace: {{ include "traffic-manager.namespace" $ }}
+  labels:
+    name: telepresence-prometheus
+spec:
+  type: {{ .service.type }}
+  ports:
+  - name: telepresence-prometheus
+    port: 80
+    targetPort: prometheus
+  selector:
+    {{- include "telepresence.selectorLabels" $ | nindent 4 }}
+{{- end }}
+{{- end }}
+{{- end }}

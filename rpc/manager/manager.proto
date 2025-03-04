@@ -27,10 +27,14 @@ message ClientInfo {
 // reports at boot-up when it connects to the Telepresence Manager.
 message AgentInfo {
   string name = 1;      // name of the Workload
+  string kind = 13;
   string namespace = 7; // namespace of the Workload
   string pod_name = 8;  // Pod name (from metadata.name)
   string pod_ip = 2;    // Pod IP (from status.podIP)
+  string pod_uid = 14;  // Pod UID
   int32 api_port = 9;   // Port number for the agent gRPC API
+  int32 sftp_port = 10; // Port number for the agent SFTP server
+  int32 ftp_port = 11;  // Port number for the agent FTP server
   string product = 3;   // distinguish open source, our closed source, someone else's thing
   string version = 4;
 
@@ -55,11 +59,23 @@ message AgentInfo {
   // it supports.
   repeated Mechanism mechanisms = 5;
 
-  // The environment of the app
-  // Deprecated: Only older agents will set this. Newer ones will instead
-  // use the InterceptInfo.environment because the environment differs depending
-  // on what container it is that gets intercepted
-  map<string, string> environment = 6;
+  message ContainerInfo {
+    // The container environment
+    map<string, string> environment = 1;
+
+    // The directory where the intercept mounts can be found in the agent
+    string mount_point = 4;
+  }
+  map<string,ContainerInfo> containers = 12;
+
+  reserved 6;
+}
+
+// PortMapping describes a mapping from a port number in the intercepted container to
+// a port on the client for --from-pod and or vice versa when using --to-pod.
+message PortMapping {
+  int32 from = 1;
+  int32 to = 2;
 }
 
 // InterceptSpec contains static information about an intercept. It is shared by
@@ -94,14 +110,27 @@ message InterceptSpec {
   // to control what these values are.
   repeated string mechanism_args = 9;
 
+  // The host that the target_ports are routed to.
   string target_host = 6;
 
-  // The port on the workstation that the intercept is redirected to
-  int32 target_port = 7;
+  // Ports that will be forwarded from the intercepting pod's IP address
+  // to the target_host, using the following syntax:
+  //
+  // PORT = port-decl ["/" protocol ]
+  // port-decl = port-spec [ ":" uint16 ]
+  // protocol = "TCP" | "UDP"
+  // port-spec = name | uint16
+  //
+  // If two numbers are used, they signify source:destination.
+  repeated string pod_ports = 5;
 
-  // Identifier for the service port: either the name or port number
+  // Ports that will be forwarded from the intercepting client's localhost
+  // to the intercepted pod. Uses the same syntax as target_ports.
+  repeated string local_ports = 18;
+
+  // Identifier for the service or container port: either the name or port number
   // optionally followed by a "/TCP" or "/UDP"
-  string service_port_identifier = 10;
+  string port_identifier = 10;
 
   // The resolved service port name
   string service_port_name = 19;
@@ -109,19 +138,25 @@ message InterceptSpec {
   // The resolved service port
   int32 service_port = 20;
 
-  // The resolved protocol used by the service port
-  string protocol = 21; // TCP or UDP
-
   // .uid.metadata of service associated with intercept
   string service_uid = 12;
 
   // name of the aforementioned service
   string service_name = 14;
 
-  // Extra ports that will be forwarded from the intercepting client's localhost
-  // to the intercepted pod. Each entry is a string containing a port number followed
-  // by an optional "/TCP" or "/UDP".
-  repeated string local_ports = 18;
+  // The resolved protocol used by the container port
+  string protocol = 21; // TCP or UDP
+
+  // Name of container that provides environment and mounts. This is normally the container
+  // that owns the container_port, but in some cases it will differ because the container_port
+  // is owned by some kind of routing mechanism (such as nginx).
+  string container_name = 24;
+
+  // The resolved container port that is intercepted.
+  int32 container_port = 23;
+
+  // The port on the workstation that the intercepted container_port is redirected to.
+  int32 target_port = 7;
 
   // The delay imposed by a call roundtrip between the traffic-agent and
   // the client on the workstation. This delay is added to the dial_timeout
@@ -138,10 +173,13 @@ message InterceptSpec {
 
   // Used to be mount_point and only utilized when passing the spec between
   // the user daemon and the CLI. It's now moved to InterceptInfo
-  string reserved = 11;
+  reserved 11;
 
   // Whether to replace the running container.
   bool replace = 22;
+
+  // Intercept desire no default port.
+  bool no_default_port = 25;
 }
 
 enum InterceptDispositionType {
@@ -267,7 +305,7 @@ message InterceptInfo {
 
 message SessionInfo {
   string session_id = 1;
-  string cluster_id = 2;
+  string manager_install_id = 2;
   optional string install_id = 3;
 }
 
@@ -304,9 +342,12 @@ message PreparedIntercept {
   string service_name = 5;
   string service_port_name = 6;
   int32 service_port = 7;
-  string protocol = 10; // TCP or UDP
   string workload_kind = 8;
   string agent_image = 9;
+  string protocol = 10; // TCP or UDP
+  string container_name = 11;
+  int32 container_port = 12;
+  repeated string pod_ports = 13;
 }
 
 message UpdateInterceptRequest {
@@ -419,6 +460,7 @@ message License {
   // cluster_id is really the id of the namespace where the traffic-manager is installed.
   string cluster_id = 3;
   string err_msg = 4;
+  bool valid = 5;
 }
 
 // The host and port used to connect to Ambassador Cloud.
@@ -444,7 +486,7 @@ message DialRequest {
   bytes conn_id = 1;
   int64 roundtrip_latency = 2;
   int64 dial_timeout = 3;
-  map<string,string> trace_context = 4;
+  reserved 4;
 }
 
 // LookupHost request sent from a client
@@ -547,6 +589,7 @@ message AgentImageFQN {
 }
 
 message AgentPodInfo {
+  string pod_id = 7;
   string pod_name = 1;
   string namespace = 2;
   bytes pod_ip = 3;
@@ -557,6 +600,15 @@ message AgentPodInfo {
 
 message AgentPodInfoSnapshot {
   repeated AgentPodInfo agents = 1;
+}
+
+message AgentConfigRequest {
+  SessionInfo session = 1;
+  string name = 2;
+}
+
+message AgentConfigResponse {
+  bytes data = 1;
 }
 
 message TunnelMetrics {
@@ -621,6 +673,7 @@ message WorkloadInfo {
   Kind kind = 1;
   string name = 2;
   string namespace = 3;
+  string uid = 7;
   AgentState agent_state = 4;
 
   repeated Intercept intercept_clients = 5;
@@ -657,6 +710,19 @@ message WorkloadEventsRequest {
   // The timestamp from which the first delta should be computed. Set to
   // undefined to get a delta that contains everything.
   google.protobuf.Timestamp since = 2;
+
+  // The namespace to watch. Must be one of the namespaces that are
+  // managed by the traffic-manager. Defaults to the connected namespace.
+  string namespace = 3;
+}
+
+message UninstallAgentsRequest {
+  // The session_info identifies the client connection, and hence the
+  // namespace for the resulting watcher.
+  SessionInfo session_info = 1;
+
+  // The agents to install. Empty means all agents in the connected namespace.
+  repeated string agents = 2;
 }
 
 service Manager {
@@ -665,6 +731,9 @@ service Manager {
 
   // GetAgentImageFQN returns fully qualified name of the image that is injected into intercepted pods.
   rpc GetAgentImageFQN(google.protobuf.Empty) returns (AgentImageFQN);
+
+  // GetAgentConfig returns the agent configuration for a specific workload.
+  rpc GetAgentConfig(AgentConfigRequest) returns (AgentConfigResponse);
 
   // GetLicense returns the License information (the license itself and
   // domain that granted it) known to the manager.
@@ -736,8 +805,9 @@ service Manager {
   // connectivity to the cluster.
   rpc WatchClusterInfo(SessionInfo) returns (stream ClusterInfo);
 
-  // EnsureAgent ensures that an agent is injected to the pods of a workload
-  rpc EnsureAgent(EnsureAgentRequest) returns (google.protobuf.Empty);
+  // EnsureAgent ensures that an agent is injected to the pods of a workload and
+  // returns the agents, sorted by pod name.
+  rpc EnsureAgent(EnsureAgentRequest) returns (AgentInfoSnapshot);
 
   // Request that the traffic-manager makes the preparations necessary to
   // create the given intercept.
@@ -764,8 +834,8 @@ service Manager {
   rpc ReviewIntercept(ReviewInterceptRequest) returns (google.protobuf.Empty);
 
   // GetKnownWorkloadKinds returns the known workload kinds
-  // that the manager can handle. This base set should always include Deployment, StatefulSet, and ReplicaSet,
-  // and it may include Rollout (Argo Rollouts) if the support for it is enabled.
+  // that the manager can handle. This set may include Deployment, StatefulSet, ReplicaSet, Rollout (Argo Rollouts)
+  // as configured in the manager's Helm values.
   rpc GetKnownWorkloadKinds(SessionInfo) returns (KnownWorkloadKinds);
 
   // LookupDNS performs a DNS lookup in the cluster. If the caller has intercepts
@@ -802,4 +872,8 @@ service Manager {
   // connection and responds with a Tunnel. The manager then connects the
   // two tunnels.
   rpc WatchDial(SessionInfo) returns (stream DialRequest);
+
+  // UninstallAgents will uninstall the traffic-agent from the given workloads (or all
+  // workloads if the list is empty).
+  rpc UninstallAgents(UninstallAgentsRequest) returns (google.protobuf.Empty);
 }

@@ -68,6 +68,17 @@ func (s *multipleInterceptsSuite) TearDownSuite() {
 			cancel()
 		}
 	}
+	// Ensure that we have OK statuses on our services after leaving the intercept.
+	s.Eventually(func() bool {
+		stdout := itest.TelepresenceOk(ctx, "-n", s.AppNamespace(), "list")
+		for i := 0; i < s.ServiceCount(); i++ {
+			rx := regexp.MustCompile(fmt.Sprintf(`%s-%d\s*: ready to (engage|intercept)`, s.Name(), i))
+			if !rx.MatchString(stdout) {
+				return false
+			}
+		}
+		return true
+	}, 30*time.Second, 2*time.Second)
 }
 
 func (s *multipleInterceptsSuite) Test_Intercepts() {
@@ -132,7 +143,11 @@ func (s *multipleInterceptsSuite) Test_Intercepts() {
 }
 
 func (s *multipleInterceptsSuite) Test_ReportsPortConflict() {
-	_, stderr, err := itest.Telepresence(s.Context(), "intercept", "--mount", "false", "--port", strconv.Itoa(s.servicePort[1]), "dummy-name")
+	ctx := s.Context()
+	svc := fmt.Sprintf("%s-%d", s.Name(), 0)
+	itest.TelepresenceOk(ctx, "leave", svc)
+	defer itest.TelepresenceOk(ctx, "intercept", "--mount", "false", "--port", strconv.Itoa(s.servicePort[0]), svc)
+	_, stderr, err := itest.Telepresence(s.Context(), "intercept", "--mount", "false", "--port", strconv.Itoa(s.servicePort[1]), svc)
 	s.Error(err)
 	s.Contains(stderr, fmt.Sprintf("Port 127.0.0.1:%d is already in use by intercept %s-1", s.servicePort[1], s.Name()))
 }

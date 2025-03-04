@@ -3,6 +3,7 @@ package dns
 import (
 	"context"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,7 +30,7 @@ const (
 //	man 5 resolver
 //
 // or, if not on a Mac, follow this link: https://www.manpagez.com/man/5/resolver/
-func (s *Server) Worker(c context.Context, dev vif.Device, configureDNS func(net.IP, *net.UDPAddr)) error {
+func (s *Server) Worker(c context.Context, dev vif.Device, configureDNS func(netip.Addr, *net.UDPAddr)) error {
 	resolverDirName := filepath.Join("/etc", "resolver")
 
 	listener, err := newLocalUDPListener(c)
@@ -40,7 +41,7 @@ func (s *Server) Worker(c context.Context, dev vif.Device, configureDNS func(net
 	if err != nil {
 		return err
 	}
-	configureDNS(nil, dnsAddr)
+	configureDNS(netip.Addr{}, dnsAddr)
 
 	err = os.MkdirAll(resolverDirName, 0o755)
 	if err != nil {
@@ -67,7 +68,7 @@ func (s *Server) Worker(c context.Context, dev vif.Device, configureDNS func(net
 			return s.updateResolverFiles(c, resolverDirName, dnsAddr)
 		}, dev)
 		// Server will close the listener, so no need to close it here.
-		return s.Run(c, make(chan struct{}), []net.PacketConn{listener}, nil, s.resolveInCluster)
+		return s.Run(c, make(chan struct{}), []net.PacketConn{listener}, nil)
 	})
 	return g.Wait()
 }
@@ -105,11 +106,11 @@ func (s *Server) updateResolverFiles(c context.Context, resolverDirName string, 
 	}
 
 	// All routes and include suffixes become domains
-	domains := make(map[string]*dnsproxy.ResolveFile, len(s.routes)+len(s.includeSuffixes))
+	domains := make(map[string]*dnsproxy.ResolveFile, len(s.routes)+len(s.IncludeSuffixes))
 	for route := range s.routes {
 		domains[route] = newDomainResolveFile(route)
 	}
-	for _, sfx := range s.includeSuffixes {
+	for _, sfx := range s.IncludeSuffixes {
 		sfx = strings.TrimPrefix(sfx, ".")
 		domains[sfx] = newDomainResolveFile(sfx)
 	}

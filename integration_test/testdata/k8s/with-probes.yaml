@@ -15,6 +15,7 @@ spec:
         sidecar.istio.io/inject: 'false'
       labels:
         app: with-probes
+        budget: telepresence-test
     spec:
       containers:
         - name: sample-app

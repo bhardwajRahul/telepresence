@@ -1,6 +1,8 @@
 package client
 
 import (
+	"context"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,12 +11,11 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/datawire/dlib/dlog"
-	"github.com/datawire/k8sapi/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/v2/pkg/filelocation"
+	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 )
 
 func TestGetConfig(t *testing.T) {
@@ -34,8 +35,8 @@ logLevels:
 `,
 		/* user */ `
 timeouts:
-  clusterConnect: 25
-  proxyDial: 17.0
+  clusterConnect: 25s
+  proxyDial: 17s
 logLevels:
   rootDaemon: trace
 images:
@@ -48,8 +49,8 @@ intercept:
   appProtocolStrategy: portName
   defaultPort: 9080
   useFtp: true
-cluster:
-  virtualIPSubnet: 192.169.0.0/16
+routing:
+  virtualSubnet: 192.169.0.0/16
 `,
 	}
 
@@ -90,7 +91,7 @@ cluster:
 	assert.Equal(t, 9080, cfg.Intercept().DefaultPort)                                           // from user
 	assert.True(t, cfg.Intercept().UseFtp)                                                       // from user
 	assert.Equal(t, cfg.Cluster().DefaultManagerNamespace, "hello")                              // from sys1
-	assert.Equal(t, cfg.Cluster().VirtualIPSubnet, "192.169.0.0/16")                             // from user
+	assert.Equal(t, cfg.Routing().VirtualSubnet, netip.MustParsePrefix("192.169.0.0/16"))        // from user
 }
 
 func Test_ConfigMarshalYAML(t *testing.T) {
@@ -107,7 +108,7 @@ func Test_ConfigMarshalYAML(t *testing.T) {
 	cfg.Intercept().AppProtocolStrategy = k8sapi.PortName
 	cfg.Intercept().DefaultPort = 9080
 	cfg.Cluster().DefaultManagerNamespace = "hello-there"
-	cfgBytes, err := yaml.Marshal(cfg)
+	cfgBytes, err := cfg.MarshalYAML()
 	require.NoError(t, err)
 
 	// Store YAML in file
@@ -122,7 +123,60 @@ func Test_ConfigMarshalYAML(t *testing.T) {
 }
 
 func Test_ConfigMarshalYAMLDefaults(t *testing.T) {
-	cfgBytes, err := yaml.Marshal(GetDefaultConfig())
+	cfgBytes, err := GetDefaultConfig().MarshalYAML()
 	require.NoError(t, err)
 	require.Equal(t, "{}\n", string(cfgBytes))
+}
+
+func Test_ConfigUnmarshalYAMLEmpty(t *testing.T) {
+	cfg, err := ParseConfigYAML(dlog.NewTestContext(t, true), "", []byte("{}"))
+	require.NoError(t, err)
+	require.Equal(t, GetDefaultConfig(), cfg)
+}
+
+func Test_ConfigUnmarshalYAMLBooleanTrueDefault(t *testing.T) {
+	cfg, err := ParseConfigYAML(dlog.NewTestContext(t, true), "", []byte(`
+cluster:
+  connectFromRootDaemon: true
+`))
+	require.NoError(t, err)
+	require.Equal(t, GetDefaultConfig(), cfg)
+}
+
+func Test_ConfigUnmarshalYAMLBooleanTrueDefaultFalse(t *testing.T) {
+	cfg, err := ParseConfigYAML(dlog.NewTestContext(t, true), "", []byte(`
+cluster:
+  connectFromRootDaemon: false
+`))
+	require.NoError(t, err)
+	require.NotEqual(t, GetDefaultConfig(), cfg)
+}
+
+func Test_ConfigUnmarshalYAMLEmptyParent(t *testing.T) {
+	cfg, err := ParseConfigYAML(dlog.NewTestContext(t, true), "", []byte(`
+cluster:
+`))
+	require.NoError(t, err)
+	require.Equal(t, GetDefaultConfig(), cfg)
+}
+
+func Test_ConfigMarshalYAMLDefaultsNotEmitted(t *testing.T) {
+	cfg := GetDefaultConfig()
+	lls := cfg.LogLevels()
+	lls.UserDaemon = defaultLogLevels.UserDaemon
+	lls.RootDaemon = logrus.DebugLevel
+	cfgBytes, err := cfg.MarshalYAML()
+	require.NoError(t, err)
+	require.Equal(t, "logLevels:\n  rootDaemon: debug\n", string(cfgBytes))
+}
+
+func Test_ConfigUnmarshalUnsupported(t *testing.T) {
+	config := []byte(`---
+logLevels:
+  userDaemon: debug
+  fooDaemon: debug
+`)
+	cfg, err := ParseConfigYAML(context.Background(), "config.yml", config)
+	require.NoError(t, err)
+	require.Equal(t, cfg.LogLevels().UserDaemon, logrus.DebugLevel)
 }

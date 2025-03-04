@@ -4,8 +4,6 @@ package docker
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -21,19 +19,18 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/network"
 	dockerClient "github.com/docker/docker/client"
+	"github.com/go-json-experiment/json"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	runtime2 "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/clientcmd/api"
 
-	"github.com/datawire/dlib/dexec"
 	"github.com/datawire/dlib/dlog"
 	"github.com/datawire/dlib/dtime"
 	"github.com/telepresenceio/telepresence/v2/pkg/authenticator/patcher"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/daemon"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/docker/kubeauth"
-	"github.com/telepresenceio/telepresence/v2/pkg/dnet"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
 	"github.com/telepresenceio/telepresence/v2/pkg/filelocation"
 	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
@@ -66,7 +63,7 @@ func ClientImage(ctx context.Context) string {
 
 // DaemonOptions returns the options necessary to pass to a docker run when starting a daemon container.
 func DaemonOptions(ctx context.Context, daemonID *daemon.Identifier) ([]string, *net.TCPAddr, error) {
-	as, err := dnet.FreePortsTCP(1)
+	as, err := client.FreePortsTCP(1)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -330,11 +327,14 @@ func handleLocalK8s(ctx context.Context, daemonID *daemon.Identifier, config *ap
 // options DaemonOptions and DaemonArgs to start the image, and finally connectDaemon to connect to it. A
 // successful start yields a cache.Info entry in the cache.
 func LaunchDaemon(ctx context.Context, daemonID *daemon.Identifier) (conn *grpc.ClientConn, err error) {
-	if proc.RunningInContainer() {
-		return nil, errors.New("unable to start a docker container from within a container")
-	}
 	image := ClientImage(ctx)
 	if err = PullImage(ctx, image); err != nil {
+		return nil, err
+	}
+
+	// Ensure that an ID exists in the config prior to launching the daemon. If it doesn't, the daemon
+	// will try to add it and fail, because the config is a read-only file system.
+	if _, err = client.InstallID(ctx); err != nil {
 		return nil, err
 	}
 
@@ -372,8 +372,8 @@ func LaunchDaemon(ctx context.Context, daemonID *daemon.Identifier) (conn *grpc.
 			if stopAttempted {
 				return nil, err
 			}
-			// Container is still alive. Try and stop it.
-			stopContainer(ctx, daemonID)
+			// The Container is still alive. Try and stop it.
+			_ = StopContainer(ctx, daemonID.ContainerName())
 			stopAttempted = true
 			i = 1
 			continue
@@ -551,14 +551,6 @@ func detectKind(ctx context.Context, cns []types.ContainerJSON, hostAddrPort net
 	return netip.AddrPort{}, ""
 }
 
-func stopContainer(ctx context.Context, daemonID *daemon.Identifier) {
-	args := []string{"stop", daemonID.ContainerName()}
-	dlog.Debug(ctx, shellquote.ShellString("docker", args))
-	if _, err := proc.CaptureErr(dexec.CommandContext(ctx, "docker", args...)); err != nil {
-		dlog.Warn(ctx, err)
-	}
-}
-
 func tryLaunch(ctx context.Context, daemonID *daemon.Identifier, port int, args []string) (string, error) {
 	stdErr := bytes.Buffer{}
 	stdOut := bytes.Buffer{}
@@ -576,6 +568,7 @@ func tryLaunch(ctx context.Context, daemonID *daemon.Identifier, port int, args 
 	}
 	cid := strings.TrimSpace(stdOut.String())
 	cr := daemon.GetRequest(ctx)
+	dlog.Debugf(ctx, "Creating daemon info file %s (runs in container)", daemonID.Name)
 	return cid, daemon.SaveInfo(ctx,
 		&daemon.Info{
 			Options:      map[string]string{"cid": cid},

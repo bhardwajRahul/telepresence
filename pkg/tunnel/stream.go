@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"go.opentelemetry.io/otel"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -22,6 +21,24 @@ import (
 //	0 which didn't report versions and didn't do synchronization
 //	1 used MuxTunnel instead of one tunnel per connection.
 const Version = uint16(2)
+
+type (
+	SessionID string
+	Tag       string
+)
+
+const (
+	TunToClient        = Tag("T⇄C")
+	ClientToAgent      = Tag("C⇄A")
+	ClientToDNS        = Tag("C⇄D")
+	AgentToClient      = Tag("A⇄C")
+	AgentToProxied     = Tag("A⇄P")
+	ClientToFileServer = Tag("C⇄F")
+	ClientToManager    = Tag("C⇄M")
+	ManagerToClient    = Tag("M⇄C")
+	AgentToManager     = Tag("A⇄M")
+	ManagerToAgent     = Tag("M⇄A")
+)
 
 // Endpoint is an endpoint for a Stream such as a Dialer or a bidirectional pipe.
 type Endpoint interface {
@@ -58,15 +75,16 @@ type GRPCStream interface {
 //
 // When #6 happens, the Stream will simply close.
 type Stream interface {
-	Tag() string
+	Tag() Tag
 	ID() ConnID
 	Receive(context.Context) (Message, error)
 	Send(context.Context, Message) error
 	CloseSend(ctx context.Context) error
 	PeerVersion() uint16
-	SessionID() string
+	SessionID() SessionID
 	DialTimeout() time.Duration
 	RoundtripLatency() time.Duration
+	SetTag(tag Tag)
 }
 
 // StreamCreator is a function that creats a Stream.
@@ -77,16 +95,13 @@ type StreamCreator func(context.Context, ConnID) (Stream, error)
 func ReadLoop(ctx context.Context, s Stream, p *CounterProbe) (<-chan Message, <-chan error) {
 	msgCh := make(chan Message, 50)
 	errCh := make(chan error, 1) // Max one message will be sent on this channel
-	dlog.Tracef(ctx, "   %s %s, ReadLoop starting", s.Tag(), s.ID())
+	dlog.Tracef(ctx, "<- %s %s, ReadLoop starting", s.Tag(), s.ID())
 	go func() {
-		ctx, span := otel.GetTracerProvider().Tracer("").Start(ctx, "ReadLoop")
-		defer span.End()
-		s.ID().SpanRecord(span)
 		var endReason string
 		defer func() {
 			close(errCh)
 			close(msgCh)
-			dlog.Tracef(ctx, "   %s %s, ReadLoop ended: %s", s.Tag(), s.ID(), endReason)
+			dlog.Tracef(ctx, "<- %s %s, ReadLoop ended: %s", s.Tag(), s.ID(), endReason)
 		}()
 
 		for {
@@ -109,13 +124,20 @@ func ReadLoop(ctx context.Context, s Stream, p *CounterProbe) (<-chan Message, <
 				endReason = "EOF on input"
 			case errors.Is(err, net.ErrClosed):
 				endReason = "stream closed"
-			case errors.Is(err, context.Canceled), status.Code(err) == codes.Canceled:
+			case errors.Is(err, context.Canceled):
 				endReason = err.Error()
 			default:
-				endReason = err.Error()
-				select {
-				case errCh <- fmt.Errorf("!! %s %s, read from grpc.ClientStream failed: %w", s.Tag(), s.ID(), err):
+				switch status.Code(err) {
+				case codes.NotFound:
+					endReason = "session closed"
+				case codes.Canceled:
+					endReason = err.Error()
 				default:
+					endReason = err.Error()
+					select {
+					case errCh <- fmt.Errorf("<! %s %s, read from grpc.ClientStream failed: %w", s.Tag(), s.ID(), err):
+					default:
+					}
 				}
 			}
 			break
@@ -132,16 +154,13 @@ func WriteLoop(
 	wg *sync.WaitGroup,
 	p *CounterProbe,
 ) {
-	dlog.Tracef(ctx, "   %s %s, WriteLoop starting", s.Tag(), s.ID())
+	dlog.Tracef(ctx, "-> %s %s, WriteLoop starting", s.Tag(), s.ID())
 	go func() {
-		ctx, span := otel.GetTracerProvider().Tracer("").Start(ctx, "WriteLoop")
-		defer span.End()
-		s.ID().SpanRecord(span)
 		var endReason string
 		defer func() {
 			dlog.Tracef(ctx, "   %s %s, WriteLoop ended: %s", s.Tag(), s.ID(), endReason)
 			if err := s.CloseSend(ctx); err != nil {
-				dlog.Errorf(ctx, "!! %s %s, Send of closeSend failed: %v", s.Tag(), s.ID(), err)
+				dlog.Errorf(ctx, "!> %s %s, Send of closeSend failed: %v", s.Tag(), s.ID(), err)
 			}
 			wg.Done()
 		}()
@@ -180,19 +199,23 @@ type stream struct {
 	id               ConnID
 	dialTimeout      time.Duration
 	roundtripLatency time.Duration
-	sessionID        string
-	tag              string
+	sessionID        SessionID
+	tag              Tag
 	syncRatio        uint32 // send and check sync after each syncRatio message
 	ackWindow        uint32 // maximum permitted difference between sent and received ack
 	peerVersion      uint16
 }
 
-func newStream(tag string, grpcStream GRPCStream) stream {
+func newStream(tag Tag, grpcStream GRPCStream) stream {
 	return stream{tag: tag, grpcStream: grpcStream, syncRatio: 8, ackWindow: 1}
 }
 
-func (s *stream) Tag() string {
+func (s *stream) Tag() Tag {
 	return s.tag
+}
+
+func (s *stream) SetTag(tag Tag) {
+	s.tag = tag
 }
 
 func (s *stream) ID() ConnID {
@@ -211,7 +234,7 @@ func (s *stream) RoundtripLatency() time.Duration {
 	return s.roundtripLatency
 }
 
-func (s *stream) SessionID() string {
+func (s *stream) SessionID() SessionID {
 	return s.sessionID
 }
 

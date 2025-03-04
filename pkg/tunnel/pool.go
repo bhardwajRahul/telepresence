@@ -5,9 +5,6 @@ import (
 	"errors"
 	"sync"
 
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-
 	"github.com/datawire/dlib/dlog"
 )
 
@@ -59,12 +56,9 @@ func (p *Pool) GetOrCreate(ctx context.Context, id ConnID, createHandler Handler
 	}
 
 	handlerCtx, cancel := context.WithCancel(ctx)
-	handlerCtx, span := otel.Tracer("").Start(handlerCtx, "handler")
-	span.SetAttributes(attribute.String("conn-id", id.String()))
 
 	release := func() {
 		p.release(ctx, id)
-		span.End()
 		cancel()
 	}
 

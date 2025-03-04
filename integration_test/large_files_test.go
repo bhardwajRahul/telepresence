@@ -2,9 +2,9 @@ package integration_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/go-json-experiment/json"
 
 	"github.com/datawire/dlib/dtime"
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
@@ -24,17 +26,12 @@ import (
 
 type largeFilesSuite struct {
 	itest.Suite
-	itest.NamespacePair
+	itest.TrafficManager
 	name         string
+	manifests    [][]byte
 	serviceCount int
 	mountPoint   []string
 	largeFiles   []string
-}
-
-type qname struct {
-	Name       string
-	Namespace  string
-	VolumeSize string
 }
 
 func (s *largeFilesSuite) SuiteName() string {
@@ -48,14 +45,14 @@ const (
 )
 
 func init() {
-	itest.AddTrafficManagerSuite("", func(h itest.NamespacePair) itest.TestingSuite {
+	itest.AddTrafficManagerSuite("", func(h itest.TrafficManager) itest.TestingSuite {
 		return &largeFilesSuite{
-			Suite:         itest.Suite{Harness: h},
-			NamespacePair: h,
-			name:          "hello",
-			serviceCount:  svcCount,
-			mountPoint:    make([]string, svcCount),
-			largeFiles:    make([]string, svcCount*fileCountPerSvc),
+			Suite:          itest.Suite{Harness: h},
+			TrafficManager: h,
+			name:           "hello",
+			serviceCount:   svcCount,
+			mountPoint:     make([]string, svcCount),
+			largeFiles:     make([]string, svcCount*fileCountPerSvc),
 		}
 	})
 }
@@ -69,30 +66,45 @@ func (s *largeFilesSuite) ServiceCount() int {
 }
 
 func (s *largeFilesSuite) SetupSuite() {
-	if s.IsCI() {
-		s.T().Skip("Disabled. Test started failing inexplicably when running with Kubeception and CI")
-		return
+	if !(s.ManagerIsVersion(">2.21.x") && s.ClientIsVersion(">2.21.x")) {
+		s.T().Skip("Not part of compatibility tests. Not enough transfer stability in versions < 2.22.0")
 	}
 	s.Suite.SetupSuite()
 	ctx := s.Context()
-	require := s.Require()
 	wg := sync.WaitGroup{}
 	wg.Add(s.ServiceCount())
-	k8s := filepath.Join("testdata", "k8s")
+	mfPath := filepath.Join("testdata", "k8s", "hello-pv-volume.goyaml")
+	s.NoError(s.Kubectl(ctx, "apply", "-f", filepath.Join("testdata", "k8s", "local-pvc.yaml")))
+	s.manifests = make([][]byte, s.ServiceCount())
 	for i := 0; i < s.ServiceCount(); i++ {
 		go func(i int) {
 			defer wg.Done()
 			svc := fmt.Sprintf("%s-%d", s.Name(), i)
-			rdr, err := itest.OpenTemplate(ctx, filepath.Join(k8s, "hello-pv-volume.yaml"), &qname{
-				Name:       svc,
-				Namespace:  s.AppNamespace(),
-				VolumeSize: "350Mi", // must cover fileCountPerSvc * fileSize
+			mf, err := itest.ReadTemplate(ctx, mfPath, &itest.PersistentVolume{
+				Name:           svc,
+				MountDirectory: "/home/scratch",
 			})
-			require.NoError(err)
-			require.NoError(s.Kubectl(dos.WithStdin(ctx, rdr), "apply", "-f", "-"))
+			s.NoError(err)
+			s.NoError(s.Kubectl(dos.WithStdin(ctx, bytes.NewReader(mf)), "apply", "-f", "-"))
+			s.manifests[i] = mf
 			s.NoError(itest.RolloutStatusWait(ctx, s.AppNamespace(), "deploy/"+svc))
 		}(i)
 	}
+	wg.Wait()
+}
+
+func (s *largeFilesSuite) TearDownSuite() {
+	ctx := s.Context()
+	wg := sync.WaitGroup{}
+	wg.Add(s.ServiceCount())
+	for i := 0; i < s.ServiceCount(); i++ {
+		go func(i int) {
+			defer wg.Done()
+			s.NoError(s.Kubectl(dos.WithStdin(ctx, bytes.NewReader(s.manifests[i])), "delete", "-f", "-"))
+		}(i)
+	}
+	s.NoError(s.Kubectl(ctx, "delete", "-f", filepath.Join("testdata", "k8s", "local-pvc.yaml")))
+	itest.TelepresenceQuitOk(ctx)
 	wg.Wait()
 }
 
@@ -131,23 +143,6 @@ func (s *largeFilesSuite) leaveIntercepts(ctx context.Context) {
 	}
 }
 
-func (s *largeFilesSuite) TearDownSuite() {
-	ctx := s.Context()
-	k8s := filepath.Join("testdata", "k8s")
-	wg := sync.WaitGroup{}
-	wg.Add(s.ServiceCount())
-	for i := 0; i < s.ServiceCount(); i++ {
-		go func(i int) {
-			defer wg.Done()
-			rdr, err := itest.OpenTemplate(ctx, filepath.Join(k8s, "hello-pv-volume.yaml"), &qname{Name: fmt.Sprintf("%s-%d", s.Name(), i), Namespace: s.AppNamespace()})
-			s.NoError(err)
-			s.NoError(s.Kubectl(dos.WithStdin(ctx, rdr), "delete", "-f", "-"))
-		}(i)
-	}
-	itest.TelepresenceQuitOk(ctx)
-	wg.Wait()
-}
-
 func (s *largeFilesSuite) Test_LargeFileIntercepts_fuseftp() {
 	ctx := itest.WithConfig(s.Context(), func(cfg client.Config) {
 		cfg.Timeouts().PrivateFtpReadWrite = 2 * time.Minute
@@ -169,7 +164,7 @@ func (s *largeFilesSuite) largeFileIntercepts(ctx context.Context) {
 	wg := sync.WaitGroup{}
 
 	// Start by creating files in the mounted filesystem from entry 1 - fileCountPerSvc for each service.
-	// We leave the first entry empty because we in the next step, we want to create a file parallel to
+	// We leave the first entry empty because in the next step, we want to create a file parallel to
 	// validating the ones we create here so that there is heavy parallel reads and writes.
 	wg.Add(s.ServiceCount() * (fileCountPerSvc - 1))
 	for i := 0; i < s.ServiceCount(); i++ {

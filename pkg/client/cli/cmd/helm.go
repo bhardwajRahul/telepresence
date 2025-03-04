@@ -15,7 +15,7 @@ func helmCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "helm",
 	}
-	cmd.AddCommand(helmInstall(), helmUpgrade(), helmUninstall())
+	cmd.AddCommand(helmInstall(), helmUpgrade(), helmUninstall(), helmLint())
 	return cmd
 }
 
@@ -27,7 +27,6 @@ type HelmCommand struct {
 
 var (
 	HelmInstallExtendFlagsFunc func(*pflag.FlagSet)                                      //nolint:gochecknoglobals // extension point
-	HelmExtendFlagsFunc        func(*pflag.FlagSet)                                      //nolint:gochecknoglobals // extension point
 	HelmInstallPrologFunc      func(context.Context, *pflag.FlagSet, *HelmCommand) error //nolint:gochecknoglobals // extension point
 )
 
@@ -49,14 +48,15 @@ func helmInstall() *cobra.Command {
 			}
 			return ha.run(cmd, args)
 		},
+		ValidArgsFunction: cobra.NoFileCompletions,
 	}
 
 	flags := cmd.Flags()
 	flags.BoolVarP(&ha.NoHooks, "no-hooks", "", false, "prevent hooks from running during install")
 	flags.BoolVarP(&upgrade, "upgrade", "u", false, "replace the traffic manager if it already exists")
 	flags.BoolVar(&ha.CreateNamespace, "create-namespace", true, "create a namespace for the traffic-manager if not present")
+	flags.StringVar(&ha.Version, "version", "", "the telepresence version if different from the client's version. May be a range (e.g. ^2.21.0)")
 	ha.addValueSettingFlags(flags)
-	ha.addCRDsFlags(flags)
 	uf := flags.Lookup("upgrade")
 	uf.Hidden = true
 	uf.Deprecated = `Use "telepresence helm upgrade" instead of "telepresence helm install --upgrade"`
@@ -79,12 +79,12 @@ func helmUpgrade() *cobra.Command {
 
 	flags := cmd.Flags()
 	ha.addValueSettingFlags(flags)
-	ha.addCRDsFlags(flags)
 	flags.BoolVarP(&ha.NoHooks, "no-hooks", "", false, "disable pre/post upgrade hooks")
 	flags.BoolVarP(&ha.ResetValues, "reset-values", "", false, "when upgrading, reset the values to the ones built into the chart")
 	flags.BoolVarP(&ha.ReuseValues, "reuse-values", "", false,
 		"when upgrading, reuse the last release's values and merge in any overrides from the command line via --set and -f")
 	flags.BoolVarP(&ha.CreateNamespace, "create-namespace", "", true, "create the release namespace if not present")
+	flags.StringVar(&ha.Version, "version", "", "the telepresence version if different from the client's version. May be a range (e.g. ^2.21.0)")
 	ha.rq = daemon.InitRequest(cmd)
 	return cmd
 }
@@ -105,12 +105,6 @@ func (ha *HelmCommand) addValueSettingFlags(flags *pflag.FlagSet) {
 	}
 }
 
-func (ha *HelmCommand) addCRDsFlags(flags *pflag.FlagSet) {
-	if HelmExtendFlagsFunc != nil {
-		HelmExtendFlagsFunc(flags)
-	}
-}
-
 func helmUninstall() *cobra.Command {
 	ha := &HelmCommand{
 		Request: helm.Request{
@@ -125,7 +119,29 @@ func helmUninstall() *cobra.Command {
 	}
 	flags := cmd.Flags()
 	flags.BoolVarP(&ha.NoHooks, "no-hooks", "", false, "prevent hooks from running during uninstallation")
-	ha.addCRDsFlags(flags)
+	ha.rq = daemon.InitRequest(cmd)
+	return cmd
+}
+
+func helmLint() *cobra.Command {
+	ha := &HelmCommand{
+		Request: helm.Request{
+			Type: helm.Lint,
+		},
+	}
+	cmd := &cobra.Command{
+		Use:   "lint",
+		Args:  cobra.NoArgs,
+		Short: "Verify the embedded telepresence Helm chart",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return ha.run(cmd, args)
+		},
+		ValidArgsFunction: cobra.NoFileCompletions,
+	}
+
+	flags := cmd.Flags()
+	flags.StringVar(&ha.Version, "version", "", "the telepresence version if different from the client's version. May be a range (e.g. ^2.21.0)")
+	ha.addValueSettingFlags(flags)
 	ha.rq = daemon.InitRequest(cmd)
 	return cmd
 }

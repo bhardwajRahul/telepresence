@@ -2,72 +2,63 @@ package cmd
 
 import (
 	"errors"
+	"slices"
+	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/rpc/v2/connector"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/ann"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/connect"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/daemon"
-	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/helm"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
 	"github.com/telepresenceio/telepresence/v2/pkg/ioutil"
 )
 
+const allAgentsFlag = "all-agents"
+
 type uninstallCommand struct {
-	agent      bool
-	allAgents  bool
-	everything bool
+	agent     bool
+	allAgents bool
 }
 
 func uninstall() *cobra.Command {
 	ui := &uninstallCommand{}
 	cmd := &cobra.Command{
-		Use:  "uninstall [flags] { --agent <agents...> | --all-agents }",
-		Args: ui.args,
-
+		Use:   "uninstall [flags] <workloads...>",
+		Args:  ui.args,
 		Short: "Uninstall telepresence agents",
 		RunE:  ui.run,
+		Annotations: map[string]string{
+			ann.Session: ann.Required,
+		},
+		ValidArgsFunction: validWorkloads,
 	}
 	flags := cmd.Flags()
-
-	flags.BoolVarP(&ui.agent, "agent", "d", false, "uninstall intercept agent on specific deployments")
-	flags.BoolVarP(&ui.allAgents, "all-agents", "a", false, "uninstall intercept agent on all deployments")
+	flags.BoolVarP(&ui.allAgents, allAgentsFlag, "a", false, "uninstall intercept agent on all workloads")
 
 	// Hidden from help but will yield a deprecation warning if used
-	flags.BoolVarP(&ui.everything, "everything", "e", false, "uninstall agents and the traffic manager")
-	flags.Lookup("everything").Hidden = true
+	flags.BoolVarP(&ui.agent, "agent", "d", false, "")
+	flags.Lookup("agent").Hidden = true
 	return cmd
 }
 
-func (u *uninstallCommand) args(cmd *cobra.Command, args []string) error {
-	if u.agent && u.allAgents {
-		return errors.New("--agent and --all-agents are mutually exclusive")
-	}
-	if !(u.agent || u.allAgents) {
-		return errors.New("please specify --agent or --all-agents")
-	}
-	switch {
-	case u.agent && len(args) == 0:
-		return errors.New("at least one argument (the name of an agent) is expected")
-	case !u.agent && len(args) != 0:
-		return errors.New("unexpected argument(s)")
+func (u *uninstallCommand) args(_ *cobra.Command, args []string) error {
+	if len(args) > 0 {
+		if u.allAgents {
+			return errors.New("--all-agents cannot be used with additional arguments")
+		}
+	} else if !u.allAgents {
+		return errors.New("please specify at least one workload or use or --all-agents")
 	}
 	return nil
 }
 
 // uninstall.
 func (u *uninstallCommand) run(cmd *cobra.Command, args []string) error {
-	if u.everything {
-		ha := &HelmCommand{
-			Request: helm.Request{Type: helm.Uninstall},
-			rq:      daemon.InitRequest(cmd),
-		}
-		ioutil.Println(cmd.OutOrStderr(), "--everything is deprecated. Please use telepresence helm uninstall")
-		return ha.run(cmd, args)
-	}
-	cmd.Annotations = map[string]string{
-		ann.Session: ann.Required,
+	if u.agent {
+		ioutil.Println(cmd.OutOrStderr(), "--agent is deprecated (it's the default, so the flag has no effect)")
 	}
 	if err := connect.InitCommand(cmd); err != nil {
 		return err
@@ -75,14 +66,11 @@ func (u *uninstallCommand) run(cmd *cobra.Command, args []string) error {
 	ur := &connector.UninstallRequest{
 		UninstallType: 0,
 	}
-	switch {
-	case u.agent:
+	if u.allAgents {
+		ur.UninstallType = connector.UninstallRequest_ALL_AGENTS
+	} else {
 		ur.UninstallType = connector.UninstallRequest_NAMED_AGENTS
 		ur.Agents = args
-	case u.everything:
-		return nil
-	default:
-		ur.UninstallType = connector.UninstallRequest_ALL_AGENTS
 	}
 	ctx := cmd.Context()
 	r, err := daemon.GetUserClient(ctx).Uninstall(ctx, ur)
@@ -90,4 +78,38 @@ func (u *uninstallCommand) run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	return errcat.FromResult(r)
+}
+
+func validWorkloads(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	// Trace level is used here, because we generally don't want to log expansion attempts
+	// in the cli.log
+	dlog.Tracef(cmd.Context(), "toComplete = %s, args = %v", toComplete, args)
+
+	all, _ := cmd.Flags().GetBool(allAgentsFlag)
+	if all {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	if err := connect.InitCommand(cmd); err != nil {
+		dlog.Debug(cmd.Context(), err)
+		return nil, cobra.ShellCompDirectiveError
+	}
+	req := connector.ListRequest{
+		Filter: connector.ListRequest_INSTALLED_AGENTS,
+	}
+	ctx := cmd.Context()
+
+	r, err := daemon.GetUserClient(ctx).List(ctx, &req)
+	if err != nil {
+		dlog.Debugf(ctx, "unable to get list of workloads with agents: %v", err)
+		return nil, cobra.ShellCompDirectiveError
+	}
+
+	list := make([]string, 0)
+	for _, w := range r.Workloads {
+		// only suggest strings that start with the string were autocompleting
+		if strings.HasPrefix(w.Name, toComplete) && !slices.Contains(args, w.Name) {
+			list = append(list, w.Name)
+		}
+	}
+	return list, cobra.ShellCompDirectiveNoFileComp
 }

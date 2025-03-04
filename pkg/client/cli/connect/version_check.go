@@ -3,10 +3,12 @@ package connect
 import (
 	"context"
 	"regexp"
+	"strconv"
 
 	empty "google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/daemon"
+	"github.com/telepresenceio/telepresence/v2/pkg/dos"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
 	"github.com/telepresenceio/telepresence/v2/pkg/version"
 )
@@ -14,6 +16,10 @@ import (
 var validPrerelRx = regexp.MustCompile(`^[a-z]+\.\d+$`)
 
 func versionCheck(ctx context.Context, daemonBinary string) error {
+	if debug, err := strconv.ParseBool(dos.Getenv(ctx, "TELEPRESENCE_DEBUG")); err == nil && debug {
+		return nil
+	}
+
 	// Ensure that the already running daemons have the correct version
 	userD := daemon.GetUserClient(ctx)
 	uv := userD.Semver()

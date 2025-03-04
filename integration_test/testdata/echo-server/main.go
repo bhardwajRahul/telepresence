@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -48,6 +49,7 @@ import (
 )
 
 func main() {
+	addr := os.Getenv("LISTEN_ADDRESS")
 	portsEnv := os.Getenv("PORTS")
 	if portsEnv == "" {
 		portsEnv = os.Getenv("PORT")
@@ -58,25 +60,36 @@ func main() {
 	ports := strings.Split(portsEnv, ",")
 	g := dgroup.NewGroup(context.Background(), dgroup.GroupConfig{
 		EnableSignalHandling: true,
+		SoftShutdownTimeout:  time.Second,
 		DisableLogging:       true,
 	})
 	for _, port := range ports {
 		port := port // pin it
 		g.Go(fmt.Sprintf("port-%s", port), func(ctx context.Context) error {
-			fmt.Printf("Echo server listening on port %s.\n", port)
+			defer fmt.Printf("Echo server stop listening port %s.\n", port)
 			lc := dhttp.ServerConfig{Handler: h2c.NewHandler(
 				http.HandlerFunc(func(wr http.ResponseWriter, rq *http.Request) {
 					handler(wr, rq, port)
 				}),
 				&http2.Server{},
 			)}
-			return lc.ListenAndServe(ctx, ":"+port)
+			var addrPort string
+			if addr == "" {
+				addrPort = ":" + port
+				fmt.Printf("Echo server listening on port %s.\n", port)
+			} else {
+				addrPort = net.JoinHostPort(addr, port)
+				fmt.Printf("Echo server listening on %s.\n", addrPort)
+			}
+			return lc.ListenAndServe(ctx, addrPort)
 		})
 	}
 	if err := g.Wait(); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
+		fmt.Println("Echo server exited")
 		os.Exit(1)
 	}
+	fmt.Println("Echo server exited")
 }
 
 var upgrader = websocket.Upgrader{
@@ -311,12 +324,5 @@ func writeRequest(w io.Writer, req *http.Request) {
 			fmt.Fprintf(w, "%s: %s\n", key, value)
 		}
 	}
-
-	var body bytes.Buffer
-	io.Copy(&body, req.Body) // nolint:errcheck
-
-	if body.Len() > 0 {
-		fmt.Fprintln(w, "")
-		body.WriteTo(w) // nolint:errcheck
-	}
+	io.Copy(w, req.Body) // nolint:errcheck
 }

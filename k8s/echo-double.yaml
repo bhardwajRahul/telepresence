@@ -34,7 +34,7 @@ spec:
     spec:
       containers:
         - name: echo-one
-          image: multi:5000/tel2/echo
+          image: ghcr.io/telepresenceio/echo-server
           ports:
             - containerPort: 8080
               name: http
@@ -43,7 +43,7 @@ spec:
               cpu: 50m
               memory: 128Mi
         - name: echo-two
-          image: multi:5000/tel2/echo
+          image: ghcr.io/telepresenceio/echo-server
           ports:
             - containerPort: 8081
               name: extra

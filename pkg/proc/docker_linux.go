@@ -22,6 +22,11 @@ func RunningInContainer() bool {
 	return runningInContainer
 }
 
+// SetRunningInContainer forces the runningInContainer state.
+func SetRunningInContainer(flag bool) {
+	runningInContainer = flag
+}
+
 func AppendOSSpecificContainerOpts(ctx context.Context, opts []string) ([]string, error) {
 	if RunningInWSL() {
 		// Using host.docker.internal:host-gateway won't work for the kubeauth process, because Windows Docker Desktop

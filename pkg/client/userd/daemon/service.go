@@ -13,17 +13,16 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/datawire/dlib/dgroup"
-	"github.com/datawire/dlib/dhttp"
 	"github.com/datawire/dlib/dlog"
-	"github.com/telepresenceio/telepresence/rpc/v2/common"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/connector"
 	"github.com/telepresenceio/telepresence/rpc/v2/manager"
+	authGrpc "github.com/telepresenceio/telepresence/v2/pkg/authenticator/grpc"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/daemon"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/logging"
@@ -34,10 +33,10 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/client/userd/trafficmgr"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
 	"github.com/telepresenceio/telepresence/v2/pkg/filelocation"
+	"github.com/telepresenceio/telepresence/v2/pkg/grpc/server"
 	"github.com/telepresenceio/telepresence/v2/pkg/log"
 	"github.com/telepresenceio/telepresence/v2/pkg/pprof"
 	"github.com/telepresenceio/telepresence/v2/pkg/proc"
-	"github.com/telepresenceio/telepresence/v2/pkg/tracing"
 )
 
 const titleName = "Connector"
@@ -60,17 +59,12 @@ type service struct {
 	srv           *grpc.Server
 	managerProxy  *mgrProxy
 	timedLogLevel log.TimedLevel
-	ucn           int64
 	fuseFTPError  error
 
 	// The quit function that quits the server.
 	quit func()
 
-	// quitDisable will temporarily disable the quit function. This is used when there's a desire
-	// to cancel the session without cancelling the process although the simplified session management
-	// is in effect (rootSessionInProc == true).
-	quitDisable bool
-
+	clientConfig    clientcmd.ClientConfig
 	session         userd.Session
 	sessionCancel   context.CancelFunc
 	sessionContext  context.Context
@@ -93,7 +87,14 @@ type service struct {
 	self userd.Service
 }
 
-func NewService(ctx context.Context, _ *dgroup.Group, cfg client.Config, srv *grpc.Server) (userd.Service, error) {
+func (s *service) ClientConfig() (clientcmd.ClientConfig, error) {
+	if s.clientConfig == nil {
+		return nil, errors.New("user daemon has no client config")
+	}
+	return s.clientConfig, nil
+}
+
+func NewService(ctx context.Context, cancel context.CancelFunc, _ *dgroup.Group, cfg client.Config, srv *grpc.Server) (userd.Service, error) {
 	s := &service{
 		srv:             srv,
 		connectRequest:  make(chan userd.ConnectRequest),
@@ -101,20 +102,16 @@ func NewService(ctx context.Context, _ *dgroup.Group, cfg client.Config, srv *gr
 		managerProxy:    &mgrProxy{},
 		timedLogLevel:   log.NewTimedLevel(cfg.LogLevels().UserDaemon.String(), log.SetLevel),
 		fuseFtpMgr:      remotefs.NewFuseFTPManager(),
+		quit:            cancel,
 	}
 	s.self = s
 	if srv != nil {
 		// The podd daemon never registers the gRPC servers
 		rpc.RegisterConnectorServer(srv, s)
+		authGrpc.RegisterAuthenticatorServer(srv, s)
 		rpc.RegisterManagerProxyServer(srv, s.managerProxy)
-		tracer, err := tracing.NewTraceServer(ctx, "user-daemon")
-		if err != nil {
-			return nil, err
-		}
-		common.RegisterTracingServer(srv, tracer)
 	} else {
 		s.rootSessionInProc = true
-		s.quit = func() {}
 	}
 	return s, nil
 }
@@ -205,11 +202,11 @@ func (s *service) configReload(c context.Context) error {
 	if err := os.MkdirAll(filepath.Dir(client.GetConfigFile(c)), 0o755); err != nil {
 		return err
 	}
-	return client.Watch(c, func(ctx context.Context) error {
+	return client.WatchConfig(c, func(ctx context.Context) error {
 		s.sessionLock.RLock()
 		defer s.sessionLock.RUnlock()
 		if s.session == nil {
-			return client.RestoreDefaults(c, false)
+			return client.ReloadDaemonLogLevel(ctx, false)
 		}
 		return s.session.ApplyConfig(c)
 	})
@@ -240,7 +237,7 @@ func (s *service) ManageSessions(c context.Context) error {
 	}
 }
 
-func (s *service) startSession(ctx context.Context, cr userd.ConnectRequest, wg *sync.WaitGroup) *rpc.ConnectInfo {
+func (s *service) startSession(parentCtx context.Context, cr userd.ConnectRequest, wg *sync.WaitGroup) *rpc.ConnectInfo {
 	s.sessionLock.Lock() // Locked during creation
 	defer s.sessionLock.Unlock()
 
@@ -251,7 +248,7 @@ func (s *service) startSession(ctx context.Context, cr userd.ConnectRequest, wg 
 
 	// Obtain the kubeconfig from the request parameters so that we can determine
 	// what kubernetes context that will be used.
-	config, err := client.DaemonKubeconfig(ctx, cr.Request())
+	ctx, config, err := client.DaemonKubeconfig(parentCtx, cr.Request())
 	if err != nil {
 		if s.rootSessionInProc {
 			s.quit()
@@ -263,6 +260,7 @@ func (s *service) startSession(ctx context.Context, cr userd.ConnectRequest, wg 
 			ErrorCategory: int32(errcat.GetCategory(err)),
 		}
 	}
+	s.clientConfig = config.ClientConfig
 
 	ctx, cancel := context.WithCancel(ctx)
 	ctx = userd.WithService(ctx, s.self)
@@ -301,12 +299,11 @@ func (s *service) startSession(ctx context.Context, cr userd.ConnectRequest, wg 
 		defer func() {
 			s.sessionLock.Lock()
 			s.self.SetManagerClient(nil)
+			s.clientConfig = nil
 			s.session = nil
 			s.sessionCancel = nil
-			if err := client.RestoreDefaults(ctx, false); err != nil {
-				dlog.Warn(ctx, err)
-			}
 			s.sessionLock.Unlock()
+			_ = client.ReloadDaemonLogLevel(parentCtx, false)
 			wg.Done()
 		}()
 		if err := session.RunSession(s.sessionContext); err != nil {
@@ -354,30 +351,25 @@ func runAliveAndCancellation(ctx context.Context, cancel context.CancelFunc, dae
 	}
 }
 
-func (s *service) cancelSessionReadLocked() {
-	if s.sessionCancel != nil {
-		if err := s.session.ClearIntercepts(s.sessionContext); err != nil {
-			dlog.Errorf(s.sessionContext, "failed to clear intercepts: %v", err)
-		}
-		s.sessionCancel()
-	}
-}
-
 func (s *service) cancelSession() {
-	if !atomic.CompareAndSwapInt32(&s.sessionQuitting, 0, 1) {
-		return
+	if atomic.CompareAndSwapInt32(&s.sessionQuitting, 0, 1) {
+		if s.sessionCancel != nil {
+			// We use a TryRLock here because the session-lock will be held during
+			// session initialization, and we might well receive a quit-call during
+			// that time (the initialization may take a long time if there are
+			// problems connecting to the cluster).
+			if s.sessionLock.TryRLock() {
+				if err := s.session.ClearIngestsAndIntercepts(s.sessionContext); err != nil {
+					dlog.Errorf(s.sessionContext, "failed to clear intercepts: %v", err)
+				}
+				s.sessionLock.RUnlock()
+			}
+			s.sessionCancel()
+		}
+		s.session = nil
+		s.sessionCancel = nil
+		atomic.StoreInt32(&s.sessionQuitting, 0)
 	}
-	s.sessionLock.RLock()
-	s.cancelSessionReadLocked()
-	s.sessionLock.RUnlock()
-
-	// We have to cancel the session before we can acquire this write-lock, because we need any long-running RPCs
-	// that may be holding the RLock to die.
-	s.sessionLock.Lock()
-	s.session = nil
-	s.sessionCancel = nil
-	atomic.StoreInt32(&s.sessionQuitting, 0)
-	s.sessionLock.Unlock()
 }
 
 // run is the main function when executing as the connector.
@@ -409,10 +401,11 @@ func run(cmd *cobra.Command, _ []string) error {
 		name = name[:di]
 	}
 	c = dgroup.WithGoroutineName(c, "/"+name)
-	c, err = logging.InitContext(c, userd.ProcessName, logging.RotateDaily, true)
+	c, err = logging.InitContext(c, userd.ProcessName, logging.RotateDaily, true, false)
 	if err != nil {
 		return err
 	}
+
 	rootSessionInProc, _ := flags.GetBool(embedNetworkFlag)
 	var daemonAddress *net.TCPAddr
 	if addr, _ := flags.GetString(addressFlag); addr != "" {
@@ -421,9 +414,6 @@ func run(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 		daemonAddress = grpcListener.Addr().(*net.TCPAddr)
-		defer func() {
-			_ = grpcListener.Close()
-		}()
 	} else {
 		socketPath := socket.UserDaemonPath(c)
 		dlog.Infof(c, "Starting socket listener for %s", socketPath)
@@ -455,23 +445,24 @@ func run(cmd *cobra.Command, _ []string) error {
 	// Start services from within a group routine so that it gets proper cancellation
 	// when the group is cancelled.
 	siCh := make(chan userd.Service)
-	g.Go("service", func(c context.Context) error {
-		opts := []grpc.ServerOption{
-			grpc.StatsHandler(otelgrpc.NewServerHandler()),
-		}
+	g.Go("serve-grpc", func(c context.Context) error {
+		// svcCancel is what a `quit -s` call will cancel. The Group provides soft cancellation to it.
+		// which will result in a graceful termination of the grpc server.
+		c, svcCancel := context.WithCancel(c)
+
+		var opts []grpc.ServerOption
 		if mz := cfg.Grpc().MaxReceiveSize(); mz > 0 {
 			opts = append(opts, grpc.MaxRecvMsgSize(int(mz)))
 		}
-		si, err := userd.GetNewServiceFunc(c)(c, g, cfg, grpc.NewServer(opts...))
+		svc := server.New(c, opts...)
+		si, err := userd.GetNewServiceFunc(c)(c, svcCancel, g, cfg, svc)
 		if err != nil {
 			close(siCh)
 			return err
 		}
 		siCh <- si
 		close(siCh)
-
-		<-c.Done() // wait for context cancellation
-		return nil
+		return server.Serve(c, svc, grpcListener)
 	})
 
 	si, ok := <-siCh
@@ -491,7 +482,7 @@ func run(cmd *cobra.Command, _ []string) error {
 
 	if cfg.Intercept().UseFtp {
 		g.Go("fuseftp-server", func(c context.Context) error {
-			if err := s.fuseFtpMgr.DeferInit(c); err != nil {
+			if err := s.InitFTPServer(c); err != nil {
 				dlog.Error(c, err)
 			}
 			<-c.Done()
@@ -499,28 +490,8 @@ func run(cmd *cobra.Command, _ []string) error {
 		})
 	}
 
-	g.Go("server-grpc", func(c context.Context) (err error) {
-		sc := &dhttp.ServerConfig{Handler: s.srv}
-		dlog.Info(c, "gRPC server started")
-		if err = sc.Serve(c, grpcListener); err != nil && c.Err() != nil {
-			err = nil // Normal shutdown
-		}
-		if err != nil {
-			dlog.Errorf(c, "gRPC server ended with: %v", err)
-		} else {
-			dlog.Debug(c, "gRPC server ended")
-		}
-		return err
-	})
-
 	g.Go("config-reload", s.configReload)
 	g.Go(sessionName, func(c context.Context) error {
-		c, cancel := context.WithCancel(c)
-		s.quit = func() {
-			if !s.quitDisable {
-				cancel()
-			}
-		}
 		return s.ManageSessions(c)
 	})
 
@@ -533,4 +504,8 @@ func run(cmd *cobra.Command, _ []string) error {
 		dlog.Error(c, err)
 	}
 	return err
+}
+
+func (s *service) InitFTPServer(ctx context.Context) error {
+	return s.fuseFtpMgr.DeferInit(ctx)
 }

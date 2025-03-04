@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
+	"net/netip"
 	"sync"
+
+	core "k8s.io/api/core/v1"
 
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/rpc/v2/manager"
+	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 	"github.com/telepresenceio/telepresence/v2/pkg/restapi"
 	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
@@ -16,9 +19,10 @@ import (
 
 type Interceptor interface {
 	io.Closer
+	Tag() tunnel.Tag
 	InterceptId() string
 	InterceptInfo() *restapi.InterceptInfo
-	Serve(context.Context, chan<- net.Addr) error
+	Serve(context.Context, chan<- netip.AddrPort) error
 	SetIntercepting(*manager.InterceptInfo)
 	SetStreamProvider(tunnel.ClientStreamProvider)
 	Target() (string, uint16)
@@ -29,10 +33,11 @@ type interceptor struct {
 
 	lCtx       context.Context
 	lCancel    context.CancelFunc
-	listenAddr net.Addr
+	listenPort uint16
 
 	tCtx           context.Context
 	tCancel        context.CancelFunc
+	tag            tunnel.Tag
 	targetHost     string
 	targetPort     uint16
 	streamProvider tunnel.ClientStreamProvider
@@ -40,14 +45,14 @@ type interceptor struct {
 	intercept *manager.InterceptInfo
 }
 
-func NewInterceptor(addr net.Addr, targetHost string, targetPort uint16) Interceptor {
-	switch addr := addr.(type) {
-	case *net.TCPAddr:
-		return newTCP(addr, targetHost, targetPort)
-	case *net.UDPAddr:
-		return newUDP(addr, targetHost, targetPort)
+func NewInterceptor(from agentconfig.PortAndProto, tag tunnel.Tag, targetHost string, targetPort uint16) Interceptor {
+	switch from.Proto {
+	case core.ProtocolTCP:
+		return newTCP(from.Port, tag, targetHost, targetPort)
+	case core.ProtocolUDP:
+		return newUDP(from.Port, tag, targetHost, targetPort)
 	default:
-		panic(fmt.Errorf("unsupported net.Addr type %T", addr))
+		panic(fmt.Errorf("unsupported protocol %s", from.Proto))
 	}
 }
 
@@ -121,4 +126,8 @@ func (f *interceptor) SetIntercepting(intercept *manager.InterceptInfo) {
 	// Set up new target and lifetime
 	f.tCtx, f.tCancel = context.WithCancel(f.lCtx)
 	f.intercept = intercept
+}
+
+func (f *interceptor) Tag() tunnel.Tag {
+	return f.tag
 }

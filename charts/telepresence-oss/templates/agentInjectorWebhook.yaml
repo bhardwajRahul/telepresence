@@ -1,0 +1,138 @@
+{{- if and (not (and .Values.rbac .Values.rbac.only)) .Values.agentInjector.enabled }}
+{{- $namespaceSelector := mustFromJson (include "traffic-manager.namespaceSelector" $) }}
+{{- /*
+Perform a check that the new namespaceSelector doesn't select namespaces that are
+already managed by some other traffic-manager.
+*/}}
+{{- $namespaces := (lookup "v1" "Namespace" "" "").items }}
+{{- $configs := dict }}
+{{- $cmName := include "traffic-manager.name" $ }}
+{{- $cmNs := include "traffic-manager.namespace" $}}
+{{- /* Find all existing traffic-manager configmaps and their namespaceSelectors */}}
+{{- range $namespaces }}
+  {{- $ns := .metadata.name }}
+  {{- $cm := lookup "v1" "ConfigMap" $ns $cmName }}
+  {{- with $cm }}
+    {{- with fromYaml (get .data "namespace-selector.yaml" ) }}
+      {{- $configs = set $configs $ns . }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- /* No use testing if the added selector is the only one */}}
+{{- if $configs }}
+  {{- $configs = set $configs $cmNs $namespaceSelector }}
+  {{- /* Validate that no selector overlaps with another */}}
+  {{- $allManagedNamespaces := dict }}
+  {{- range $configNs, $config := $configs }}
+    {{- $rqs := $config.matchExpressions }}
+    {{- /* Normalise the selector, i.e. turn each matchLabel into a machRequirement */}}
+    {{- range $key, $value := $config.matchLabels }}
+      {{- $rqs = append $rqs (dict "key" $key "operator" "In" "values" (list $value))}}
+    {{- end }}
+    {{- /* Figure out what namespaces this selector selects, and for each one, assert that it's not selected already */}}
+    {{- range $namespaces }}
+      {{- $ns := .metadata.name }}
+      {{- $labels := .metadata.labels }}
+      {{- $isMatch := true }}
+      {{- range $rqs }}
+        {{- $rqMatch := false }}
+        {{- $val := get $labels .key }}
+        {{- if eq .operator "In" }}
+          {{- $rqMatch = has $val .values }}
+        {{- else if eq .operator "NotIn" }}
+          {{- $rqMatch = not (has $val .values) }}
+        {{- else if eq .operator "Exists" }}
+          {{- $rqMatch = not (eq $val "") }}
+        {{- else }}
+          {{- fail printf "unsupported labelSelectorOperator %s" .operator}}
+        {{- end }}
+        {{- if not $rqMatch }}
+          {{- $isMatch = false }}
+          {{- break }}
+        {{- end }}
+      {{- end }}
+      {{- if $isMatch }}
+        {{- $conflictingConfig := get $allManagedNamespaces $ns }}
+        {{- if $conflictingConfig }}
+          {{- if eq $conflictingConfig $cmNs }}
+            {{- $conflictingConfig = $configNs }}
+          {{- end }}
+          {{- fail (printf "traffic-manager in namespace %s already manages namespace %s" $conflictingConfig $ns) }}
+        {{- end }}
+        {{- $allManagedNamespaces = set $allManagedNamespaces $ns $configNs }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- $altNames := list ( printf "agent-injector.%s" (include "traffic-manager.namespace" $)) ( printf "agent-injector.%s.svc" (include "traffic-manager.namespace" $)) -}}
+{{- $genCA := genCA "agent-injector-ca" 365 -}}
+{{- $genCert := genSignedCert "agent-injector" nil $altNames 365 $genCA -}}
+{{- $secretData := (lookup "v1" "Secret" (include "traffic-manager.namespace" $) .Values.agentInjector.secret.name).data -}}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+{{- if eq .Values.agentInjector.certificate.method "certmanager" }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ include "traffic-manager.namespace" $}}/{{ .Values.agentInjector.secret.name }}
+{{- end }}
+  name: {{ .Values.agentInjector.webhook.name }}-{{ include "traffic-manager.namespace" $ }}
+  labels:
+    {{- include "telepresence.labels" $ | nindent 4 }}
+webhooks:
+{{- with .Values.agentInjector.webhook.admissionReviewVersions }}
+- admissionReviewVersions:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+  clientConfig:
+{{- if not (eq .Values.agentInjector.certificate.method "certmanager") }}
+{{- if and ($secretData) (or (not .Values.agentInjector.certificate.regenerate) (eq .Values.agentInjector.certificate.method "supplied") )}}
+    caBundle: {{ or (get $secretData "ca.crt") (get $secretData "ca.pem") }}
+{{- else }}
+    caBundle: {{ $genCA.Cert | b64enc }}
+{{- end }}
+{{- end }}
+    service:
+      name: {{ .Values.agentInjector.name }}
+      namespace: {{ include "traffic-manager.namespace" $ }}
+      path: {{ .Values.agentInjector.webhook.servicePath }}
+      port: {{ .Values.agentInjector.webhook.port }}
+  rules:
+  - apiGroups:
+    - ""
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - DELETE
+    resources:
+    - pods
+    scope: '*'
+  failurePolicy: {{ .Values.agentInjector.webhook.failurePolicy }}
+  reinvocationPolicy: {{ .Values.agentInjector.webhook.reinvocationPolicy }}
+  name: agent-injector-{{ include "traffic-manager.namespace" $ }}.getambassador.io
+  sideEffects: {{ .Values.agentInjector.webhook.sideEffects }}
+  timeoutSeconds: {{ .Values.agentInjector.webhook.timeoutSeconds }}
+  namespaceSelector:
+{{- toYaml $namespaceSelector | nindent 4 }}
+{{- if not (or (eq .Values.agentInjector.certificate.method "certmanager") (eq .Values.agentInjector.certificate.method "supplied")) }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Values.agentInjector.secret.name }}
+  namespace: {{ include "traffic-manager.namespace" $ }}
+  labels:
+    {{- include "telepresence.labels" $ | nindent 4 }}
+data:
+{{- if and ($secretData) (not .Values.agentInjector.certificate.regenerate) }}
+  ca.crt: {{ or (get $secretData "ca.crt") (get $secretData "ca.pem") }}
+  tls.crt: {{ or (get $secretData "tls.crt") (get $secretData "crt.pem") }}
+  tls.key: {{ or (get $secretData "tls.key") (get $secretData "key.pem") }}
+{{- else }}
+  ca.crt: {{ $genCA.Cert | b64enc }}
+  tls.crt: {{ $genCert.Cert | b64enc }}
+  tls.key: {{ $genCert.Key | b64enc }}
+{{- end }}
+{{- end }}
+{{- end }}

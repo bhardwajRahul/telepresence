@@ -2,13 +2,14 @@ package integration_test
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"time"
+
+	"github.com/go-json-experiment/json"
 
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
@@ -18,7 +19,7 @@ import (
 
 type interceptFlagSuite struct {
 	itest.Suite
-	itest.NamespacePair
+	itest.TrafficManager
 	serviceName string
 }
 
@@ -27,8 +28,8 @@ func (s *interceptFlagSuite) SuiteName() string {
 }
 
 func init() {
-	itest.AddTrafficManagerSuite("-intercept-flag", func(h itest.NamespacePair) itest.TestingSuite {
-		return &interceptFlagSuite{Suite: itest.Suite{Harness: h}, NamespacePair: h}
+	itest.AddTrafficManagerSuite("-intercept-flag", func(h itest.TrafficManager) itest.TestingSuite {
+		return &interceptFlagSuite{Suite: itest.Suite{Harness: h}, TrafficManager: h}
 	})
 }
 
@@ -37,31 +38,26 @@ func (s *interceptFlagSuite) SetupSuite() {
 		s.T().Skip("Mount tests don't run on darwin due to macFUSE issues")
 		return
 	}
-	if s.CompatVersion() != "" {
-		s.T().Skip("Not part of compatibility suite")
-	}
 	s.Suite.SetupSuite()
 	ctx := s.Context()
 	s.serviceName = "hello"
-	s.KubectlOk(ctx, "create", "serviceaccount", testIamServiceAccount)
-	s.ApplyApp(ctx, "hello-w-volumes", "deploy/"+s.serviceName)
+	s.ApplyTemplate(ctx, filepath.Join("testdata", "k8s", "hello-w-volumes.goyaml"), nil)
 	s.TelepresenceConnect(ctx)
 }
 
 func (s *interceptFlagSuite) TearDownSuite() {
 	ctx := s.Context()
 	itest.TelepresenceQuitOk(ctx)
-	s.DeleteSvcAndWorkload(ctx, "deploy", s.serviceName)
-	s.KubectlOk(ctx, "delete", "serviceaccount", testIamServiceAccount)
+	defer s.DeleteSvcAndWorkload(ctx, "deploy", s.serviceName)
 }
 
 // Test_ContainerReplace tests that:
 //
 //   - Two containers in a pod can be intercepted in sequence. One with replace, and one without.
-//   - Containers can be intercepted  interchangeably with or without --replace
+//   - Containers can be intercepted interchangeably with or without --replace
 //   - Volumes are mounted
 //   - Intercept responses are produced from the intercept handlers
-//   - Responses after the intercepts end are from the cluster
+//   - Responses after the intercept ends are from the cluster
 func (s *interceptFlagSuite) Test_ContainerReplace() {
 	ctx := s.Context()
 
@@ -121,7 +117,6 @@ func (s *interceptFlagSuite) Test_ContainerReplace() {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		s.Run(tt.name, func() {
 			ctx := s.Context()
 			expectedOutput := regexp.MustCompile(tt.iceptName + ` from intercept at`)
@@ -133,6 +128,14 @@ func (s *interceptFlagSuite) Test_ContainerReplace() {
 			jsOut := itest.TelepresenceOk(ctx, args...)
 			agentCaptureCtx, agentCaptureCancel := context.WithCancel(ctx)
 			s.CapturePodLogs(agentCaptureCtx, s.serviceName, "traffic-agent", s.AppNamespace())
+
+			if !s.ManagerIsVersion(">2.21.x") {
+				// Circumvent bug in 2.21.x
+				defer func() {
+					_, _, err := itest.Telepresence(ctx, "uninstall", s.serviceName)
+					s.NoError(err)
+				}()
+			}
 
 			defer func() {
 				agentCaptureCancel()

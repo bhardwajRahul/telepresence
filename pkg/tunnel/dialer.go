@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/propagation"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/datawire/dlib/dlog"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/manager"
@@ -30,7 +30,22 @@ const (
 	notConnected = int32(iota)
 	connecting
 	connected
+	readClosed
+	writeClosed
 )
+
+type halfReadCloser interface {
+	CloseRead() error
+}
+
+type halfWriteCloser interface {
+	CloseWrite() error
+}
+
+type halfCloser interface {
+	halfReadCloser
+	halfWriteCloser
+}
 
 // streamReader is implemented by the dialer and udpListener so that they can share the
 // readLoop function.
@@ -40,7 +55,7 @@ type streamReader interface {
 	Stop(context.Context)
 	getStream() Stream
 	reply([]byte) (int, error)
-	startDisconnect(context.Context, string)
+	startDisconnect(context.Context, string, bool)
 }
 
 // The dialer takes care of dispatching messages between gRPC and UDP connections.
@@ -109,45 +124,41 @@ func NewConnEndpointTTL(
 
 func (h *dialer) Start(ctx context.Context) {
 	go func() {
-		ctx, span := otel.Tracer("").Start(ctx, "dialer")
-		defer span.End()
 		defer close(h.done)
 
 		id := h.stream.ID()
-		id.SpanRecord(span)
+		tag := h.stream.Tag()
 
 		switch h.connected {
 		case notConnected:
 			// Set up the idle timer to close and release this handler when it's been idle for a while.
 			h.connected = connecting
 
-			dlog.Tracef(ctx, "   CONN %s, dialing", id)
+			dlog.Tracef(ctx, "   %s %s, dialing", tag, id)
 			d := net.Dialer{Timeout: h.stream.DialTimeout()}
-			conn, err := d.DialContext(ctx, id.DestinationProtocolString(), id.DestinationAddr().String())
+			conn, err := d.DialContext(ctx, id.DestinationProtocolString(), id.Destination().String())
 			if err != nil {
-				dlog.Errorf(ctx, "!! CONN %s, failed to establish connection: %v", id, err)
-				span.SetStatus(codes.Error, err.Error())
+				dlog.Errorf(ctx, "!> %s %s, failed to establish connection: %v", tag, id, err)
 				if err = h.stream.Send(ctx, NewMessage(DialReject, nil)); err != nil {
-					dlog.Errorf(ctx, "!! CONN %s, failed to send DialReject: %v", id, err)
+					dlog.Errorf(ctx, "!> %s %s, failed to send DialReject: %v", tag, id, err)
 				}
 				if err = h.stream.CloseSend(ctx); err != nil {
-					dlog.Errorf(ctx, "!! CONN %s, stream.CloseSend failed: %v", id, err)
+					dlog.Errorf(ctx, "!> %s %s, stream.CloseSend failed: %v", tag, id, err)
 				}
 				h.connected = notConnected
 				return
 			}
 			if err = h.stream.Send(ctx, NewMessage(DialOK, nil)); err != nil {
 				_ = conn.Close()
-				dlog.Errorf(ctx, "!! CONN %s, failed to send DialOK: %v", id, err)
-				span.SetStatus(codes.Error, err.Error())
+				dlog.Errorf(ctx, "!> %s %s, failed to send DialOK: %v", tag, id, err)
 				return
 			}
-			dlog.Tracef(ctx, "   CONN %s, dial answered", id)
+			dlog.Tracef(ctx, "<- %s %s, dial answered", tag, id)
 			h.conn = conn
 
 		case connecting:
 		default:
-			dlog.Errorf(ctx, "!! CONN %s, start called in invalid state", id)
+			dlog.Errorf(ctx, "!! %s %s, start called in invalid state", tag, id)
 			return
 		}
 
@@ -170,18 +181,45 @@ func (h *dialer) Done() <-chan struct{} {
 
 // Stop will close the underlying TCP/UDP connection.
 func (h *dialer) Stop(ctx context.Context) {
-	h.startDisconnect(ctx, "explicit close")
+	h.startDisconnect(ctx, "explicit close", true)
+	h.startDisconnect(ctx, "explicit close", false)
 	h.cancel()
 }
 
-func (h *dialer) startDisconnect(ctx context.Context, reason string) {
-	if !atomic.CompareAndSwapInt32(&h.connected, connected, notConnected) {
+func (h *dialer) startDisconnect(ctx context.Context, reason string, isReader bool) {
+	if wrConn, ok := h.conn.(halfCloser); ok {
+		if isReader {
+			h.startReaderDisconnect(ctx, reason, wrConn)
+		} else {
+			h.startWriterDisconnect(ctx, reason, wrConn)
+		}
+	} else if atomic.CompareAndSwapInt32(&h.connected, connected, notConnected) {
+		dlog.Tracef(ctx, "<> %s %s closing connection: %s", h.stream.Tag(), h.stream.ID(), reason)
+		if err := h.conn.Close(); err != nil {
+			dlog.Tracef(ctx, "!! %s %s, Close failed: %v", h.stream.Tag(), h.stream.ID(), err)
+		}
+	}
+}
+
+func (h *dialer) startReaderDisconnect(ctx context.Context, reason string, conn halfCloser) {
+	if atomic.CompareAndSwapInt32(&h.connected, connected, readClosed) || atomic.CompareAndSwapInt32(&h.connected, writeClosed, notConnected) {
+		dlog.Tracef(ctx, "<- %s %s closing connection write: %s", h.stream.Tag(), h.stream.ID(), reason)
+		if err := conn.CloseWrite(); err != nil {
+			dlog.Debugf(ctx, "<! %s %s, CloseWrite failed: %T %v", h.stream.Tag(), h.stream.ID(), err, err)
+		}
 		return
 	}
-	id := h.stream.ID()
-	dlog.Tracef(ctx, "   CONN %s closing connection: %s", id, reason)
-	if err := h.conn.Close(); err != nil {
-		dlog.Tracef(ctx, "!! CONN %s, Close failed: %v", id, err)
+}
+
+func (h *dialer) startWriterDisconnect(ctx context.Context, reason string, conn halfCloser) {
+	if atomic.CompareAndSwapInt32(&h.connected, connected, writeClosed) || atomic.CompareAndSwapInt32(&h.connected, readClosed, notConnected) {
+		dlog.Tracef(ctx, "-> %s %s closing connection read: %s", h.stream.Tag(), h.stream.ID(), reason)
+		err := conn.CloseRead()
+		switch {
+		case err == nil, err == io.EOF, strings.Contains(err.Error(), "not connected"):
+		default:
+			dlog.Debugf(ctx, "!< %s %s, CloseRead failed: %v", h.stream.Tag(), h.stream.ID(), err)
+		}
 	}
 }
 
@@ -189,8 +227,12 @@ func (h *dialer) connToStreamLoop(ctx context.Context, wg *sync.WaitGroup) {
 	var endReason string
 	endLevel := dlog.LogLevelTrace
 	id := h.stream.ID()
+	tag := h.stream.Tag()
 
-	outgoing := make(chan Message, 50)
+	// Outgoing must not be buffered. It's essential that messages that are read from the connection
+	// are sent on the stream a.s.a.p. and that a delay when doing that causes back-pressure on the
+	// connection.
+	outgoing := make(chan Message)
 	defer func() {
 		if !h.ResetIdle() {
 			// Hard close of peer. We don't want any more data
@@ -200,19 +242,19 @@ func (h *dialer) connToStreamLoop(ctx context.Context, wg *sync.WaitGroup) {
 			}
 		}
 		close(outgoing)
-		dlog.Logf(ctx, endLevel, "   CONN %s conn-to-stream loop ended because %s", id, endReason)
+		dlog.Logf(ctx, endLevel, "<- %s %s conn-to-stream loop ended because %s", tag, id, endReason)
 		wg.Done()
 	}()
 
 	wg.Add(1)
 	WriteLoop(ctx, h.stream, outgoing, wg, h.egressBytesProbe)
 
-	buf := make([]byte, 0x100000)
-	dlog.Tracef(ctx, "   CONN %s conn-to-stream loop started", id)
+	buf := make([]byte, 0x80000)
+	dlog.Tracef(ctx, "-> %s %s conn-to-stream loop started", tag, id)
 	for {
 		n, err := h.conn.Read(buf)
 		if n > 0 {
-			dlog.Tracef(ctx, "<- CONN %s, len %d", id, n)
+			dlog.Tracef(ctx, "-> %s %s, read len %d from conn", tag, id, n)
 			select {
 			case <-ctx.Done():
 				endReason = ctx.Err().Error()
@@ -227,11 +269,13 @@ func (h *dialer) connToStreamLoop(ctx context.Context, wg *sync.WaitGroup) {
 				endReason = "EOF was encountered"
 			case errors.Is(err, net.ErrClosed):
 				endReason = "the connection was closed"
-				h.startDisconnect(ctx, endReason)
+			case strings.Contains(err.Error(), "connection aborted"):
+				endReason = "the connection was aborted"
 			default:
-				endReason = fmt.Sprintf("a read error occurred: %v", err)
+				endReason = fmt.Sprintf("a read error occurred: %T %v", err, err)
 				endLevel = dlog.LogLevelError
 			}
+			h.startDisconnect(ctx, endReason, false)
 			return
 		}
 
@@ -254,7 +298,7 @@ func (h *dialer) streamToConnLoop(ctx context.Context, wg *sync.WaitGroup) {
 	defer func() {
 		wg.Done()
 	}()
-	readLoop(ctx, h, h.ingressBytesProbe)
+	readLoop(ctx, h.stream.Tag(), h, h.ingressBytesProbe)
 }
 
 func handleControl(ctx context.Context, h streamReader, cm Message) {
@@ -276,17 +320,17 @@ func handleControl(ctx context.Context, h streamReader, cm Message) {
 	}
 }
 
-func readLoop(ctx context.Context, h streamReader, trafficProbe *CounterProbe) {
+func readLoop(ctx context.Context, tag Tag, h streamReader, trafficProbe *CounterProbe) {
 	var endReason string
 	endLevel := dlog.LogLevelTrace
 	id := h.getStream().ID()
 	defer func() {
-		h.startDisconnect(ctx, endReason)
-		dlog.Logf(ctx, endLevel, "   CONN %s stream-to-conn loop ended because %s", id, endReason)
+		h.startDisconnect(ctx, endReason, true)
+		dlog.Logf(ctx, endLevel, "<- %s %s stream-to-conn loop ended because %s", tag, id, endReason)
 	}()
 
 	incoming, errCh := ReadLoop(ctx, h.getStream(), trafficProbe)
-	dlog.Tracef(ctx, "   CONN %s stream-to-conn loop started", id)
+	dlog.Tracef(ctx, "<- %s %s stream-to-conn loop started", tag, id)
 	for {
 		select {
 		case <-ctx.Done():
@@ -322,7 +366,7 @@ func readLoop(ctx context.Context, h streamReader, trafficProbe *CounterProbe) {
 					endLevel = dlog.LogLevelError
 					return
 				}
-				dlog.Tracef(ctx, "-> CONN %s, len %d", id, wn)
+				dlog.Tracef(ctx, "<- %s %s, len %d", tag, id, wn)
 				n += wn
 			}
 		}
@@ -334,43 +378,45 @@ func readLoop(ctx context.Context, h streamReader, trafficProbe *CounterProbe) {
 // the dialStream is closed.
 func DialWaitLoop(
 	ctx context.Context,
+	tag Tag,
 	tunnelProvider Provider,
 	dialStream rpc.Manager_WatchDialClient,
-	sessionID string,
+	sessionID SessionID,
 ) error {
-	// create ctx to cleanup leftover dialRespond if waitloop dies
+	// create ctx to clean up leftover dialRespond if waitloop dies
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	for ctx.Err() == nil {
 		dr, err := dialStream.Recv()
-		if err != nil {
-			if ctx.Err() == nil && !(errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed)) {
-				return fmt.Errorf("dial request stream recv: %w", err) // May be io.EOF
-			}
+		if err == nil {
+			go dialRespond(ctx, tag, tunnelProvider, dr, sessionID)
+			continue
+		}
+		if ctx.Err() != nil {
 			return nil
 		}
-		go dialRespond(ctx, tunnelProvider, dr, sessionID)
+		if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+			return nil
+		}
+		switch status.Code(err) {
+		case codes.Canceled, codes.NotFound, codes.Unavailable:
+			return nil
+		}
+		return fmt.Errorf("dial request stream recv: %w", err)
 	}
 	return nil
 }
 
-func dialRespond(ctx context.Context, tunnelProvider Provider, dr *rpc.DialRequest, sessionID string) {
-	if tc := dr.GetTraceContext(); tc != nil {
-		carrier := propagation.MapCarrier(tc)
-		propagator := otel.GetTextMapPropagator()
-		ctx = propagator.Extract(ctx, carrier)
-	}
-	ctx, span := otel.Tracer("").Start(ctx, "dialRespond")
-	defer span.End()
+func dialRespond(ctx context.Context, tag Tag, tunnelProvider Provider, dr *rpc.DialRequest, sessionID SessionID) {
 	id := ConnID(dr.ConnId)
-	id.SpanRecord(span)
+	ctx, cancel := context.WithCancel(ctx)
 	mt, err := tunnelProvider.Tunnel(ctx)
 	if err != nil {
-		dlog.Errorf(ctx, "!! CONN %s, call to manager Tunnel failed: %v", id, err)
+		dlog.Errorf(ctx, "!! %s %s, call to manager Tunnel failed: %v", tag, id, err)
+		cancel()
 		return
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	s, err := NewClientStream(ctx, mt, id, sessionID, time.Duration(dr.RoundtripLatency), time.Duration(dr.DialTimeout))
+	s, err := NewClientStream(ctx, tag, mt, id, sessionID, time.Duration(dr.RoundtripLatency), time.Duration(dr.DialTimeout))
 	if err != nil {
 		dlog.Error(ctx, err)
 		cancel()

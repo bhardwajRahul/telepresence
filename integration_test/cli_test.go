@@ -2,9 +2,10 @@ package integration_test
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"regexp"
+
+	"github.com/go-json-experiment/json"
 
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
@@ -31,7 +32,7 @@ func (s *cliSuite) Test_Version() {
 		s.Require().NoError(err)
 	}
 	s.Empty(stderr)
-	s.Regexp(fmt.Sprintf(`Client\s*: %s`, regexp.QuoteMeta(s.TelepresenceVersion())), stdout)
+	s.Regexp(fmt.Sprintf(`Client\s*: v%s`, regexp.QuoteMeta(s.ClientVersion().String())), stdout)
 }
 
 func (s *cliSuite) Test_VersionWithInvalidKubeContext() {
@@ -42,7 +43,7 @@ func (s *cliSuite) Test_VersionWithInvalidKubeContext() {
 		s.Require().NoError(err)
 	}
 
-	s.Regexp(fmt.Sprintf(`Client\s*: %s`, regexp.QuoteMeta(s.TelepresenceVersion())), stdout)
+	s.Regexp(fmt.Sprintf(`Client\s*: v%s`, regexp.QuoteMeta(s.ClientVersion().String())), stdout)
 }
 
 func (s *cliSuite) Test_Help() {

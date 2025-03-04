@@ -4,15 +4,16 @@ import (
 	"context"
 	"fmt"
 
-	"k8s.io/client-go/tools/clientcmd"
 	clientcmd_api "k8s.io/client-go/tools/clientcmd/api"
+
+	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 )
 
 func NewService(
-	kubeClientConfig clientcmd.ClientConfig,
+	clientConfigProvider k8sapi.ClientConfigProvider,
 ) *Service {
 	return &Service{
-		kubeClientConfig:        kubeClientConfig,
+		clientConfigProvider:    clientConfigProvider,
 		execCredentialsResolver: execCredentialBinary{},
 	}
 }
@@ -27,7 +28,7 @@ type ExecCredentialsResolver interface {
 
 //go:generate go run go.uber.org/mock/mockgen -package=mock_authenticator -destination=mocks/clientconfig_mock.go k8s.io/client-go/tools/clientcmd ClientConfig
 type Service struct {
-	kubeClientConfig        clientcmd.ClientConfig
+	clientConfigProvider    k8sapi.ClientConfigProvider
 	execCredentialsResolver ExecCredentialsResolver
 }
 
@@ -46,7 +47,11 @@ func (a Service) GetExecCredentials(ctx context.Context, contextName string) ([]
 }
 
 func (a Service) getExecConfigFromContext(contextName string) (*clientcmd_api.ExecConfig, error) {
-	rawConfig, err := a.kubeClientConfig.RawConfig()
+	cc, err := a.clientConfigProvider.ClientConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get kubeconfig provider: %w", err)
+	}
+	rawConfig, err := cc.RawConfig()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get kubeconfig: %w", err)
 	}

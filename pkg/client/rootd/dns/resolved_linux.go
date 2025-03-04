@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -15,7 +16,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/vif"
 )
 
-func (s *Server) tryResolveD(c context.Context, dev vif.Device, configureDNS func(net.IP, *net.UDPAddr)) error {
+func (s *Server) tryResolveD(c context.Context, dev vif.Device, configureDNS func(netip.Addr, *net.UDPAddr)) error {
 	// Connect to ResolveD via DBUS.
 	if !dbus.IsResolveDRunning(c) {
 		dlog.Error(c, "systemd-resolved is not running")
@@ -34,7 +35,7 @@ func (s *Server) tryResolveD(c context.Context, dev vif.Device, configureDNS fun
 	if err != nil {
 		return err
 	}
-	dnsIP := s.remoteIP
+	dnsIP := s.RemoteIP
 	configureDNS(dnsIP, dnsResolverAddr)
 
 	g := dgroup.NewGroup(c, dgroup.GroupConfig{})
@@ -44,7 +45,7 @@ func (s *Server) tryResolveD(c context.Context, dev vif.Device, configureDNS fun
 
 	g.Go("Server", func(c context.Context) error {
 		dlog.Infof(c, "Configuring DNS IP %s", dnsIP)
-		if err = dbus.SetLinkDNS(c, int(dev.Index()), dnsIP); err != nil {
+		if err = dbus.SetLinkDNS(c, int(dev.Index()), dnsIP.AsSlice()); err != nil {
 			dlog.Error(c, err)
 			initDone <- struct{}{}
 			return errResolveDNotConfigured
@@ -55,7 +56,7 @@ func (s *Server) tryResolveD(c context.Context, dev vif.Device, configureDNS fun
 			c, cancel := context.WithTimeout(context.WithoutCancel(c), time.Second)
 			defer cancel()
 			dlog.Debugf(c, "Reverting Link settings for %s", dev.Name())
-			configureDNS(nil, nil) // Don't route from TUN-device
+			configureDNS(netip.Addr{}, nil) // Don't route from TUN-device
 			if err = dbus.RevertLink(c, int(dev.Index())); err != nil {
 				dlog.Error(c, err)
 			}
@@ -66,7 +67,7 @@ func (s *Server) tryResolveD(c context.Context, dev vif.Device, configureDNS fun
 			initDone <- struct{}{}
 			return errResolveDNotConfigured
 		}
-		return s.Run(c, initDone, listeners, nil, s.resolveInCluster)
+		return s.Run(c, initDone, listeners, nil)
 	})
 
 	g.Go("SanityCheck", func(c context.Context) error {
@@ -104,7 +105,7 @@ func (s *Server) tryResolveD(c context.Context, dev vif.Device, configureDNS fun
 
 func (s *Server) updateLinkDomains(c context.Context, dev vif.Device) error {
 	s.Lock()
-	paths := make([]string, len(s.search)+len(s.routes)+len(s.includeSuffixes)+1)
+	paths := make([]string, len(s.search)+len(s.routes)+len(s.IncludeSuffixes)+1)
 
 	// Namespaces are copied verbatim. Entries that aren't prefixed with "~" are considered search path entries.
 	copy(paths, s.search)
@@ -117,7 +118,7 @@ func (s *Server) updateLinkDomains(c context.Context, dev vif.Device) error {
 	// Include-suffixes are routes, i.e. in contrast to search paths, they are never appended to the name, but
 	// used as a filter that will direct queries for names ending with them to this resolver. Routes must be
 	// prefixed with "~".
-	for _, sfx := range s.includeSuffixes {
+	for _, sfx := range s.IncludeSuffixes {
 		if !strings.HasSuffix(sfx, ".") {
 			sfx += "."
 		}

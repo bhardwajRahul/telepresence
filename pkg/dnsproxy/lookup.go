@@ -5,15 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
-	"time"
 
 	"github.com/miekg/dns"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/datawire/dlib/dlog"
-	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 )
 
 const dnsTTL = 4
@@ -90,28 +89,35 @@ func nibbleToInt(v string) (uint8, bool) {
 	return 0, false
 }
 
-func PtrAddress(addr string) (net.IP, error) {
-	ip := iputil.Parse(addr)
+func PtrAddress(addr string) (netip.Addr, error) {
+	a, err := netip.ParseAddr(addr)
 	switch {
-	case ip != nil:
-		return ip, nil
+	case err == nil:
+		return a, nil
 	case strings.HasSuffix(addr, arpaV4):
 		ix := addr[0 : len(addr)-len(arpaV4)]
-		if ip = iputil.Parse(ix); len(ip) == 4 {
-			return net.IP{ip[3], ip[2], ip[1], ip[0]}, nil
+		if a, err := netip.ParseAddr(ix); err == nil && a.Is4() {
+			ip := a.As4()
+			ip0 := ip[0]
+			ip1 := ip[1]
+			ip[0] = ip[3]
+			ip[1] = ip[2]
+			ip[2] = ip1
+			ip[3] = ip0
+			return netip.AddrFrom4(ip), nil
 		}
-		return nil, fmt.Errorf("%q is not a valid IP (v4) prefixing .in-addr.arpa", ix)
+		return a, fmt.Errorf("%q is not a valid IP (v4) prefixing .in-addr.arpa", ix)
 	case strings.HasSuffix(addr, arpaV6):
 		hds := strings.Split(addr[0:len(addr)-len(arpaV6)], ".")
 		if len(hds) != 32 {
-			return nil, errors.New("expected 32 nibbles to prefix .ip6.arpa")
+			return a, errors.New("expected 32 nibbles to prefix .ip6.arpa")
 		}
-		ip = make(net.IP, 16)
+		ip := [16]byte{}
 		odd := false
 		for i, nb := range hds {
 			d, ok := nibbleToInt(nb)
 			if !ok {
-				return nil, errors.New("expected 32 nibbles to prefix .ip6.arpa")
+				return a, errors.New("expected 32 nibbles to prefix .ip6.arpa")
 			}
 			b := 15 - i>>1
 			if odd {
@@ -121,9 +127,9 @@ func PtrAddress(addr string) (net.IP, error) {
 			}
 			odd = !odd
 		}
-		return ip, nil
+		return netip.AddrFrom16(ip), nil
 	default:
-		return nil, fmt.Errorf("%q is neither a valid IP-address or a valid reverse notation", addr)
+		return a, fmt.Errorf("%q is neither a valid IP-address or a valid reverse notation", addr)
 	}
 }
 
@@ -132,10 +138,14 @@ func NewHeader(qName string, qType uint16) dns.RR_Header {
 }
 
 // useLookupName takes care of an undocumented "feature" in some lookup functions.
-// If the name ends with a dot, then no search path will be applied. If however,
-// the name doesn't end with a dot, the search path is always applied and the name
+// If the name ends with a dot, then no search path will be applied. If, however,
+// the name doesn't end with a dot, the search path is always applied, and the name
 // is never used verbatim.
-func useLookupName(qName string) (string, bool) {
+// A name ending with noSearchDomain will always be considered final.
+func useLookupName(qName, noSearchDomain string) (string, bool) {
+	if noSearchDomain != "" && strings.HasSuffix(qName, noSearchDomain) {
+		return qName, true
+	}
 	dots := 0
 	name := qName[:len(qName)-1]
 	for _, c := range qName {
@@ -156,15 +166,8 @@ func useLookupName(qName string) (string, bool) {
 	}
 }
 
-// TimedExternalLookup will shell out to an operating specific lookup command. The reason for this
-// is to make sure that no caching or a negative result is performed in this process, which would
-// invalidate subsequent attempts.
-func TimedExternalLookup(ctx context.Context, name string, timeout time.Duration) iputil.IPs {
-	return externalLookup(ctx, name, timeout)
-}
-
-func lookupIP(ctx context.Context, network, qName string, r *net.Resolver) ([]net.IP, error) {
-	name, final := useLookupName(qName)
+func lookupIP(ctx context.Context, network, qName, noSearchDomain string, r *net.Resolver) ([]net.IP, error) {
+	name, final := useLookupName(qName, noSearchDomain)
 	ips, err := r.LookupIP(ctx, network, name)
 	if err != nil && !final {
 		dlog.Errorf(ctx, "LookupIP failed, trying LookupIP %q", qName)
@@ -195,12 +198,12 @@ func makeError(err error) (RRs, int, error) {
 	return nil, dns.RcodeServerFailure, status.Error(codes.Internal, err.Error())
 }
 
-func Lookup(ctx context.Context, qType uint16, qName string) (RRs, int, error) {
+func Lookup(ctx context.Context, qType uint16, qName, noSearchDomain string) (RRs, int, error) {
 	var answer RRs
 	r := &net.Resolver{StrictErrors: true}
 	switch qType {
 	case dns.TypeA, dns.TypeAAAA:
-		ips, err := lookupIP(ctx, "ip", qName, r)
+		ips, err := lookupIP(ctx, "ip", qName, noSearchDomain, r)
 		if err != nil {
 			return makeError(err)
 		}
@@ -236,7 +239,7 @@ func Lookup(ctx context.Context, qType uint16, qName string) (RRs, int, error) {
 			}
 		}
 	case dns.TypeCNAME:
-		name, final := useLookupName(qName)
+		name, final := useLookupName(qName, noSearchDomain)
 		target, err := r.LookupCNAME(ctx, name)
 		if err != nil && !final {
 			target, err = r.LookupCNAME(ctx, qName)

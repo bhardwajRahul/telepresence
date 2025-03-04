@@ -27,6 +27,7 @@ spec:
     metadata:
       labels:
         app: echo-no-vols
+        budget: telepresence-test
     spec:
       automountServiceAccountToken: false
       containers:

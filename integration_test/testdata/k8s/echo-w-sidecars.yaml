@@ -30,7 +30,7 @@ spec:
     spec:
       containers:
         - name: echo-main
-          image: jmalloc/echo-server
+          image: ghcr.io/telepresenceio/echo-server:latest
           ports:
             - containerPort: 8080
               name: http
@@ -39,7 +39,7 @@ spec:
               cpu: 50m
               memory: 128Mi
         - name: echo-side-one
-          image: jmalloc/echo-server
+          image: ghcr.io/telepresenceio/echo-server:latest
           ports:
             - containerPort: 8081
               name: http-one
@@ -51,7 +51,7 @@ spec:
               cpu: 50m
               memory: 128Mi
         - name: echo-side-two
-          image: jmalloc/echo-server
+          image: ghcr.io/telepresenceio/echo-server:latest
           ports:
             - containerPort: 8082
               name: http-two
@@ -63,7 +63,7 @@ spec:
               cpu: 50m
               memory: 128Mi
         - name: echo-side-three
-          image: jmalloc/echo-server
+          image: ghcr.io/telepresenceio/echo-server:latest
           ports:
             - containerPort: 8083
               name: http-three

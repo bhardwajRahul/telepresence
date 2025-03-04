@@ -17,7 +17,7 @@ import (
 
 type argoRolloutsSuite struct {
 	itest.Suite
-	itest.NamespacePair
+	itest.TrafficManager
 }
 
 func (s *argoRolloutsSuite) SuiteName() string {
@@ -25,8 +25,8 @@ func (s *argoRolloutsSuite) SuiteName() string {
 }
 
 func init() {
-	itest.AddTrafficManagerSuite("-argo-rollouts", func(h itest.NamespacePair) itest.TestingSuite {
-		return &argoRolloutsSuite{Suite: itest.Suite{Harness: h}, NamespacePair: h}
+	itest.AddTrafficManagerSuite("-argo-rollouts", func(h itest.TrafficManager) itest.TestingSuite {
+		return &argoRolloutsSuite{Suite: itest.Suite{Harness: h}, TrafficManager: h}
 	})
 }
 
@@ -34,9 +34,7 @@ func (s *argoRolloutsSuite) SetupSuite() {
 	s.Suite.SetupSuite()
 	ctx := s.Context()
 	rq := s.Require()
-	if itest.Kubectl(ctx, "", "get", "namespaces", "argo-rollouts") != nil {
-		itest.CreateNamespaces(ctx, "argo-rollouts")
-	}
+	itest.CreateNamespaces(ctx, "argo-rollouts")
 	arExe := filepath.Join(itest.BuildOutput(ctx), "bin", "kubectl-argo-rollouts")
 	if runtime.GOOS == "windows" {
 		arExe += ".exe"
@@ -49,8 +47,10 @@ func (s *argoRolloutsSuite) SetupSuite() {
 	rq.NoError(err)
 	dlog.Info(ctx, out)
 	rq.NoError(itest.Kubectl(ctx, "argo-rollouts", "apply", "-f", "https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml"))
-	s.TelepresenceHelmInstallOK(ctx, true, "--set", "workloads.argoRollouts.enabled=true")
-	s.TelepresenceConnect(ctx)
+}
+
+func (s *argoRolloutsSuite) TearDownSuite() {
+	itest.DeleteNamespaces(s.Context(), "argo-rollouts")
 }
 
 func downloadKubectlArgoRollouts(ctx context.Context, arExe string) error {
@@ -79,10 +79,15 @@ func (s *argoRolloutsSuite) Test_SuccessfullyInterceptsArgoRollout() {
 	ctx := s.Context()
 	require := s.Require()
 
+	s.TelepresenceHelmInstallOK(ctx, true, "--set", "workloads.argoRollouts.enabled=true")
+	defer s.RollbackTM(ctx)
+
 	tp, svc, port := "Rollout", "echo-argo-rollout", "9094"
 	s.ApplyApp(ctx, svc, strings.ToLower(tp)+"/"+svc)
-	defer s.DeleteSvcAndWorkload(ctx, "deploy", "echo-auto-inject")
+	defer s.DeleteSvcAndWorkload(ctx, "rollout", svc)
 
+	s.TelepresenceConnect(ctx)
+	defer itest.TelepresenceDisconnectOk(ctx)
 	require.Eventually(
 		func() bool {
 			stdout, _, err := itest.Telepresence(ctx, "list")
@@ -94,21 +99,23 @@ func (s *argoRolloutsSuite) Test_SuccessfullyInterceptsArgoRollout() {
 
 	stdout := itest.TelepresenceOk(ctx, "intercept", "--mount", "false", "--port", port, svc)
 	require.Contains(stdout, "Using "+tp+" "+svc)
-	stdout = itest.TelepresenceOk(ctx, "list", "--intercepts")
-	require.Contains(stdout, svc+": intercepted")
-	require.NotContains(stdout, "Volume Mount Point")
+	require.Eventually(func() bool {
+		stdout = itest.TelepresenceOk(ctx, "list", "--intercepts")
+		return strings.Contains(stdout, svc+": intercepted") && !strings.Contains(stdout, "Volume Mount Point")
+	}, 14*time.Second, 2*time.Second)
 	s.CapturePodLogs(ctx, svc, "traffic-agent", s.AppNamespace())
 	itest.TelepresenceOk(ctx, "leave", svc)
 	stdout = itest.TelepresenceOk(ctx, "list", "--intercepts")
 	require.NotContains(stdout, svc+": intercepted")
 
-	itest.TelepresenceDisconnectOk(ctx)
-
-	dfltCtx := itest.WithUser(ctx, "default")
-	itest.TelepresenceOk(dfltCtx, "connect", "--namespace", s.AppNamespace(), "--manager-namespace", s.ManagerNamespace())
-	itest.TelepresenceOk(dfltCtx, "uninstall", "--agent", svc)
-	itest.TelepresenceDisconnectOk(dfltCtx)
-	s.TelepresenceConnect(ctx)
+	if !s.ClientIsVersion(">2.21.x") && s.ManagerIsVersion(">2.21.x") {
+		// An <2.22.0 client will not be able to uninstall an agent when the traffic-manager is >=2.22.0
+		// because the client will attempt to remove the entry in the telepresence-agents configmap. It
+		// is no longer present in versions >=2.22.0
+		return
+	}
+	time.Sleep(3 * time.Second)
+	itest.TelepresenceOk(ctx, "uninstall", svc)
 
 	require.Eventually(
 		func() bool {
@@ -117,5 +124,27 @@ func (s *argoRolloutsSuite) Test_SuccessfullyInterceptsArgoRollout() {
 		},
 		180*time.Second, // waitFor
 		6*time.Second,   // polling interval
+	)
+}
+
+func (s *argoRolloutsSuite) Test_ListsReplicaSetWhenRolloutDisabled() {
+	ctx := s.Context()
+	require := s.Require()
+
+	tp, svc := "Rollout", "echo-argo-rollout"
+	s.ApplyApp(ctx, svc, strings.ToLower(tp)+"/"+svc)
+	defer s.DeleteSvcAndWorkload(ctx, "rollout", svc)
+
+	s.TelepresenceConnect(ctx)
+	defer itest.TelepresenceDisconnectOk(ctx)
+
+	require.Eventually(
+		func() bool {
+			stdout, _, err := itest.Telepresence(ctx, "list")
+			dlog.Info(ctx, stdout)
+			return err == nil && strings.Contains(stdout, svc+"-")
+		},
+		6*time.Second, // waitFor
+		2*time.Second, // polling interval
 	)
 }

@@ -40,7 +40,7 @@ spec:
     spec:
       containers:
         - name: {{ default .AppName .ContainerName }}
-          image: {{ default "datawire/helloserver" .Image }}
+          image: {{ default "ghcr.io/telepresenceio/echo-server:latest" .Image }}
           imagePullPolicy: {{ default "IfNotPresent" .PullPolicy }}
           env:
           {{- range $key, $value := .Env }}

@@ -16,48 +16,63 @@ import (
 
 	argorollouts "github.com/datawire/argo-rollouts-go-client/pkg/client/informers/externalversions/rollouts/v1alpha1"
 	"github.com/datawire/dlib/dlog"
-	"github.com/datawire/k8sapi/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/informer"
+	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 )
 
 var ReplicaSetNameRx = regexp.MustCompile(`\A(.+)-[a-f0-9]+\z`)
 
-func FindOwnerWorkload(ctx context.Context, obj k8sapi.Object) (k8sapi.Workload, error) {
-	dlog.Debugf(ctx, "FindOwnerWorkload(%s,%s,%s)", obj.GetName(), obj.GetNamespace(), obj.GetKind())
+type WorkloadOwnerNotFoundError struct {
+	*k8sErrors.StatusError
+}
+
+func FindOwnerWorkload(ctx context.Context, obj k8sapi.Object, supportedWorkloadKinds k8sapi.Kinds) (k8sapi.Workload, error) {
+	dlog.Tracef(ctx, "FindOwnerWorkload(%s,%s,%s)", obj.GetName(), obj.GetNamespace(), obj.GetKind())
 	lbs := obj.GetLabels()
 	if wlName, ok := lbs[agentconfig.WorkloadNameLabel]; ok {
-		return GetWorkload(ctx, wlName, obj.GetNamespace(), lbs[agentconfig.WorkloadKindLabel])
+		kind, ok := lbs[agentconfig.WorkloadKindLabel]
+		if ok && !supportedWorkloadKinds.Contains(k8sapi.Kind(kind)) {
+			return nil, fmt.Errorf("unable to find %s owner for %s.%s (annotation controlled)",
+				kind, obj.GetName(), obj.GetNamespace())
+		}
+		return GetWorkload(ctx, wlName, obj.GetNamespace(), k8sapi.Kind(kind))
 	}
 	refs := obj.GetOwnerReferences()
 	ns := obj.GetNamespace()
 	for i := range refs {
 		if or := &refs[i]; or.Controller != nil && *or.Controller {
-			if or.Kind == "ReplicaSet" {
+			kind := k8sapi.Kind(or.Kind)
+			if kind == k8sapi.ReplicaSetKind && supportedWorkloadKinds.Contains(k8sapi.DeploymentKind) {
 				// Try the common case first. Strip replicaset's generated hash and try to
 				// get the deployment. If this succeeds, we have saved us a replicaset
 				// lookup.
 				if m := ReplicaSetNameRx.FindStringSubmatch(or.Name); m != nil {
-					if wl, err := GetWorkload(ctx, m[1], ns, "Deployment"); err == nil {
+					if wl, err := GetWorkload(ctx, m[1], ns, k8sapi.DeploymentKind); err == nil {
 						return wl, nil
 					}
 				}
 			}
-			wl, err := GetWorkload(ctx, or.Name, ns, or.Kind)
-			if err != nil {
-				return nil, err
+			if supportedWorkloadKinds.Contains(kind) {
+				wl, err := GetWorkload(ctx, or.Name, ns, kind)
+				if err != nil {
+					return nil, err
+				}
+				return FindOwnerWorkload(ctx, wl, supportedWorkloadKinds)
 			}
-			return FindOwnerWorkload(ctx, wl)
+			// A controller owner of unsupported workload kind is treated as "no owner".
+			break
 		}
 	}
 	if wl, ok := obj.(k8sapi.Workload); ok {
 		return wl, nil
 	}
-	return nil, fmt.Errorf("unable to find workload owner for %s.%s", obj.GetName(), obj.GetNamespace())
+	return nil, &WorkloadOwnerNotFoundError{StatusError: k8sErrors.NewNotFound(
+		obj.GetGroupResource(), fmt.Sprintf("%s.%s", obj.GetName(), obj.GetNamespace()))}
 }
 
-func GetWorkload(ctx context.Context, name, namespace, workloadKind string) (obj k8sapi.Workload, err error) {
-	dlog.Debugf(ctx, "GetWorkload(%s,%s,%s)", name, namespace, workloadKind)
+func GetWorkload(ctx context.Context, name, namespace string, workloadKind k8sapi.Kind) (obj k8sapi.Workload, err error) {
+	dlog.Tracef(ctx, "GetWorkload(%s,%s,%s)", name, namespace, workloadKind)
 	i := informer.GetFactory(ctx, namespace)
 	if i == nil {
 		dlog.Debugf(ctx, "fetching %s %s.%s using direct API call", workloadKind, name, namespace)
@@ -67,18 +82,18 @@ func GetWorkload(ctx context.Context, name, namespace, workloadKind string) (obj
 	return getWorkload(ai, ri, name, namespace, workloadKind)
 }
 
-func getWorkload(ai apps.Interface, ri argorollouts.RolloutInformer, name, namespace, workloadKind string) (obj k8sapi.Workload, err error) {
-	switch workloadKind {
-	case "Deployment":
+func getWorkload(ai apps.Interface, ri argorollouts.RolloutInformer, name, namespace string, kind k8sapi.Kind) (obj k8sapi.Workload, err error) {
+	switch kind {
+	case k8sapi.DeploymentKind:
 		return getDeployment(ai, name, namespace)
-	case "ReplicaSet":
+	case k8sapi.ReplicaSetKind:
 		return getReplicaSet(ai, name, namespace)
-	case "StatefulSet":
+	case k8sapi.StatefulSetKind:
 		return getStatefulSet(ai, name, namespace)
-	case "Rollout":
+	case k8sapi.RolloutKind:
 		return getRollout(ri, name, namespace)
 	case "":
-		for _, wk := range []string{"Deployment", "ReplicaSet", "StatefulSet", "Rollout"} {
+		for _, wk := range k8sapi.KnownWorkloadKinds {
 			if obj, err = getWorkload(ai, ri, name, namespace, wk); err == nil {
 				return obj, nil
 			}
@@ -88,7 +103,7 @@ func getWorkload(ai apps.Interface, ri argorollouts.RolloutInformer, name, names
 		}
 		return nil, k8sErrors.NewNotFound(core.Resource("workload"), name+"."+namespace)
 	default:
-		return nil, k8sapi.UnsupportedWorkloadKindError(workloadKind)
+		return nil, k8sapi.UnsupportedWorkloadKindError(kind)
 	}
 }
 
@@ -127,7 +142,7 @@ func getStatefulSet(ai apps.Interface, name, namespace string) (k8sapi.Workload,
 	return k8sapi.StatefulSet(ss), nil
 }
 
-func findServicesForPod(ctx context.Context, pod *core.PodTemplateSpec, svcName string) ([]k8sapi.Object, error) {
+func FindServicesForPod(ctx context.Context, pod *core.PodTemplateSpec, svcName string) ([]k8sapi.Object, error) {
 	switch {
 	case svcName != "":
 		var svc *core.Service
@@ -149,15 +164,7 @@ func findServicesForPod(ctx context.Context, pod *core.PodTemplateSpec, svcName 
 		}
 		return []k8sapi.Object{k8sapi.Service(svc)}, nil
 	case len(pod.Labels) > 0:
-		lbs := labels.Set(pod.Labels)
-		svcs, err := findServicesSelecting(ctx, pod.Namespace, lbs)
-		if err != nil {
-			return nil, err
-		}
-		if len(svcs) > 0 {
-			return svcs, nil
-		}
-		return nil, fmt.Errorf("unable to find services that selects pod %s.%s using labels %s", pod.Name, pod.Namespace, lbs)
+		return findServicesSelecting(ctx, pod.Namespace, labels.Set(pod.Labels))
 	default:
 		return nil, fmt.Errorf("unable to find a service using pod %s.%s because it has no labels", pod.Name, pod.Namespace)
 	}
@@ -203,7 +210,7 @@ func findServicesSelecting(ctx context.Context, namespace string, lbs labels.Lab
 		}
 	} else {
 		// This shouldn't happen really.
-		dlog.Debugf(ctx, "Fetching services in %s using direct API call", namespace)
+		dlog.Tracef(ctx, "Fetching services in %s using direct API call", namespace)
 		l, err := k8sapi.GetK8sInterface(ctx).CoreV1().Services(namespace).List(ctx, meta.ListOptions{})
 		if err != nil {
 			return nil, err
@@ -222,7 +229,7 @@ func findServicesSelecting(ctx context.Context, namespace string, lbs labels.Lab
 	sort.Slice(ms, func(i, j int) bool {
 		return ms[i].GetName() < ms[j].GetName()
 	})
-	dlog.Debugf(ctx, "Scanned %d services in namespace %s and found that %s selects labels %v", scanned, namespace, objectsStringer(ms), lbs)
+	dlog.Tracef(ctx, "Scanned %d services in namespace %s and found that %s selects labels %v", scanned, namespace, objectsStringer(ms), lbs)
 	return ms, nil
 }
 

@@ -19,13 +19,12 @@ import (
 	"sigs.k8s.io/yaml"
 
 	argorollouts "github.com/datawire/argo-rollouts-go-client/pkg/client/clientset/versioned"
-	"github.com/datawire/k8sapi/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/flags"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
-	"github.com/telepresenceio/telepresence/v2/pkg/tracing"
+	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 )
 
 type genYAMLCommand struct {
@@ -45,23 +44,22 @@ func genYAML() *cobra.Command {
 		Short: "Generate YAML for use in kubernetes manifests.",
 		Long: `Generate traffic-agent yaml for use in kubernetes manifests.
 This allows the traffic agent to be injected by hand into existing kubernetes manifests.
-For your modified workload to be valid, you'll have to manually inject a container and a
-volume into the workload, and a corresponding configmap entry into the "telelepresence-agents"
-configmap; you can do this by running "genyaml config", "genyaml container", and "genyaml volume".
+For your modified workload to be valid, you'll have to manually inject annotations, a
+container, and a volume into the workload; you can do this by running "genyaml config",
+"genyaml container", "genyaml initcontainer", "genyaml annotations", and "genyaml volume".
 
 NOTE: It is recommended that you not do this unless strictly necessary. Instead, we suggest letting
 telepresence's webhook injector configure the traffic agents on demand.`,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return errcat.User.New("please run genyaml as \"genyaml config\", \"genyaml container\", \"genyaml initcontainer\", or \"genyaml volume\"")
-		},
+		ValidArgsFunction: cobra.NoFileCompletions,
 	}
-	flags := cmd.PersistentFlags()
-	flags.StringVarP(&info.outputFile, "output", "o", "-",
+	fs := cmd.PersistentFlags()
+	fs.StringVarP(&info.outputFile, "output", "o", "-",
 		"Path to the file to place the output in. Defaults to '-' which means stdout.")
 	cmd.AddCommand(
 		genConfigMapSubCommand(&info),
 		genContainerSubCommand(&info),
 		genInitContainerSubCommand(&info),
+		genVAnnotationsSubCommand(&info),
 		genVolumeSubCommand(&info),
 	)
 	return cmd
@@ -96,38 +94,17 @@ func (i *genYAMLCommand) getOutputWriter() (io.WriteCloser, error) {
 	return f, nil
 }
 
-func (i *genYAMLCommand) loadConfigMapEntry(ctx context.Context) (*agentconfig.Sidecar, error) {
-	if i.configFile != "" {
-		b, err := getInput(i.configFile)
-		if err != nil {
-			return nil, err
-		}
-		var cfg agentconfig.Sidecar
-		if err = yaml.Unmarshal(b, &cfg); err != nil {
-			return nil, errcat.User.Newf("unable to parse config %s: %w", i.configFile, err)
-		}
-		return &cfg, nil
+func (i *genYAMLCommand) loadConfigMapEntry() (*agentconfig.Sidecar, error) {
+	if i.configFile == "" {
+		return nil, errcat.User.New("--config <config> must be provided")
 	}
-	if i.workloadName == "" {
-		return nil, errcat.User.New("either --config or --workload must be provided")
-	}
-
-	// Load configmap entry from the telepresence-agents configmap
-	cm, err := k8sapi.GetK8sInterface(ctx).CoreV1().ConfigMaps(i.namespace).Get(ctx, agentconfig.ConfigMap, meta.GetOptions{})
+	b, err := getInput(i.configFile)
 	if err != nil {
-		return nil, errcat.User.New(err)
-	}
-	var yml string
-	ok := false
-	if cm.Data != nil {
-		yml, ok = cm.Data[i.workloadName]
-	}
-	if !ok {
-		return nil, errcat.User.Newf("Unable to load entry for %q in configmap %q: %w", i.workloadName, agentconfig.ConfigMap, err)
+		return nil, err
 	}
 	var cfg agentconfig.Sidecar
-	if err = yaml.Unmarshal([]byte(yml), &cfg); err != nil {
-		return nil, errcat.User.Newf("Unable to parse entry for %q in configmap %q: %w", i.workloadName, agentconfig.ConfigMap, err)
+	if err = yaml.Unmarshal(b, &cfg); err != nil {
+		return nil, errcat.User.Newf("unable to parse config %s: %w", i.configFile, err)
 	}
 	return &cfg, nil
 }
@@ -137,7 +114,7 @@ func (i *genYAMLCommand) loadWorkload(ctx context.Context) (k8sapi.Workload, err
 		if i.workloadName == "" {
 			return nil, errcat.User.New("either --input or --workload must be provided")
 		}
-		return tracing.GetWorkload(ctx, i.workloadName, i.namespace, "")
+		return k8sapi.GetWorkload(ctx, i.workloadName, i.namespace, "")
 	}
 	b, err := getInput(i.inputFile)
 	if err != nil {
@@ -189,10 +166,10 @@ func (i *genYAMLCommand) writeObjToOutput(obj any) error {
 
 func (i *genYAMLCommand) WithJoinedClientSetInterface(ctx context.Context, flagMap map[string]string) (context.Context, error) {
 	configFlags := genericclioptions.NewConfigFlags(false)
-	flags := pflag.NewFlagSet("", 0)
-	configFlags.AddFlags(flags)
+	fs := pflag.NewFlagSet("", 0)
+	configFlags.AddFlags(fs)
 	for k, v := range flagMap {
-		if err := flags.Set(k, v); err != nil {
+		if err := fs.Set(k, v); err != nil {
 			return nil, errcat.User.Newf("error processing kubectl flag --%s=%s: %w", k, v, err)
 		}
 	}
@@ -261,22 +238,22 @@ func genConfigMapSubCommand(yamlInfo *genYAMLCommand) *cobra.Command {
 		},
 	}
 
-	flags := cmd.Flags()
-	flags.StringVarP(&info.inputFile, "input", "i", "",
+	fs := cmd.Flags()
+	fs.StringVarP(&info.inputFile, "input", "i", "",
 		"Path to the yaml containing the workload definition (i.e. Deployment, StatefulSet, etc). Pass '-' for stdin.. Mutually exclusive to --workload")
-	flags.StringVarP(&info.workloadName, "workload", "w", "",
+	fs.StringVarP(&info.workloadName, "workload", "w", "",
 		"Name of the workload. If given, the workload will be retrieved from the cluster, mutually exclusive to --input")
-	flags.Uint16Var(&info.AgentPort, "agent-port", 9900,
+	fs.Uint16Var(&info.AgentPort, "agent-port", 9900,
 		"The port number you wish the agent to listen on.")
-	flags.StringVar(&info.QualifiedAgentImage, "agent-image", "ghcr.io/telepresenceio/tel2:"+strings.TrimPrefix(client.Version(), "v"),
+	fs.StringVar(&info.QualifiedAgentImage, "agent-image", "ghcr.io/telepresenceio/tel2:"+strings.TrimPrefix(client.Version(), "v"),
 		`The qualified name of the agent image`)
-	flags.Uint16Var(&info.ManagerPort, "manager-port", 8081,
+	fs.Uint16Var(&info.ManagerPort, "manager-port", 8081,
 		`The traffic-manager API port`)
-	flags.StringVar(&info.ManagerNamespace, "manager-namespace", "ambassador",
+	fs.StringVar(&info.ManagerNamespace, "manager-namespace", "ambassador",
 		`The traffic-manager namespace`)
-	flags.StringVar(&info.LogLevel, "loglevel", "info",
+	fs.StringVar(&info.LogLevel, "loglevel", "info",
 		`The loglevel for the generated traffic-agent sidecar`)
-	flags.AddFlagSet(kubeFlags)
+	fs.AddFlagSet(kubeFlags)
 	return cmd
 }
 
@@ -323,13 +300,11 @@ func genContainerSubCommand(yamlInfo *genYAMLCommand) *cobra.Command {
 			return info.run(cmd, flags.Map(kubeFlags))
 		},
 	}
-	flags := cmd.Flags()
-	flags.StringVarP(&info.inputFile, "input", "i", "",
+	fs := cmd.Flags()
+	fs.StringVarP(&info.inputFile, "input", "i", "",
 		"Optional path to the yaml containing the workload definition (i.e. Deployment, StatefulSet, etc). Pass '-' for stdin. Loaded from cluster by default")
-	flags.StringVarP(&info.workloadName, "workload", "w", "",
-		"Name of the workload. If given, the configmap entry will be retrieved telepresence-agents configmap, mutually exclusive to --config")
-	flags.StringVarP(&info.configFile, "config", "c", "", "Path to the yaml containing the generated configmap entry, mutually exclusive to --workload")
-	flags.AddFlagSet(kubeFlags)
+	fs.StringVarP(&info.configFile, "config", "c", "", "Path to the yaml containing the generated configmap entry")
+	fs.AddFlagSet(kubeFlags)
 	return cmd
 }
 
@@ -339,7 +314,7 @@ func (g *genContainerInfo) run(cmd *cobra.Command, kubeFlags map[string]string) 
 		return err
 	}
 
-	cm, err := g.loadConfigMapEntry(ctx)
+	cm, err := g.loadConfigMapEntry()
 	if err != nil {
 		return err
 	}
@@ -361,7 +336,7 @@ func (g *genContainerInfo) run(cmd *cobra.Command, kubeFlags map[string]string) 
 	}
 
 	podTpl := wl.GetPodTemplate()
-	agentContainer := agentconfig.AgentContainer(
+	agentContainer, _ := agentconfig.AgentContainer(
 		ctx,
 		&core.Pod{
 			TypeMeta: meta.TypeMeta{
@@ -392,21 +367,14 @@ func genInitContainerSubCommand(yamlInfo *genYAMLCommand) *cobra.Command {
 			return info.run(cmd, flags.Map(kubeFlags))
 		},
 	}
-	flags := cmd.Flags()
-	flags.StringVarP(&info.workloadName, "workload", "w", "",
-		"Name of the workload. If given, the configmap entry will be retrieved telepresence-agents configmap, mutually exclusive to --config")
-	flags.StringVarP(&info.configFile, "config", "c", "", "Path to the yaml containing the generated configmap entry, mutually exclusive to --workload")
-	flags.AddFlagSet(kubeFlags)
+	fs := cmd.Flags()
+	fs.StringVarP(&info.configFile, "config", "c", "", "Path to the yaml containing the generated configmap entry")
+	fs.AddFlagSet(kubeFlags)
 	return cmd
 }
 
-func (g *genInitContainerInfo) run(cmd *cobra.Command, kubeFlags map[string]string) error {
-	ctx, err := g.WithJoinedClientSetInterface(cmd.Context(), kubeFlags)
-	if err != nil {
-		return err
-	}
-
-	cm, err := g.loadConfigMapEntry(ctx)
+func (g *genInitContainerInfo) run(*cobra.Command, map[string]string) error {
+	cm, err := g.loadConfigMapEntry()
 	if err != nil {
 		return err
 	}
@@ -419,6 +387,43 @@ func (g *genInitContainerInfo) run(cmd *cobra.Command, kubeFlags map[string]stri
 		}
 	}
 	return errcat.User.New("deployment does not need an init container")
+}
+
+type genAnnotationsInfo struct {
+	*genYAMLCommand
+}
+
+func genVAnnotationsSubCommand(yamlInfo *genYAMLCommand) *cobra.Command {
+	info := genAnnotationsInfo{genYAMLCommand: yamlInfo}
+	cmd := &cobra.Command{
+		Use:   "annotations",
+		Args:  cobra.NoArgs,
+		Short: "Generate YAML for the pod template metadata annotations.",
+		Long:  "Generate YAML for the pod template metadata annotations. See genyaml for more info on what this means",
+		RunE: func(*cobra.Command, []string) error {
+			return info.run()
+		},
+	}
+	fs := cmd.Flags()
+	fs.StringVarP(&info.configFile, "config", "c", "", "Path to the yaml containing the generated configmap entry")
+	return cmd
+}
+
+func (g *genAnnotationsInfo) run() error {
+	cm, err := g.loadConfigMapEntry()
+	if err != nil {
+		return err
+	}
+	cmJSON, err := agentconfig.MarshalTight(cm)
+	if err != nil {
+		return err
+	}
+	annotations := map[string]string{
+		agentconfig.InjectAnnotation:       "enabled",
+		agentconfig.ManualInjectAnnotation: "true",
+		agentconfig.ConfigAnnotation:       cmJSON,
+	}
+	return g.writeObjToOutput(annotations)
 }
 
 type genVolumeInfo struct {
@@ -437,13 +442,11 @@ func genVolumeSubCommand(yamlInfo *genYAMLCommand) *cobra.Command {
 			return info.run(cmd, flags.Map(kubeFlags))
 		},
 	}
-	flags := cmd.Flags()
-	flags.StringVarP(&info.inputFile, "input", "i", "",
+	fs := cmd.Flags()
+	fs.StringVarP(&info.inputFile, "input", "i", "",
 		"Optional path to the yaml containing the workload definition (i.e. Deployment, StatefulSet, etc). Pass '-' for stdin. Loaded from cluster by default")
-	flags.StringVarP(&info.workloadName, "workload", "w", "",
-		"Name of the workload. If given, the configmap entry will be retrieved telepresence-agents configmap, mutually exclusive to --config")
-	flags.StringVarP(&info.configFile, "config", "c", "", "Path to the yaml containing the generated configmap entry, mutually exclusive to --workload")
-	flags.AddFlagSet(kubeFlags)
+	fs.StringVarP(&info.configFile, "config", "c", "", "Path to the yaml containing the generated configmap entry")
+	fs.AddFlagSet(kubeFlags)
 	return cmd
 }
 
@@ -453,7 +456,7 @@ func (g *genVolumeInfo) run(cmd *cobra.Command, kubeFlags map[string]string) err
 		return err
 	}
 
-	cm, err := g.loadConfigMapEntry(ctx)
+	cm, err := g.loadConfigMapEntry()
 	if err != nil {
 		return err
 	}

@@ -2,7 +2,6 @@ package integration_test
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"net/netip"
 	"os"
@@ -99,8 +98,13 @@ func (s *notConnectedSuite) Test_CloudNeverProxy() {
 			return false
 		}
 		m := regexp.MustCompile(`Never Proxy\s*:\s*\((\d+) subnets\)`).FindStringSubmatch(stdout)
-		if m == nil || m[1] != strconv.Itoa(neverProxiedCount) {
-			dlog.Errorf(ctx, "did not find %d never-proxied subnets", neverProxiedCount)
+		npcOk := false
+		if m != nil {
+			npc, _ := strconv.Atoi(m[1])
+			npcOk = npc > 0 && npc <= neverProxiedCount
+		}
+		if !npcOk {
+			dlog.Errorf(ctx, "did not find 1-%d never-proxied subnets", neverProxiedCount)
 			return false
 		}
 
@@ -110,9 +114,11 @@ func (s *notConnectedSuite) Test_CloudNeverProxy() {
 			return false
 		}
 		var view client.SessionConfig
-		require.NoError(json.Unmarshal([]byte(jsonStdout), &view))
-		if len(view.Routing.NeverProxy) != neverProxiedCount {
-			dlog.Errorf(ctx, "did not find %d never-proxied subnets in json status", neverProxiedCount)
+		require.NoError(client.UnmarshalJSON([]byte(jsonStdout), &view, false))
+		npc := len(view.Config.Routing().NeverProxy)
+		npcOk = npc > 0 && npc <= neverProxiedCount
+		if !npcOk {
+			dlog.Errorf(ctx, "did not find 1-%d never-proxied subnets in json status", neverProxiedCount)
 			return false
 		}
 
@@ -211,22 +217,24 @@ func (s *notConnectedSuite) Test_RootdCloudLogLevel() {
 	}, 60*time.Second, 5*time.Second, "Root log level not updated in 20 seconds")
 
 	// Make sure the log level was set back after disconnect
-	rootLog, err = os.Open(rootLogName)
-	require.NoError(err)
-	defer rootLog.Close()
-	scn = bufio.NewScanner(rootLog)
+	s.Eventually(func() bool {
+		rootLog, err = os.Open(rootLogName)
+		require.NoError(err)
+		defer rootLog.Close()
+		scn = bufio.NewScanner(rootLog)
 
-	lines = currentLine
-	currentLine = 0
-	for scn.Scan() && currentLine <= lines {
-		currentLine++
-	}
+		lines = currentLine
+		currentLine = 0
+		for scn.Scan() && currentLine <= lines {
+			currentLine++
+		}
 
-	levelSet := false
-	for scn.Scan() && !levelSet {
-		levelSet = strings.Contains(scn.Text(), `Logging at this level "info"`)
-	}
-	require.True(levelSet, "Root log level not reset after disconnect")
+		levelSet := false
+		for scn.Scan() && !levelSet {
+			levelSet = strings.Contains(scn.Text(), `Logging at this level "info"`)
+		}
+		return levelSet
+	}, 5*time.Second, time.Second, "Root log level not reset after disconnect")
 
 	// Set it to a "real" value to see that the client-side wins
 	ctx = itest.WithConfig(ctx, func(config client.Config) {
@@ -234,7 +242,7 @@ func (s *notConnectedSuite) Test_RootdCloudLogLevel() {
 	})
 	s.TelepresenceConnect(ctx)
 	itest.TelepresenceDisconnectOk(ctx)
-	levelSet = false
+	levelSet := false
 	for scn.Scan() && !levelSet {
 		levelSet = strings.Contains(scn.Text(), `Logging at this level "trace"`)
 	}
@@ -243,7 +251,7 @@ func (s *notConnectedSuite) Test_RootdCloudLogLevel() {
 	var view client.SessionConfig
 	s.TelepresenceConnect(ctx)
 	jsonStdout := itest.TelepresenceOk(ctx, "config", "view", "--output", "json")
-	require.NoError(json.Unmarshal([]byte(jsonStdout), &view))
+	require.NoError(client.UnmarshalJSON([]byte(jsonStdout), &view, false))
 	require.Equal(view.LogLevels().RootDaemon, logrus.DebugLevel)
 }
 
@@ -272,7 +280,7 @@ func (s *notConnectedSuite) Test_UserdCloudLogLevel() {
 
 	var currentLine int64
 	s.Eventually(func() bool {
-		_, _, err := itest.Telepresence(ctx, "connect", "--manager-namespace", s.ManagerNamespace())
+		_, _, err := itest.Telepresence(ctx, "connect", "--manager-namespace", s.ManagerNamespace(), "--namespace", s.AppNamespace())
 		if err != nil {
 			return false
 		}

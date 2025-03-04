@@ -1,11 +1,12 @@
 package integration_test
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/go-json-experiment/json"
 
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
@@ -56,7 +57,6 @@ func (s *mountsSuite) Test_IgnoredMounts() {
 	defer cancel()
 
 	for _, tt := range tests {
-		tt := tt
 		s.Run(tt.name, func() {
 			tpl := struct {
 				Annotations map[string]string
@@ -67,9 +67,8 @@ func (s *mountsSuite) Test_IgnoredMounts() {
 			}
 			ctx := s.Context()
 			s.ApplyTemplate(ctx, filepath.Join("testdata", "k8s", "hello-w-volumes.goyaml"), &tpl)
-			defer func() {
-				s.DeleteSvcAndWorkload(ctx, "deploy", "hello")
-			}()
+			defer s.DeleteSvcAndWorkload(ctx, "deploy", "hello")
+
 			require := s.Require()
 			stdout := itest.TelepresenceOk(ctx, "intercept", "hello", "--output", "json", "--detailed-output", "--port", fmt.Sprintf("%d:%d", localPort, tt.svcPort))
 			defer itest.TelepresenceOk(ctx, "leave", "hello")

@@ -78,8 +78,8 @@ func Wait(ctx context.Context, cancel context.CancelFunc, cmd *dexec.Cmd) error 
 
 // CreateNewProcessGroup ensures that the process uses a process group of its own to prevent
 // it getting affected by <ctrl-c> in the terminal.
-func CreateNewProcessGroup(cmd *dexec.Cmd) {
-	createNewProcessGroup(cmd.Cmd)
+func CreateNewProcessGroup(cmd *exec.Cmd) {
+	createNewProcessGroup(cmd)
 }
 
 func KillProcessGroup(ctx context.Context, cmd *exec.Cmd, signal os.Signal) {

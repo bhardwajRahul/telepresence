@@ -36,6 +36,7 @@ func (info *Info) DaemonID() *Identifier {
 const (
 	daemonsDirName    = "daemons"
 	keepAliveInterval = 5 * time.Second
+	maxNoSignOfLife   = keepAliveInterval + 2*time.Second
 )
 
 func LoadInfo(ctx context.Context, file string) (*Info, error) {
@@ -115,7 +116,7 @@ func infoFiles(ctx context.Context) ([]fs.DirEntry, error) {
 			return nil, err
 		}
 		age := time.Since(fi.ModTime())
-		if age > keepAliveInterval+600*time.Millisecond {
+		if age > maxNoSignOfLife {
 			// File has gone stale
 			dlog.Debugf(ctx, "Deleting stale info %s with age = %s", file.Name(), age)
 			if err = cache.DeleteFromUserCache(ctx, filepath.Join(daemonsDirName, file.Name())); err != nil {

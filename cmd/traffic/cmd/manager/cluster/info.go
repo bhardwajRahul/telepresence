@@ -5,30 +5,30 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/blang/semver/v4"
+	auth "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	v1 "k8s.io/client-go/kubernetes/typed/core/v1"
 
 	"github.com/datawire/dlib/dlog"
-	"github.com/datawire/k8sapi/pkg/k8sapi"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/manager"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
 	"github.com/telepresenceio/telepresence/v2/pkg/dnsproxy"
 	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
+	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/v2/pkg/subnet"
 )
 
 const (
 	supportedKubeAPIVersion = "1.17.0"
-	agentContainerName      = "traffic-agent"
-	managerAppName          = "traffic-manager"
 )
 
 type Info interface {
@@ -38,8 +38,7 @@ type Info interface {
 	// ID of the installed ns
 	ID() string
 
-	// clusterID of the cluster
-	ClusterID() string
+	ServiceIP() net.IP
 
 	// SetAdditionalAlsoProxy assigns a slice that will be added to the Routing.AlsoProxySubnets slice
 	// when notifications are sent.
@@ -63,17 +62,12 @@ type info struct {
 
 	// installID is the UID of the manager's namespace
 	installID string
-
-	// clusterID is the UID of the default namespace
-	clusterID string
 }
 
 const IDZero = "00000000-0000-0000-0000-000000000000"
 
 func NewInfo(ctx context.Context) Info {
 	env := managerutil.GetEnv(ctx)
-	managedNamespaces := env.ManagedNamespaces
-	namespaced := len(managedNamespaces) > 0
 	oi := info{}
 	ki := k8sapi.GetK8sInterface(ctx)
 
@@ -100,21 +94,10 @@ func NewInfo(ctx context.Context) Info {
 
 	client := ki.CoreV1()
 	if oi.installID, err = GetInstallIDFunc(ctx, client, env.ManagerNamespace); err != nil {
-		// We use a default clusterID because we don't want to fail if
-		// the traffic-manager doesn't have the ability to get the namespace
+		// Use a default installID because we don't want to fail if the traffic-manager can't get the namespace
 		oi.installID = IDZero
 		dlog.Warnf(ctx, "unable to get namespace \"%s\", will use default installID: %s: %v",
 			env.ManagerNamespace, oi.installID, err)
-	}
-
-	// backwards compat
-	// TODO delete after default ns licenses expire
-	if oi.clusterID, err = GetInstallIDFunc(ctx, client, "default"); err != nil {
-		// We use a default clusterID because we don't want to fail if
-		// the traffic-manager doesn't have the ability to get the namespace
-		oi.clusterID = IDZero
-		dlog.Infof(ctx,
-			"unable to get namespace \"default\", but it is only necessary for compatibility with old licesnses: %v", err)
 	}
 
 	dummyIP := "1.1.1.1"
@@ -127,6 +110,8 @@ func NewInfo(ctx context.Context) Info {
 			dummyIP = "1:1::1"
 		}
 	}
+
+	dlog.Infof(ctx, "Enabled support for the following workload kinds: %v", env.EnabledWorkloadKinds)
 
 	// make an attempt to create a service with ClusterIP that is out of range and then
 	// check the error message for the correct range as suggested tin the second answer here:
@@ -150,21 +135,17 @@ func NewInfo(ctx context.Context) Info {
 	if _, err = client.Services(env.ManagerNamespace).Create(ctx, &svc, metav1.CreateOptions{}); err != nil {
 		svcCIDRrx := regexp.MustCompile(`range of valid IPs is (.*)$`)
 		if match := svcCIDRrx.FindStringSubmatch(err.Error()); match != nil {
-			var cidr *net.IPNet
-			if _, cidr, err = net.ParseCIDR(match[1]); err != nil {
+			if cidr, err := netip.ParsePrefix(match[1]); err != nil {
 				dlog.Errorf(ctx, "unable to parse service CIDR %q", match[1])
 			} else {
 				dlog.Infof(ctx, "Extracting service subnet %v from create service error message", cidr)
-				oi.ServiceSubnet = iputil.IPNetToRPC(cidr)
+				oi.ServiceSubnet = iputil.PrefixToRPC(cidr)
 			}
 		} else {
 			dlog.Errorf(ctx, "unable to extract service subnet from error message %q", err.Error())
 		}
 	}
 
-	if err != nil {
-		dlog.Warn(ctx, err)
-	}
 	if oi.ServiceSubnet == nil && len(oi.InjectorSvcIp) > 0 {
 		// Using a "kubectl cluster-info dump" or scanning all services generates a lot of unwanted traffic
 		// and would quite possibly also require elevated permissions, so instead, we derive the service subnet
@@ -181,7 +162,7 @@ func NewInfo(ctx context.Context) Info {
 	podCIDRStrategy := env.PodCIDRStrategy
 	dlog.Infof(ctx, "Using podCIDRStrategy: %s", podCIDRStrategy)
 
-	oi.ManagerPodIp = env.PodIP
+	oi.ManagerPodIp = env.PodIP.AsSlice()
 	oi.ManagerPodPort = int32(env.ServerPort)
 	oi.InjectorSvcHost = fmt.Sprintf("%s.%s", env.AgentInjectorName, env.ManagerNamespace)
 
@@ -198,14 +179,14 @@ func NewInfo(ctx context.Context) Info {
 		AllowConflictingSubnets: make([]*rpc.IPNet, len(allowConflicting)),
 	}
 	for i, sn := range alsoProxy {
-		oi.Routing.AlsoProxySubnets[i] = iputil.IPNetToRPC(sn)
+		oi.Routing.AlsoProxySubnets[i] = iputil.PrefixToRPC(sn)
 	}
 	for i, sn := range neverProxy {
-		oi.Routing.NeverProxySubnets[i] = iputil.IPNetToRPC(sn)
+		oi.Routing.NeverProxySubnets[i] = iputil.PrefixToRPC(sn)
 	}
 
 	for i, sn := range allowConflicting {
-		oi.Routing.AllowConflictingSubnets[i] = iputil.IPNetToRPC(sn)
+		oi.Routing.AllowConflictingSubnets[i] = iputil.PrefixToRPC(sn)
 	}
 
 	clusterDomain := getClusterDomain(ctx, oi.InjectorSvcIp, env)
@@ -213,7 +194,7 @@ func NewInfo(ctx context.Context) Info {
 	oi.Dns = &rpc.DNS{
 		IncludeSuffixes: env.ClientDnsIncludeSuffixes,
 		ExcludeSuffixes: env.ClientDnsExcludeSuffixes,
-		KubeIp:          env.PodIP,
+		KubeIp:          env.PodIP.AsSlice(),
 		ClusterDomain:   clusterDomain,
 	}
 
@@ -225,18 +206,14 @@ func NewInfo(ctx context.Context) Info {
 	switch {
 	case strings.EqualFold("auto", podCIDRStrategy):
 		go func() {
-			if namespaced || !oi.watchNodeSubnets(ctx, false) {
-				oi.watchPodSubnets(ctx, managedNamespaces)
+			if !oi.watchNodeSubnets(ctx, false) {
+				oi.watchPodSubnets(ctx)
 			}
 		}()
 	case strings.EqualFold("nodePodCIDRs", podCIDRStrategy):
-		if namespaced {
-			dlog.Errorf(ctx, "cannot use POD_CIDR_STRATEGY %q with a namespaced traffic-manager", podCIDRStrategy)
-		} else {
-			go oi.watchNodeSubnets(ctx, true)
-		}
+		go oi.watchNodeSubnets(ctx, true)
 	case strings.EqualFold("coverPodIPs", podCIDRStrategy):
-		go oi.watchPodSubnets(ctx, managedNamespaces)
+		go oi.watchPodSubnets(ctx)
 	case strings.EqualFold("environment", podCIDRStrategy):
 		oi.setSubnetsFromEnv(ctx)
 	default:
@@ -319,6 +296,18 @@ func clusterDomainFromResolvConf(confFile, namespace string) (string, error) {
 }
 
 func (oi *info) watchNodeSubnets(ctx context.Context, mustSucceed bool) bool {
+	ok, err := k8sapi.CanI(ctx,
+		&auth.ResourceAttributes{
+			Verb:     "list",
+			Resource: "nodes",
+		}, &auth.ResourceAttributes{
+			Verb:     "watch",
+			Resource: "nodes",
+		})
+	if err != nil || !ok {
+		return false
+	}
+
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	informerFactory := informers.NewSharedInformerFactory(k8sapi.GetK8sInterface(ctx), 0)
@@ -359,11 +348,16 @@ func getInjectorSvcIP(ctx context.Context, env *managerutil.Env, client v1.CoreV
 			break
 		}
 	}
-	return iputil.Parse(sc.Spec.ClusterIP), p, nil
+	ip, err := netip.ParseAddr(sc.Spec.ClusterIP)
+	if err != nil {
+		return nil, 0, err
+	}
+	return ip.AsSlice(), p, nil
 }
 
-func (oi *info) watchPodSubnets(ctx context.Context, namespaces []string) {
-	retriever := newPodWatcher(ctx, namespaces)
+func (oi *info) watchPodSubnets(ctx context.Context) {
+	podIP, _ := netip.AddrFromSlice(oi.ManagerPodIp)
+	retriever := newPodWatcher(ctx, podIP)
 	if !retriever.viable(ctx) {
 		dlog.Errorf(ctx, "Unable to derive subnets from IPs of pods")
 		return
@@ -375,7 +369,13 @@ func (oi *info) watchPodSubnets(ctx context.Context, namespaces []string) {
 func (oi *info) setSubnetsFromEnv(ctx context.Context) bool {
 	subnets := managerutil.GetEnv(ctx).PodCIDRs
 	if len(subnets) > 0 {
-		oi.PodSubnets = subnetsToRPC(subnets)
+		mgrIp, _ := netip.AddrFromSlice(oi.ManagerPodIp)
+		if !slices.ContainsFunc(subnets, func(s netip.Prefix) bool { return s.Contains(mgrIp) }) {
+			sn := netip.PrefixFrom(mgrIp, mgrIp.BitLen())
+			dlog.Infof(ctx, "Adding %s for the traffic-manager pod, because it was not included in POD_CIDRS environment", sn)
+			subnets = append(subnets, sn)
+		}
+		oi.PodSubnets = iputil.PrefixesToRPC(subnets)
 		oi.ciSubs.notify(ctx, oi.clusterInfo())
 		dlog.Infof(ctx, "Using subnets from POD_CIDRS environment variable")
 		return true
@@ -405,8 +405,8 @@ func (oi *info) ID() string {
 	return oi.installID
 }
 
-func (oi *info) ClusterID() string {
-	return oi.clusterID
+func (oi *info) ServiceIP() net.IP {
+	return oi.InjectorSvcIp
 }
 
 func (oi *info) ClusterDomain() string {
@@ -451,19 +451,7 @@ func (oi *info) clusterInfo() *rpc.ClusterInfo {
 
 func (oi *info) watchSubnets(ctx context.Context, retriever subnetRetriever) {
 	retriever.changeNotifier(ctx, func(subnets subnet.Set) {
-		oi.PodSubnets = subnetSetToRPC(subnets)
+		oi.PodSubnets = iputil.PrefixesToRPC(subnets.AppendSortedTo(nil))
 		oi.ciSubs.notify(ctx, oi.clusterInfo())
 	})
-}
-
-func subnetSetToRPC(cidrMap subnet.Set) []*rpc.IPNet {
-	return subnetsToRPC(cidrMap.AppendSortedTo(nil))
-}
-
-func subnetsToRPC(subnets []*net.IPNet) []*rpc.IPNet {
-	rpcSubnets := make([]*rpc.IPNet, len(subnets))
-	for i, s := range subnets {
-		rpcSubnets[i] = iputil.IPNetToRPC(s)
-	}
-	return rpcSubnets
 }

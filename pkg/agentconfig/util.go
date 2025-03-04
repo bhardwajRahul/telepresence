@@ -1,29 +1,29 @@
 package agentconfig
 
-import (
-	"github.com/telepresenceio/telepresence/rpc/v2/manager"
-)
-
-// SpecMatchesIntercept answers the question if an InterceptSpec matches the given
-// Intercept config. The spec matches if:
-//   - its ServiceName is equal to the config's ServiceName
-//   - its PortIdentifier is equal to the config's ServicePortName, or can
-//     be parsed to an integer equal to the config's ServicePort
-func SpecMatchesIntercept(spec *manager.InterceptSpec, ic *Intercept) bool {
-	return ic.ServiceName == spec.ServiceName && IsInterceptFor(PortIdentifier(spec.ServicePortIdentifier), ic)
-}
-
-// IsInterceptFor returns true when the given PortIdentifier is equal to the
+// IsInterceptForService returns true when the given PortIdentifier is equal to the
 // config's ServicePortName, or can be parsed to an integer equal to the config's ServicePort.
-func IsInterceptFor(spi PortIdentifier, ic *Intercept) bool {
-	proto, name, num := spi.ProtoAndNameOrNumber()
-	if spi.HasProto() && proto != ic.Protocol {
+func IsInterceptForService(pi PortIdentifier, ic *Intercept) bool {
+	proto, name, num := pi.ProtoAndNameOrNumber()
+	if pi.HasProto() && proto != ic.Protocol {
 		return false
 	}
 	if name == "" {
 		return num == ic.ServicePort
 	}
 	return name == ic.ServicePortName
+}
+
+// IsInterceptForContainer returns true when the given PortIdentifier is equal to the
+// config's ContainerPort, or can be parsed to an integer equal to the config's ContainerPort.
+func IsInterceptForContainer(pi PortIdentifier, ic *Intercept) bool {
+	proto, name, num := pi.ProtoAndNameOrNumber()
+	if pi.HasProto() && proto != ic.Protocol {
+		return false
+	}
+	if name == "" {
+		return num == ic.ContainerPort
+	}
+	return name == ic.ContainerPortName
 }
 
 // PortUniqueIntercepts returns a slice of intercepts for the container where each intercept
@@ -41,4 +41,17 @@ func PortUniqueIntercepts(cn *Container) []*Intercept {
 		}
 	}
 	return ics
+}
+
+// ProxyPort returns a port that can be used as a proxy for container port for the given Intercept.
+// The proxy port will be the intercept's agentPort + the maximum number of possible intercepts for the sidecar.
+func (s *Sidecar) ProxyPort(ic *Intercept) uint16 {
+	return ic.AgentPort + 11 + uint16(s.numberOfPossibleIntercepts())
+}
+
+func (s *Sidecar) numberOfPossibleIntercepts() (count int) {
+	for _, c := range s.Containers {
+		count += len(c.Intercepts)
+	}
+	return
 }

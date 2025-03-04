@@ -1,14 +1,16 @@
 package intercept
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/go-json-experiment/json"
 
 	"github.com/telepresenceio/telepresence/rpc/v2/common"
 	"github.com/telepresenceio/telepresence/rpc/v2/connector"
 	"github.com/telepresenceio/telepresence/rpc/v2/manager"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
+	"github.com/telepresenceio/telepresence/v2/pkg/ioutil"
 )
 
 func Result(r *connector.InterceptResult, err error) error {
@@ -38,9 +40,7 @@ func Result(r *connector.InterceptResult, err error) error {
 			"Cannot create an intercept in namespace %q. A workstation cannot have simultaneous intercepts in different namespaces. Leave all intercepts in namespace %q first.",
 			nss[1], nss[0])
 	case common.InterceptError_LOCAL_TARGET_IN_USE:
-		spec := r.InterceptInfo.Spec
-		msg = fmt.Sprintf("Port %s:%d is already in use by intercept %s",
-			spec.TargetHost, spec.TargetPort, spec.Name)
+		msg = r.ErrorText
 	case common.InterceptError_NO_ACCEPTABLE_WORKLOAD:
 		msg = fmt.Sprintf("No interceptable deployment, replicaset, or statefulset matching %s found", r.ErrorText)
 	case common.InterceptError_AMBIGUOUS_MATCH:
@@ -51,10 +51,10 @@ func Result(r *connector.InterceptResult, err error) error {
 			break
 		}
 		st := &strings.Builder{}
-		fmt.Fprintf(st, "Found more than one possible match:")
+		ioutil.Printf(st, "Found more than one possible match:")
 		for idx := range matches {
 			match := &matches[idx]
-			fmt.Fprintf(st, "\n%4d: %s.%s", idx+1, match.Name, match.Namespace)
+			ioutil.Printf(st, "\n%4d: %s.%s", idx+1, match.Name, match.Namespace)
 		}
 		msg = st.String()
 	case common.InterceptError_FAILED_TO_ESTABLISH:

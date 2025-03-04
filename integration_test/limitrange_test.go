@@ -1,11 +1,11 @@
 package integration_test
 
 import (
-	"encoding/json"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/go-json-experiment/json"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
@@ -23,7 +23,7 @@ func (is *installSuite) limitedRangeTest() {
 	itest.ApplyEchoService(ctx, svc, is.AppNamespace(), 8083)
 	defer func() {
 		is.NoError(itest.Kubectl(ctx, is.AppNamespace(), "delete", "svc,deploy", svc))
-		is.Eventually(func() bool { return len(itest.RunningPods(ctx, svc, is.AppNamespace())) == 0 }, 2*time.Minute, 6*time.Second)
+		is.Eventually(func() bool { return len(itest.RunningPodNames(ctx, svc, is.AppNamespace())) == 0 }, 2*time.Minute, 6*time.Second)
 	}()
 
 	_, _, err := itest.Telepresence(ctx, "intercept", "--mount", "false", svc)

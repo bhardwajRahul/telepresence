@@ -7,16 +7,20 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 
 	"github.com/pkg/sftp"
-	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"golang.org/x/sys/unix"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/datawire/dlib/dgroup"
-	"github.com/datawire/dlib/dhttp"
 	"github.com/datawire/dlib/dlog"
 	ftp "github.com/datawire/go-ftpserver"
 	"github.com/telepresenceio/telepresence/rpc/v2/agent"
@@ -24,9 +28,9 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/dos"
 	"github.com/telepresenceio/telepresence/v2/pkg/forwarder"
+	"github.com/telepresenceio/telepresence/v2/pkg/grpc/server"
 	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
 	"github.com/telepresenceio/telepresence/v2/pkg/restapi"
-	"github.com/telepresenceio/telepresence/v2/pkg/tracing"
 	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
 	"github.com/telepresenceio/telepresence/v2/pkg/version"
 )
@@ -43,15 +47,16 @@ func AppEnvironment(ctx context.Context, ag *agentconfig.Container) (map[string]
 
 	// Keys that aren't useful when running on the local machine.
 	skipKeys := map[string]bool{
-		"HOME":     true,
-		"PATH":     true,
-		"HOSTNAME": true,
+		"HOME":                     true,
+		"PATH":                     true,
+		"HOSTNAME":                 true,
+		agentconfig.EnvAgentConfig: true,
 	}
 
 	// Add prefixed variables separately last, so that we can
 	// ensure that they have higher precedence.
 	for _, env := range osEnv {
-		if !strings.HasPrefix(env, agentconfig.EnvPrefix) {
+		if !strings.HasPrefix(env, agentconfig.EnvPrefix) && !strings.Contains(env, "_TELEPRESENCE_MOUNTS=") {
 			pair := strings.SplitN(env, "=", 2)
 			if len(pair) == 2 {
 				k := pair[0]
@@ -97,12 +102,13 @@ func sftpServer(ctx context.Context, sftpPortCh chan<- uint16) error {
 		_ = l.Close()
 	}()
 
-	_, sftpPort, err := iputil.SplitToIPPort(l.Addr())
+	ap, err := iputil.SplitToIPPort(l.Addr())
 	if err != nil {
 		return err
 	}
-	sftpPortCh <- sftpPort
+	sftpPortCh <- ap.Port()
 
+	dlog.Infof(ctx, "Listening at: %s", l.Addr())
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -127,18 +133,34 @@ func sftpServer(ctx context.Context, sftpPortCh chan<- uint16) error {
 }
 
 func Main(ctx context.Context, _ ...string) error {
+	debug.SetTraceback("single")
 	dlog.Infof(ctx, "Traffic Agent %s", version.Version)
+
+	ctx, cancel := context.WithCancel(ctx)
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, unix.SIGTERM)
+	defer func() {
+		signal.Stop(sigs)
+		cancel()
+	}()
+
+	go func() {
+		select {
+		case <-sigs:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 
 	// Handle configuration
 	config, err := LoadConfig(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("unable to load config: %w", err)
 	}
 
 	g := dgroup.NewGroup(ctx, dgroup.GroupConfig{
-		EnableSignalHandling: true,
+		SoftShutdownTimeout: 10 * time.Second, // Agent must be able to depart.
 	})
-
 	s := NewState(config)
 	info, err := StartServices(ctx, g, config, s)
 	if err != nil {
@@ -158,29 +180,48 @@ func sidecar(ctx context.Context, s State, info *rpc.AgentInfo) error {
 	// Manage the forwarders
 	ac := s.AgentConfig()
 	for _, cn := range ac.Containers {
-		env, err := AppEnvironment(ctx, cn)
-		if err != nil {
-			return err
-		}
-		// Group the containers intercepts by agent port
+		ci := info.Containers[cn.Name]
+		s.AddContainerState(cn.Name, NewContainerState(s, cn, ci.MountPoint, ci.Environment))
+
+		// Group the container's intercepts by agent port
 		icStates := make(map[agentconfig.PortAndProto][]*agentconfig.Intercept, len(cn.Intercepts))
 		for _, ic := range cn.Intercepts {
-			k := agentconfig.PortAndProto{Port: ic.AgentPort, Proto: ic.Protocol}
+			ap := ic.AgentPort
+			if cn.Replace == agentconfig.ReplacePolicyContainer {
+				// Listen to replaced container's original port.
+				ap = ic.ContainerPort
+			}
+			k := agentconfig.PortAndProto{Port: ap, Proto: ic.Protocol}
 			icStates[k] = append(icStates[k], ic)
 		}
 
 		for pp, ics := range icStates {
-			cp := ics[0].ContainerPort // They all have the same protocol container port, so the first one will do
-			lisAddr, err := pp.Addr()
-			if err != nil {
-				return err
+			ic := ics[0] // They all have the same protocol container port, so the first one will do.
+			var fwd forwarder.Interceptor
+			var cp uint16
+			if cn.Replace == agentconfig.ReplacePolicyIntercept {
+				if ic.TargetPortNumeric {
+					// We must differentiate between connections originating from the agent's forwarder to the container
+					// port and those from other sources. The former should not be routed back, while the latter should
+					// always be routed to the agent. We do this by using a proxy port that will be recognized by the
+					// iptables filtering in our init-container.
+					cp = ac.ProxyPort(ic)
+				} else {
+					cp = ic.ContainerPort
+				}
+				// Redirect non-intercepted traffic to the pod, so that injected sidecars that hijack the ports for
+				// incoming connections will continue to work.
+				targetHost := s.PodIP()
+				fwd = forwarder.NewInterceptor(pp, tunnel.AgentToProxied, targetHost, cp)
+			} else {
+				fwd = forwarder.NewInterceptor(pp, tunnel.AgentToClient, "", 0)
+				cp = ic.ContainerPort
 			}
-			fwd := forwarder.NewInterceptor(lisAddr, "127.0.0.1", cp)
+
 			dgroup.ParentGroup(ctx).Go(fmt.Sprintf("forward-%s", iputil.JoinHostPort(cn.Name, cp)), func(ctx context.Context) error {
 				return fwd.Serve(tunnel.WithPool(ctx, tunnel.NewPool()), nil)
 			})
-			cnMountPoint := filepath.Join(agentconfig.ExportsMountPoint, filepath.Base(cn.MountPoint))
-			s.AddInterceptState(s.NewInterceptState(fwd, NewInterceptTarget(ics), cnMountPoint, env))
+			s.AddInterceptState(s.NewInterceptState(fwd, NewInterceptTarget(ics), cn.Name))
 		}
 	}
 	TalkToManagerLoop(ctx, s, info)
@@ -197,7 +238,12 @@ func TalkToManagerLoop(ctx context.Context, s State, info *rpc.AgentInfo) {
 
 	for {
 		if err := TalkToManager(ctx, gRPCAddress, info, s); err != nil {
-			dlog.Info(ctx, err)
+			switch status.Code(err) {
+			case codes.AlreadyExists, codes.Aborted:
+				// This won't change, so abort here.
+				return
+			}
+			dlog.Error(ctx, err)
 		}
 
 		select {
@@ -211,24 +257,6 @@ func TalkToManagerLoop(ctx context.Context, s State, info *rpc.AgentInfo) {
 func StartServices(ctx context.Context, g *dgroup.Group, config Config, srv State) (*rpc.AgentInfo, error) {
 	var grpcOpts []grpc.ServerOption
 	ac := config.AgentConfig()
-	if ac.TracingPort != 0 {
-		g.Go("tracer-grpc", func(c context.Context) error {
-			tracer, err := tracing.NewTraceServer(c, "traffic-agent", OtelResources(c, config)...)
-			if err != nil {
-				return err
-			}
-			defer func() {
-				c, cancel := context.WithTimeout(context.WithoutCancel(c), time.Second)
-				tracer.Shutdown(c)
-				cancel()
-			}()
-			return tracer.ServeGrpc(c, ac.TracingPort)
-		})
-
-		grpcOpts = []grpc.ServerOption{
-			grpc.StatsHandler(otelgrpc.NewServerHandler()),
-		}
-	}
 
 	grpcPortCh := make(chan uint16)
 	g.Go("tunneling", func(ctx context.Context) error {
@@ -238,22 +266,14 @@ func StartServices(ctx context.Context, g *dgroup.Group, config Config, srv Stat
 		if err != nil {
 			return err
 		}
-		defer func() {
-			_ = grpcListener.Close()
-		}()
 		grpcAddress := grpcListener.Addr().(*net.TCPAddr)
 		grpcPortCh <- uint16(grpcAddress.Port)
 
 		dlog.Debugf(ctx, "Listener opened on %s", grpcAddress)
 
-		grpcHandler := grpc.NewServer(grpcOpts...)
-		agent.RegisterAgentServer(grpcHandler, srv)
-		sc := &dhttp.ServerConfig{Handler: grpcHandler}
-		dlog.Info(ctx, "gRPC server started")
-		if err = sc.Serve(ctx, grpcListener); err != nil && ctx.Err() != nil {
-			err = nil // Normal shutdown
-		}
-		return err
+		svc := server.New(ctx, grpcOpts...)
+		agent.RegisterAgentServer(svc, srv)
+		return server.Serve(ctx, svc, grpcListener)
 	})
 
 	sftpPortCh := make(chan uint16)
@@ -263,16 +283,16 @@ func StartServices(ctx context.Context, g *dgroup.Group, config Config, srv Stat
 			return sftpServer(ctx, sftpPortCh)
 		})
 		g.Go("ftp-server", func(ctx context.Context) error {
-			if iputil.IsIpV6Addr(config.PodIP()) {
-				return ftp.Start(ctx, "", agentconfig.ExportsMountPoint, ftpPortCh)
-			} else {
-				return ftp.Start(ctx, config.PodIP(), agentconfig.ExportsMountPoint, ftpPortCh)
+			publicHost := ""
+			if !iputil.IsIpV6Addr(config.PodIP()) {
+				publicHost = config.PodIP()
 			}
+			return ftp.Start(ctx, publicHost, agentconfig.ExportsMountPoint, ftpPortCh)
 		})
 	} else {
 		close(sftpPortCh)
 		close(ftpPortCh)
-		dlog.Info(ctx, "Not starting sftp-server because there's nothing to mount")
+		dlog.Info(ctx, "Not starting ftp and sftp servers because there's nothing to mount")
 	}
 	grpcPort, err := waitForPort(ctx, grpcPortCh)
 	if err != nil {
@@ -294,12 +314,28 @@ func StartServices(ctx context.Context, g *dgroup.Group, config Config, srv Stat
 		})
 	}
 
+	containers := make(map[string]*rpc.AgentInfo_ContainerInfo, len(ac.Containers))
+	for _, cn := range ac.Containers {
+		env, err := AppEnvironment(ctx, cn)
+		if err != nil {
+			return nil, err
+		}
+		containers[cn.Name] = &rpc.AgentInfo_ContainerInfo{
+			Environment: env,
+			MountPoint:  filepath.Join(agentconfig.ExportsMountPoint, filepath.Base(cn.MountPoint)),
+		}
+	}
+
 	return &rpc.AgentInfo{
-		Name:      config.AgentConfig().AgentName,
-		Namespace: config.AgentConfig().Namespace,
+		Name:      ac.AgentName,
+		Namespace: ac.Namespace,
+		Kind:      string(ac.WorkloadKind),
 		PodName:   config.PodName(),
 		PodIp:     config.PodIP(),
+		PodUid:    string(config.PodUID()),
 		ApiPort:   int32(grpcPort),
+		FtpPort:   int32(ftpPort),
+		SftpPort:  int32(sftpPort),
 		Product:   "telepresence",
 		Version:   version.Version,
 		Mechanisms: []*rpc.AgentInfo_Mechanism{
@@ -309,6 +345,7 @@ func StartServices(ctx context.Context, g *dgroup.Group, config Config, srv Stat
 				Version: version.Version,
 			},
 		},
+		Containers: containers,
 	}, nil
 }
 

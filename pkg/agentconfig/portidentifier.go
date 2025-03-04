@@ -2,6 +2,7 @@ package agentconfig
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -49,6 +50,22 @@ func (spi PortIdentifier) HasProto() bool {
 	return strings.IndexByte(string(spi), ProtoSeparator) > 0
 }
 
+// Validate checks that the PortIdentifier has a valid protocol, and a valid name or number.
+func (spi PortIdentifier) Validate() error {
+	s := string(spi)
+	p := core.ProtocolTCP
+	if ix := strings.IndexByte(s, ProtoSeparator); ix > 0 {
+		p = core.Protocol(s[ix+1:])
+		s = s[0:ix]
+	}
+	switch p {
+	case core.ProtocolTCP, core.ProtocolUDP:
+		return ValidatePort(s)
+	default:
+		return fmt.Errorf("invalid protocol %q", p)
+	}
+}
+
 // ProtoAndNameOrNumber returns the protocol, and the name or number.
 func (spi PortIdentifier) ProtoAndNameOrNumber() (core.Protocol, string, uint16) {
 	s := string(spi)
@@ -63,6 +80,18 @@ func (spi PortIdentifier) ProtoAndNameOrNumber() (core.Protocol, string, uint16)
 	return p, s, 0
 }
 
+// String will consistently yield the identifier without the protocol suffix when the protocol is TCP
+// and otherwise always use the suffix "/UDP".
 func (spi PortIdentifier) String() string {
-	return string(spi)
+	p, s, n := spi.ProtoAndNameOrNumber()
+	switch {
+	case s == "" && p == core.ProtocolTCP:
+		return strconv.Itoa(int(n))
+	case s != "" && p == core.ProtocolTCP:
+		return s
+	case s == "":
+		return fmt.Sprintf("%d/%s", n, p)
+	default:
+		return fmt.Sprintf("%s/%s", s, p)
+	}
 }

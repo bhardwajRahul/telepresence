@@ -2,40 +2,85 @@ package trafficmgr
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
+	"slices"
 
-	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
-	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/yaml"
+	grpcCodes "google.golang.org/grpc/codes"
+	grpcStatus "google.golang.org/grpc/status"
 
 	"github.com/datawire/dlib/dlog"
-	"github.com/datawire/k8sapi/pkg/k8sapi"
-	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
-	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
+	"github.com/telepresenceio/telepresence/rpc/v2/manager"
 )
 
-func (s *session) getCurrentSidecarsInNamespace(ctx context.Context, ns string) map[string]*agentconfig.Sidecar {
-	// Load configmap entry from the telepresence-agents configmap
-	cm, err := k8sapi.GetK8sInterface(ctx).CoreV1().ConfigMaps(ns).Get(ctx, agentconfig.ConfigMap, meta.GetOptions{})
+func (s *session) watchAgentsLoop(ctx context.Context) error {
+	stream, err := s.managerClient.WatchAgents(ctx, s.SessionInfo())
 	if err != nil {
-		if !k8sErrors.IsNotFound(err) {
-			dlog.Error(ctx, errcat.User.New(err))
+		return fmt.Errorf("manager.WatchAgents: %w", err)
+	}
+	for ctx.Err() == nil {
+		snapshot, err := stream.Recv()
+		if err != nil {
+			// Handle as if we had an empty snapshot. This will ensure that port forwards and volume mounts are canceled correctly.
+			s.handleAgentSnapshot(ctx, nil)
+			if ctx.Err() != nil || errors.Is(err, io.EOF) || grpcStatus.Code(err) == grpcCodes.NotFound {
+				// Normal termination
+				return nil
+			}
+			return fmt.Errorf("manager.WatchAgents recv: %w", err)
 		}
-		return nil
+		s.handleAgentSnapshot(ctx, snapshot.Agents)
 	}
+	return nil
+}
 
-	if cm.Data == nil {
-		dlog.Debugf(ctx, "unable to read data in configmap %q", agentconfig.ConfigMap)
-	}
+func (s *session) handleAgentSnapshot(ctx context.Context, infos []*manager.AgentInfo) {
+	s.ingestTracker.initSnapshot()
+	s.setCurrentAgents(infos)
 
-	sidecars := make(map[string]*agentconfig.Sidecar, len(cm.Data))
-	for workload, sidecar := range cm.Data {
-		var cfg agentconfig.Sidecar
-		if err = yaml.Unmarshal([]byte(sidecar), &cfg); err != nil {
-			dlog.Errorf(ctx, "Unable to parse entry for %q in configmap %q: %v", workload, agentconfig.ConfigMap, err)
-			continue
+	// infoForKey returns the AgentInfos that matches the ingestKey
+	infosForKey := func(key ingestKey) (ais []*manager.AgentInfo) {
+		for _, info := range infos {
+			if info.Name == key.workload {
+				for cn := range info.Containers {
+					if cn == key.container {
+						ais = append(ais, info)
+					}
+				}
+			}
 		}
-		sidecars[workload] = &cfg
+		return ais
 	}
 
-	return sidecars
+	s.currentIngests.Range(func(key ingestKey, ig *ingest) bool {
+		ais := infosForKey(key)
+		if len(ais) > 0 {
+			if slices.IndexFunc(ais, func(cai *manager.AgentInfo) bool { return cai.PodName == ig.PodName }) < 0 {
+				// The pod selected for the ingest is no longer active, so replace it.
+				ai := ais[0]
+				err := s.translateContainerEnv(ctx, ai, ig.container)
+				if err != nil {
+					dlog.Errorf(ctx, "failed to translate container env: %v", err)
+				}
+				ig.AgentInfo = ai
+			}
+			s.ingestTracker.start(ig.podAccess(s.rootDaemon))
+		}
+		return true
+	})
+	s.ingestTracker.cancelUnwanted(ctx)
+}
+
+func (s *session) getCurrentAgents() []*manager.AgentInfo {
+	s.currentInterceptsLock.Lock()
+	agents := s.currentAgents
+	s.currentInterceptsLock.Unlock()
+	return agents
+}
+
+func (s *session) setCurrentAgents(agents []*manager.AgentInfo) {
+	s.currentInterceptsLock.Lock()
+	s.currentAgents = agents
+	s.currentInterceptsLock.Unlock()
 }

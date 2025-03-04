@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"time"
 	"unsafe"
 
@@ -20,7 +21,7 @@ const (
 	recursionTestTimeout    = 1500 * time.Millisecond
 )
 
-func (s *Server) Worker(c context.Context, dev vif.Device, configureDNS func(net.IP, *net.UDPAddr)) error {
+func (s *Server) Worker(c context.Context, dev vif.Device, configureDNS func(netip.Addr, *net.UDPAddr)) error {
 	listener, err := newLocalUDPListener(c)
 	if err != nil {
 		return err
@@ -29,7 +30,7 @@ func (s *Server) Worker(c context.Context, dev vif.Device, configureDNS func(net
 	if err != nil {
 		return err
 	}
-	configureDNS(s.remoteIP, dnsAddr)
+	configureDNS(s.RemoteIP, dnsAddr)
 
 	var pool FallbackPool
 	if client.GetConfig(c).OSSpecific().Network.DNSWithFallback {
@@ -39,7 +40,12 @@ func (s *Server) Worker(c context.Context, dev vif.Device, configureDNS func(net
 			dlog.Warnf(c, "Failed to get DNS servers: %v", err)
 		} else {
 			for _, dnsServer := range dnsServers {
-				p, err := NewConnPool(dnsServer, 10)
+				addr, err := netip.ParseAddr(dnsServer)
+				if err != nil {
+					dlog.Warn(c, err)
+					continue
+				}
+				p, err := NewConnPool(addr, 10)
 				if err == nil {
 					dlog.Infof(c, "Using fallback DNS server: %s", dnsServer)
 					pool = p
@@ -62,7 +68,7 @@ func (s *Server) Worker(c context.Context, dev vif.Device, configureDNS func(net
 		defer func() {
 			c, cancel := context.WithTimeout(context.WithoutCancel(c), 5*time.Second)
 			s.Lock()
-			_ = dev.SetDNS(c, s.clusterDomain, s.remoteIP, nil)
+			_ = dev.SetDNS(c, s.clusterDomain, s.RemoteIP, nil)
 			s.Unlock()
 			cancel()
 		}()
@@ -70,14 +76,14 @@ func (s *Server) Worker(c context.Context, dev vif.Device, configureDNS func(net
 			return err
 		}
 		s.processSearchPaths(g, s.updateRouterDNS, dev)
-		return s.Run(c, make(chan struct{}), []net.PacketConn{listener}, pool, s.resolveInCluster)
+		return s.Run(c, make(chan struct{}), []net.PacketConn{listener}, pool)
 	})
 	return g.Wait()
 }
 
 func (s *Server) updateRouterDNS(c context.Context, dev vif.Device) error {
 	s.Lock()
-	err := dev.SetDNS(c, s.clusterDomain, s.remoteIP, s.search)
+	err := dev.SetDNS(c, s.clusterDomain, s.RemoteIP, s.search)
 	s.Unlock()
 	s.flushDNS()
 	if err != nil {

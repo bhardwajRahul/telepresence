@@ -2,30 +2,32 @@ package integration_test
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/go-json-experiment/json"
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/cli/values"
 	"helm.sh/helm/v3/pkg/getter"
+	rbac "k8s.io/api/rbac/v1"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/tools/clientcmd/api"
 
 	"github.com/datawire/dlib/dlog"
-	"github.com/datawire/k8sapi/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
+	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/helm"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/userd/k8s"
 	"github.com/telepresenceio/telepresence/v2/pkg/dos"
+	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/v2/pkg/version"
 )
 
-const ManagerAppName = "traffic-manager"
+const ManagerAppName = agentmap.ManagerAppName
 
 type installSuite struct {
 	itest.Suite
@@ -54,7 +56,19 @@ func getHelmConfig(ctx context.Context, clientGetter genericclioptions.RESTClien
 	return helmConfig, nil
 }
 
+func (is *installSuite) AmendSuiteContext(ctx context.Context) context.Context {
+	if !(is.ManagerVersion().EQ(is.ClientVersion()) || is.ClientIsVersion(">2.21.x")) {
+		// Need to use the built executable because the client version doesn't handle the --version flag.
+		exe, _ := is.Executable()
+		ctx = itest.WithExecutable(ctx, exe)
+	}
+	return ctx
+}
+
 func (is *installSuite) Test_UpgradeRetainsValues() {
+	if is.ClientIsVersion("<2.22.0") && !is.ManagerVersion().EQ(is.ClientVersion()) {
+		is.T().Skip("Not part of compatibility tests. Client < 2.22.0 cannot handle helm --version flag.")
+	}
 	ctx := is.Context()
 	rq := is.Require()
 	is.TelepresenceHelmInstallOK(ctx, false, "--set", "logLevel=debug")
@@ -65,7 +79,7 @@ func (is *installSuite) Test_UpgradeRetainsValues() {
 	rq.NoError(err)
 
 	getValues := func() (map[string]any, error) {
-		return action.NewGetValues(helmConfig).Run("traffic-manager")
+		return action.NewGetValues(helmConfig).Run(agentmap.ManagerAppName)
 	}
 	containsKey := func(m map[string]any, key string) bool {
 		_, ok := m[key]
@@ -74,9 +88,13 @@ func (is *installSuite) Test_UpgradeRetainsValues() {
 
 	oldValues, err := getValues()
 	rq.NoError(err)
+	args := []string{"helm", "upgrade", "--namespace", is.ManagerNamespace()}
+	if !is.ManagerVersion().EQ(is.ClientVersion()) {
+		args = append(args, "--version", is.ManagerVersion().String())
+	}
 
 	is.Run("default reuse-values", func() {
-		itest.TelepresenceOk(is.Context(), "helm", "upgrade", "--namespace", is.ManagerNamespace())
+		itest.TelepresenceOk(is.Context(), args...)
 		newValues, err := getValues()
 		if is.NoError(err) {
 			is.Equal(oldValues, newValues)
@@ -85,7 +103,7 @@ func (is *installSuite) Test_UpgradeRetainsValues() {
 
 	is.Run("default reset-values", func() {
 		// Setting a value means that the default behavior is to reset old values.
-		itest.TelepresenceOk(is.Context(), "helm", "upgrade", "--namespace", is.ManagerNamespace(), "--set", "apiPort=8765")
+		itest.TelepresenceOk(is.Context(), append(args, "--set", "apiPort=8765")...)
 		newValues, err := getValues()
 		if is.NoError(err) {
 			is.Equal(8765.0, newValues["apiPort"])
@@ -95,7 +113,7 @@ func (is *installSuite) Test_UpgradeRetainsValues() {
 
 	is.Run("explicit reuse-values", func() {
 		// Set new value and enforce merge with of old values.
-		itest.TelepresenceOk(is.Context(), "helm", "upgrade", "--namespace", is.ManagerNamespace(), "--set", "logLevel=debug", "--reuse-values")
+		itest.TelepresenceOk(is.Context(), append(args, "--set", "logLevel=debug", "--reuse-values")...)
 		newValues, err := getValues()
 		if is.NoError(err) {
 			is.Equal(8765.0, newValues["apiPort"])
@@ -105,7 +123,7 @@ func (is *installSuite) Test_UpgradeRetainsValues() {
 
 	is.Run("explicit reset-values", func() {
 		// Enforce reset of old values.
-		itest.TelepresenceOk(is.Context(), "helm", "upgrade", "--namespace", is.ManagerNamespace(), "--reset-values")
+		itest.TelepresenceOk(is.Context(), append(args, "--reset-values")...)
 		newValues, err := getValues()
 		if is.NoError(err) {
 			is.False(containsKey(newValues, "apiPort"))  // Should be back at default
@@ -115,25 +133,37 @@ func (is *installSuite) Test_UpgradeRetainsValues() {
 }
 
 func (is *installSuite) Test_HelmTemplateInstall() {
+	if !(is.ManagerVersion().EQ(version.Structured) && is.ClientVersion().EQ(version.Structured)) {
+		is.T().Skip("Not part of compatibility tests. PackageHelmChart assumes current version.")
+	}
 	ctx := is.Context()
 	require := is.Require()
 
 	chart, err := is.PackageHelmChart(ctx)
 	require.NoError(err)
-	values := is.GetSetArgsForHelm(ctx, map[string]string{}, false)
-	values = append([]string{"template", "traffic-manager", chart, "-n", is.ManagerNamespace()}, values...)
+	values := is.GetSetArgsForHelm(ctx, map[string]any{
+		"clientRbac.create": true,
+		"clientRbac.subjects": []rbac.Subject{{
+			Kind:      "ServiceAccount",
+			Name:      itest.TestUser,
+			Namespace: is.ManagerNamespace(),
+		}},
+		"managerRbac.create": true,
+	}, false)
+	require.NoError(err)
+	values = append([]string{"template", agentmap.ManagerAppName, chart, "-n", is.ManagerNamespace()}, values...)
 	manifest, err := itest.Output(ctx, "helm", values...)
 	require.NoError(err)
 	out := dlog.StdLogger(ctx, dlog.LogLevelInfo).Writer()
 	logCtx := dos.WithStdout(dos.WithStderr(ctx, out), out)
-	require.NoError(itest.Kubectl(dos.WithStdin(logCtx, strings.NewReader(manifest)), is.ManagerNamespace(), "apply", "-f", "-"))
+	require.NoError(itest.Kubectl(dos.WithStdin(logCtx, strings.NewReader(manifest)), "", "apply", "-f", "-"))
 	defer func() {
 		// Sometimes the traffic-agents configmap gets wiped, causing the delete command to fail, hence we don't require.NoError
-		_ = itest.Kubectl(dos.WithStdin(logCtx, strings.NewReader(manifest)), is.ManagerNamespace(), "delete", "-f", "-")
+		_ = itest.Kubectl(dos.WithStdin(logCtx, strings.NewReader(manifest)), "", "delete", "-f", "-")
 	}()
-	require.NoError(itest.RolloutStatusWait(ctx, is.ManagerNamespace(), "deploy/traffic-manager"))
-	is.CapturePodLogs(ctx, "traffic-manager", "", is.ManagerNamespace())
-	stdout := itest.TelepresenceOk(itest.WithUser(ctx, "default"), "connect")
+	require.NoError(itest.RolloutStatusWait(ctx, is.ManagerNamespace(), "deploy/"+agentmap.ManagerAppName))
+	is.CapturePodLogs(ctx, agentmap.ManagerAppName, "", is.ManagerNamespace())
+	stdout := is.TelepresenceConnect(ctx)
 	is.Contains(stdout, "Connected to context")
 	itest.TelepresenceQuitOk(ctx)
 }
@@ -167,15 +197,20 @@ func (is *installSuite) Test_EnsureManager_toleratesFailedInstall() {
 	failCtx := itest.WithConfig(ctx, func(cfg client.Config) {
 		cfg.Timeouts().PrivateHelm = 20 * time.Second // Give it time to discover the ImagePullbackOff error
 	})
-	require.Error(ensureTrafficManager(failCtx, kc))
+
+	err := ensureTrafficManager(failCtx, kc)
+	require.Error(err)
+	dlog.Infof(ctx, "Got expected install failure: %v", err)
 	restoreVersion()
 
 	ctx = itest.WithConfig(ctx, func(cfg client.Config) {
 		cfg.Timeouts().PrivateHelm = 20 * time.Second // Time to wait before pending state makes us assume it's stuck.
 	})
-	var err error
 	if !is.Eventually(func() bool {
 		err = ensureTrafficManager(ctx, kc)
+		if err != nil {
+			dlog.Errorf(ctx, "ensureTrafficManager failed: %v", err)
+		}
 		return err == nil
 	}, time.Minute, 5*time.Second) {
 		is.Fail(fmt.Sprintf("Unable to install proper manager after failed install: %v", err))
@@ -188,12 +223,12 @@ func (is *installSuite) Test_RemoveManager_canUninstall() {
 	ctx, kc := is.cluster(ctx, "", is.ManagerNamespace())
 
 	require.NoError(ensureTrafficManager(ctx, kc))
-	require.NoError(helm.DeleteTrafficManager(ctx, kc.Kubeconfig, kc.GetManagerNamespace(), true, &helm.Request{}))
+	require.NoError(helm.DeleteTrafficManager(ctx, kc.Kubeconfig, k8s.GetManagerNamespace(ctx), true, &helm.Request{}))
 	// We want to make sure that we can re-install the manager after it's been uninstalled,
 	// so try to ensureManager again.
 	require.NoError(ensureTrafficManager(ctx, kc))
 	// Uninstall the manager one last time -- this should behave the same way as the previous uninstall
-	require.NoError(helm.DeleteTrafficManager(ctx, kc.Kubeconfig, kc.GetManagerNamespace(), true, &helm.Request{}))
+	require.NoError(helm.DeleteTrafficManager(ctx, kc.Kubeconfig, k8s.GetManagerNamespace(ctx), true, &helm.Request{}))
 }
 
 func (is *installSuite) Test_EnsureManager_upgrades_and_values() {
@@ -247,7 +282,7 @@ func (is *installSuite) Test_No_Upgrade() {
 	jvp, err := json.Marshal(vp)
 	require.NoError(err)
 
-	require.NoError(helm.EnsureTrafficManager(ctx, kc.Kubeconfig, kc.GetManagerNamespace(), &helm.Request{
+	require.NoError(helm.EnsureTrafficManager(ctx, kc.Kubeconfig, k8s.GetManagerNamespace(ctx), &helm.Request{
 		Type:       helm.Upgrade,
 		ValuesJson: jvp,
 	}))
@@ -292,6 +327,6 @@ func ensureTrafficManager(ctx context.Context, kc *k8s.Cluster) error {
 	return helm.EnsureTrafficManager(
 		ctx,
 		kc.Kubeconfig,
-		kc.GetManagerNamespace(),
+		k8s.GetManagerNamespace(ctx),
 		&helm.Request{Type: helm.Install})
 }

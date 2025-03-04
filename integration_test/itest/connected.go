@@ -9,14 +9,14 @@ import (
 )
 
 type connected struct {
-	NamespacePair
+	TrafficManager
 }
 
-func WithConnected(np NamespacePair, f func(ctx context.Context, ch NamespacePair)) {
+func WithConnected(np TrafficManager, f func(ctx context.Context, ch TrafficManager)) {
 	np.HarnessT().Run("Test_Connected", func(t *testing.T) {
 		ctx := WithT(np.HarnessContext(), t)
 		require.NoError(t, np.GeneralError())
-		ch := &connected{NamespacePair: np}
+		ch := &connected{TrafficManager: np}
 		ch.PushHarness(ctx, ch.setup, ch.tearDown)
 		defer ch.PopHarness()
 		f(ctx, ch)

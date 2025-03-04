@@ -19,6 +19,7 @@ import (
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/daemon"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/socket"
 	"github.com/telepresenceio/telepresence/v2/pkg/ioutil"
+	"github.com/telepresenceio/telepresence/v2/pkg/proc"
 )
 
 func version() *cobra.Command {
@@ -32,17 +33,18 @@ func version() *cobra.Command {
 			ann.UserDaemon:        ann.Optional,
 			ann.UpdateCheckFormat: ann.Tel2,
 		},
+		ValidArgsFunction: cobra.NoFileCompletions,
 	}
 }
 
 func addDaemonVersions(ctx context.Context, kvf *ioutil.KeyValueFormatter) {
-	remote := false
+	hasRootDaemon := true
 	userD := daemon.GetUserClient(ctx)
 	if userD != nil {
-		remote = userD.Containerized()
+		hasRootDaemon = !(proc.IsAdmin() || userD.Containerized())
 	}
 
-	if !remote {
+	if hasRootDaemon {
 		version, err := daemonVersion(ctx)
 		switch {
 		case err == nil:

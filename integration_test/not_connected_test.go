@@ -9,11 +9,12 @@ import (
 
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
+	"github.com/telepresenceio/telepresence/v2/pkg/labels"
 )
 
 type notConnectedSuite struct {
 	itest.Suite
-	itest.NamespacePair
+	itest.TrafficManager
 }
 
 func (s *notConnectedSuite) SuiteName() string {
@@ -21,8 +22,8 @@ func (s *notConnectedSuite) SuiteName() string {
 }
 
 func init() {
-	itest.AddTrafficManagerSuite("", func(h itest.NamespacePair) itest.TestingSuite {
-		return &notConnectedSuite{Suite: itest.Suite{Harness: h}, NamespacePair: h}
+	itest.AddTrafficManagerSuite("", func(h itest.TrafficManager) itest.TestingSuite {
+		return &notConnectedSuite{Suite: itest.Suite{Harness: h}, TrafficManager: h}
 	})
 }
 
@@ -67,8 +68,8 @@ func (s *notConnectedSuite) Test_ConnectingToOtherNamespace() {
 
 	s.Run("Installs Successfully", func() {
 		ctx := itest.WithNamespaces(s.Context(), &itest.Namespaces{
-			Namespace:         mgrSpace2,
-			ManagedNamespaces: []string{appSpace2},
+			Namespace: mgrSpace2,
+			Selector:  labels.SelectorFromNames(appSpace2),
 		})
 		s.TelepresenceHelmInstallOK(ctx, false)
 	})
@@ -94,7 +95,7 @@ func (s *notConnectedSuite) Test_ConnectingToOtherNamespace() {
 		ctx = itest.WithConfig(ctx, func(cfg client.Config) {
 			cfg.Cluster().DefaultManagerNamespace = mgrSpace2
 		})
-		stdout := itest.TelepresenceOk(itest.WithUser(ctx, "default"), "connect")
+		stdout := itest.TelepresenceOk(itest.WithUser(ctx, "default"), "connect", "--namespace", appSpace2)
 		s.Contains(stdout, "Connected to context")
 		stdout = itest.TelepresenceOk(ctx, "status")
 		s.Regexp(`Manager namespace\s+: `+mgrSpace2, stdout)
@@ -107,13 +108,13 @@ func (s *notConnectedSuite) Test_ConnectingToOtherNamespace() {
 
 func (s *notConnectedSuite) Test_ReportsNotConnected() {
 	ctx := s.Context()
-	itest.TelepresenceOk(itest.WithUser(ctx, "default"), "connect")
+	s.TelepresenceConnect(ctx)
 	itest.TelepresenceDisconnectOk(ctx)
 	stdout := itest.TelepresenceOk(ctx, "version")
-	rxVer := regexp.QuoteMeta(s.TelepresenceVersion())
-	s.Regexp(fmt.Sprintf(`Client\s*: %s`, rxVer), stdout)
-	s.Regexp(fmt.Sprintf(`Root Daemon\s*: %s`, rxVer), stdout)
-	s.Regexp(fmt.Sprintf(`User Daemon\s*: %s`, rxVer), stdout)
+	rxVer := regexp.QuoteMeta(s.ClientVersion().String())
+	s.Regexp(fmt.Sprintf(`Client\s*: v%s`, rxVer), stdout)
+	s.Regexp(fmt.Sprintf(`Root Daemon\s*: v%s`, rxVer), stdout)
+	s.Regexp(fmt.Sprintf(`User Daemon\s*: v%s`, rxVer), stdout)
 	s.Regexp(`Traffic Manager\s*: not connected`, stdout)
 }
 

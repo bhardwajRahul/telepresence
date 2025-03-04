@@ -27,10 +27,11 @@ spec:
     metadata:
       labels:
         app: rs-echo
+        budget: telepresence-test
     spec:
       containers:
         - name: rs-echo
-          image: jmalloc/echo-server
+          image: ghcr.io/telepresenceio/echo-server:latest
           ports:
             - name: http
               containerPort: 8080

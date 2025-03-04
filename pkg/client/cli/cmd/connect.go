@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"os"
+	"slices"
+
 	"github.com/spf13/cobra"
 
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/ann"
@@ -23,6 +26,13 @@ func connectCmd() *cobra.Command {
 				return err
 			}
 			return connect.RunConnect(cmd, args)
+		},
+		ValidArgsFunction: func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+			dir := cobra.ShellCompDirectiveNoFileComp
+			if slices.Contains(os.Args, "--") {
+				dir = cobra.ShellCompDirectiveDefault
+			}
+			return nil, dir
 		},
 	}
 	request = daemon.InitRequest(cmd)

@@ -1,4 +1,4 @@
-//go:build !docker
+//go:build !docker && !linked_fuseftp
 
 package remotefs
 
@@ -9,7 +9,7 @@ import (
 	"runtime"
 
 	"github.com/datawire/dlib/dlog"
-	"github.com/datawire/go-fuseftp/rpc"
+	"github.com/telepresenceio/go-fuseftp/rpc"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/socket"
 	"github.com/telepresenceio/telepresence/v2/pkg/proc"
 )

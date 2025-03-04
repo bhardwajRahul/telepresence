@@ -6,6 +6,7 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
+	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/pkg/routing"
 	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
 )
@@ -26,13 +27,17 @@ func NewTunnelingDevice(ctx context.Context, tunnelStreamCreator tunnel.StreamCr
 	if err != nil {
 		return nil, err
 	}
-	stack, err := NewStack(ctx, dev, tunnelStreamCreator)
+	ep, err := dev.NewLinkEndpoint()
+	if err != nil {
+		return nil, err
+	}
+	netStack, err := NewStack(ctx, ep, tunnelStreamCreator)
 	if err != nil {
 		return nil, err
 	}
 	router := NewRouter(dev, routingTable)
 	return &TunnelingDevice{
-		stack:  stack,
+		stack:  netStack,
 		Device: dev,
 		Router: router,
 		table:  routingTable,
@@ -50,8 +55,8 @@ func (vif *TunnelingDevice) Close(ctx context.Context) error {
 	return result
 }
 
-func (vif *TunnelingDevice) Run(ctx context.Context) error {
+func (vif *TunnelingDevice) Run(ctx context.Context) (err error) {
 	vif.stack.Wait()
-	vif.Device.Wait()
+	dlog.Debug(ctx, "vif ended")
 	return nil
 }

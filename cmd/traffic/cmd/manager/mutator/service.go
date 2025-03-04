@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,7 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"github.com/go-json-experiment/json"
+	"github.com/go-json-experiment/json/jsontext"
+	jsonv1 "github.com/go-json-experiment/json/v1"
 	admission "k8s.io/api/admission/v1"
 	core "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,7 +24,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 
 	"github.com/datawire/dlib/dcontext"
-	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dgroup"
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
@@ -43,7 +43,7 @@ type PatchOperation struct {
 type PatchOps []PatchOperation
 
 func (p PatchOps) String() string {
-	b, _ := json.MarshalIndent(p, "", "  ")
+	b, _ := json.Marshal(p, jsontext.WithIndent("  "))
 	return string(b)
 }
 
@@ -154,9 +154,6 @@ func ServeMutator(ctx context.Context, injectorCertGetter InjectorCertGetter) er
 		w.WriteHeader(http.StatusOK)
 	})
 
-	wrapped := otelhttp.NewHandler(mux, "agent-injector", otelhttp.WithSpanNameFormatter(func(operation string, r *http.Request) string {
-		return operation + r.URL.Path
-	}))
 	port := managerutil.GetEnv(ctx).MutatorWebhookPort
 	lg := dlog.StdLogger(ctx, dlog.MaxLogLevel(ctx))
 	lg.SetPrefix(fmt.Sprintf("%d/", port))
@@ -168,7 +165,7 @@ func ServeMutator(ctx context.Context, injectorCertGetter InjectorCertGetter) er
 		wr: lg.Writer(),
 	})
 	server := http.Server{
-		Handler:  wrapped,
+		Handler:  mux,
 		ErrorLog: lg,
 		BaseContext: func(n net.Listener) context.Context {
 			return ctx
@@ -271,11 +268,6 @@ func isNamespaceOfInterest(ns string) bool {
 }
 
 func serveRequest(ctx context.Context, r *http.Request, method string, f func(ctx context.Context)) (int, error) {
-	defer func() {
-		if r := recover(); r != nil {
-			dlog.Errorf(ctx, "%+v", derror.PanicToError(r))
-		}
-	}()
 	if r.Method != method {
 		return http.StatusMethodNotAllowed, fmt.Errorf("invalid method %s, only %s requests are allowed", r.Method, method)
 	}
@@ -285,12 +277,6 @@ func serveRequest(ctx context.Context, r *http.Request, method string, f func(ct
 
 // serveMutatingFunc is a helper function to call a mutatorFunc.
 func serveMutatingFunc(ctx context.Context, r *http.Request, mf mutatorFunc) ([]byte, int, error) {
-	defer func() {
-		if r := recover(); r != nil {
-			dlog.Errorf(ctx, "%+v", derror.PanicToError(r))
-		}
-	}()
-
 	// Request validations.
 	// Only handle POST requests with a body and json content type.
 	if r.Method != http.MethodPost {
@@ -345,9 +331,9 @@ func serveMutatingFunc(ctx context.Context, r *http.Request, mf mutatorFunc) ([]
 		response.Result = &meta.Status{
 			Message: err.Error(),
 		}
-	} else {
+	} else if patchOps != nil {
 		// Otherwise, encode the patch operations to JSON and return a positive response.
-		patchBytes, err := json.Marshal(patchOps)
+		patchBytes, err := json.Marshal(patchOps, jsonv1.OmitEmptyWithLegacyDefinition(true), json.FormatNilSliceAsNull(true))
 		if err != nil {
 			return nil, http.StatusInternalServerError, fmt.Errorf("could not marshal JSON patch: %v", err)
 		}
@@ -357,9 +343,9 @@ func serveMutatingFunc(ctx context.Context, r *http.Request, mf mutatorFunc) ([]
 	}
 
 	// Return the AdmissionReview with a response as JSON.
-	bytes, err := json.Marshal(&admissionReviewResponse)
+	b, err := json.Marshal(&admissionReviewResponse)
 	if err != nil {
 		return nil, http.StatusInternalServerError, fmt.Errorf("marshaling response: %v", err)
 	}
-	return bytes, http.StatusOK, nil
+	return b, http.StatusOK, nil
 }

@@ -4,12 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/user"
 	"slices"
@@ -19,48 +16,47 @@ import (
 	"time"
 
 	"github.com/blang/semver/v4"
-	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"github.com/google/uuid"
+	"github.com/puzpuzpuz/xsync/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/durationpb"
 	empty "google.golang.org/protobuf/types/known/emptypb"
-	"gopkg.in/yaml.v3"
 	core "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/homedir"
+	"sigs.k8s.io/yaml"
 
 	"github.com/datawire/dlib/dcontext"
-	"github.com/datawire/dlib/derror"
 	"github.com/datawire/dlib/dgroup"
 	"github.com/datawire/dlib/dlog"
 	"github.com/datawire/dlib/dtime"
-	"github.com/datawire/k8sapi/pkg/k8sapi"
-	"github.com/telepresenceio/telepresence/rpc/v2/authenticator"
 	"github.com/telepresenceio/telepresence/rpc/v2/common"
 	"github.com/telepresenceio/telepresence/rpc/v2/connector"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/connector"
 	rootdRpc "github.com/telepresenceio/telepresence/rpc/v2/daemon"
 	"github.com/telepresenceio/telepresence/rpc/v2/manager"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
-	authGrpc "github.com/telepresenceio/telepresence/v2/pkg/authenticator/grpc"
+	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/authenticator/patcher"
 	"github.com/telepresenceio/telepresence/v2/pkg/client"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/cli/daemon"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/k8sclient"
+	"github.com/telepresenceio/telepresence/v2/pkg/client/portforward"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/rootd"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/scout"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/socket"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/userd"
 	"github.com/telepresenceio/telepresence/v2/pkg/client/userd/k8s"
-	"github.com/telepresenceio/telepresence/v2/pkg/dnet"
 	"github.com/telepresenceio/telepresence/v2/pkg/errcat"
-	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
+	"github.com/telepresenceio/telepresence/v2/pkg/informer"
+	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/v2/pkg/matcher"
 	"github.com/telepresenceio/telepresence/v2/pkg/proc"
 	"github.com/telepresenceio/telepresence/v2/pkg/restapi"
+	"github.com/telepresenceio/telepresence/v2/pkg/workload"
 )
 
 type apiServer struct {
@@ -73,6 +69,18 @@ type apiMatcher struct {
 	metadata       map[string]string
 }
 
+type workloadInfoKey struct {
+	kind manager.WorkloadInfo_Kind
+	name string
+}
+
+type workloadInfo struct {
+	uid              types.UID
+	state            workload.State
+	agentState       manager.WorkloadInfo_AgentState
+	interceptClients []string
+}
+
 type session struct {
 	*k8s.Cluster
 	rootDaemon         rootdRpc.DaemonClient
@@ -81,9 +89,6 @@ type session struct {
 	// local information
 	installID string // telepresence's install ID
 	clientID  string // "laptop-username@laptop-hostname"
-
-	// Kubernetes Port Forward Dialer
-	pfDialer dnet.PortForwardDialer
 
 	// manager client
 	managerClient manager.ManagerClient
@@ -102,12 +107,25 @@ type session struct {
 
 	sessionInfo *manager.SessionInfo // sessionInfo returned by the traffic-manager
 
-	wlWatcher *workloadsAndServicesWatcher
+	workloadsLock sync.Mutex
 
-	// currentInterceptsLock ensures that all accesses to currentIntercepts, currentMatchers,
+	// Map of manager.WorkloadInfo split into namespace, key of kind and name, and workloadInfo
+	workloads map[string]map[workloadInfoKey]workloadInfo
+
+	workloadSubscribers map[uuid.UUID]chan struct{}
+
+	// currentIngests is tracks the ingests that are active in this session.
+	currentIngests *xsync.MapOf[ingestKey, *ingest]
+
+	ingestTracker *podAccessTracker
+
+	// currentInterceptsLock ensures that all accesses to currentAgents, currentIntercepts, currentMatchers,
 	// currentAPIServers, interceptWaiters, and ingressInfo are synchronized
 	//
 	currentInterceptsLock sync.Mutex
+
+	// currentAgents is the latest snapshot returned by the agents watcher.
+	currentAgents []*manager.AgentInfo
 
 	// currentIntercepts is the latest snapshot returned by the intercept watcher. It
 	// is keyeed by the intercept ID
@@ -129,8 +147,6 @@ type session struct {
 
 	isPodDaemon bool
 
-	sessionConfig client.Config
-
 	// done is closed when the session ends
 	done chan struct{}
 
@@ -148,12 +164,6 @@ func NewSession(
 	cr := cri.Request()
 	connectStart := time.Now()
 	defer func() {
-		if r := recover(); r != nil {
-			rc = ctx
-			err := derror.PanicToError(r)
-			dlog.Errorf(ctx, "%+v", err)
-			info = connectError(connector.ConnectInfo_DAEMON_FAILED, err)
-		}
 		if info.Error == connector.ConnectInfo_UNSPECIFIED {
 			scout.Report(ctx, "connect",
 				scout.Entry{
@@ -185,18 +195,22 @@ func NewSession(
 	}()
 
 	dlog.Info(ctx, "Connecting to k8s cluster...")
-	cluster, err := k8s.ConnectCluster(ctx, cr, config)
+	ctx, cluster, err := k8s.ConnectCluster(ctx, cr, config)
 	if err != nil {
 		dlog.Errorf(ctx, "unable to track k8s cluster: %+v", err)
 		return ctx, nil, connectError(rpc.ConnectInfo_CLUSTER_FAILED, err)
 	}
 	dlog.Infof(ctx, "Connected to context %s, namespace %s (%s)", cluster.Context, cluster.Namespace, cluster.Server)
+	ctx = portforward.WithRestConfig(ctx, cluster.Kubeconfig.RestConfig)
 
 	ctx = cluster.WithJoinedClientSetInterface(ctx)
-	scout.SetMetadatum(ctx, "cluster_id", cluster.GetClusterId(ctx))
 
 	dlog.Info(ctx, "Connecting to traffic manager...")
-	tmgr, err := connectMgr(ctx, cluster, scout.InstallID(ctx), cr)
+	installID, err := client.InstallID(ctx)
+	if err != nil {
+		return ctx, nil, connectError(rpc.ConnectInfo_TRAFFIC_MANAGER_FAILED, err)
+	}
+	tmgr, err := connectMgr(ctx, cluster, installID, cr)
 	if err != nil {
 		dlog.Errorf(ctx, "Unable to connect to session: %s", err)
 		return ctx, nil, connectError(rpc.ConnectInfo_TRAFFIC_MANAGER_FAILED, err)
@@ -205,33 +219,42 @@ func NewSession(
 	// store session in ctx for reporting
 	ctx = scout.WithSession(ctx, tmgr)
 
-	tmgr.sessionConfig = client.GetDefaultConfig()
+	var tmCfg client.Config
 	cliCfg, err := tmgr.managerClient.GetClientConfig(ctx, &empty.Empty{})
 	if err != nil {
 		if status.Code(err) != codes.Unimplemented {
 			dlog.Warnf(ctx, "Failed to get remote config from traffic manager: %v", err)
 		}
+		tmCfg = client.GetDefaultConfig()
 	} else {
-		if dlog.MaxLogLevel(ctx) >= dlog.LogLevelDebug {
-			dlog.Debug(ctx, "Applying client configuration from cluster")
-			sc := bufio.NewScanner(bytes.NewReader(cliCfg.ConfigYaml))
-			for sc.Scan() {
-				dlog.Debug(ctx, sc.Text())
-			}
-		}
-		if err := yaml.Unmarshal(cliCfg.ConfigYaml, tmgr.sessionConfig); err != nil {
-			dlog.Warnf(ctx, "Failed to deserialize remote config: %v", err)
-		}
-		if err := tmgr.ApplyConfig(ctx); err != nil {
-			dlog.Warnf(ctx, "failed to apply config from traffic-manager: %v", err)
-		}
-		if err := cluster.AddRemoteKubeConfigExtension(ctx, cliCfg.ConfigYaml); err != nil {
-			dlog.Warnf(ctx, "Failed to set remote kubeconfig values: %v", err)
+		tmCfg, err = client.ParseConfigYAML(ctx, "client configuration from cluster", cliCfg.ConfigYaml)
+		if err != nil {
+			dlog.Warn(ctx, err.Error())
 		}
 	}
-	ctx = dnet.WithPortForwardDialer(ctx, tmgr.pfDialer)
 
-	oi := tmgr.getOutboundInfo(ctx, cr)
+	// Merge traffic-manager's reported config, but get priority to the local config.
+	cfg := client.GetConfig(ctx)
+	if tmCfg != nil {
+		cfg = tmCfg.Merge(cfg)
+		rt := cfg.Routing()
+		rt.NeverProxy = append(rt.NeverProxy, tmCfg.Routing().NeverProxy...)
+		ctx = client.WithConfig(ctx, cfg)
+	}
+	if err = tmgr.ApplyConfig(ctx); err != nil {
+		dlog.Warn(ctx, err.Error())
+	}
+	if dlog.MaxLogLevel(ctx) >= dlog.LogLevelDebug {
+		dlog.Debug(ctx, "Applying client configuration")
+		buf, _ := client.MarshalJSON(cfg)
+		buf, _ = yaml.JSONToYAML(buf)
+		sc := bufio.NewScanner(bytes.NewReader(buf))
+		for sc.Scan() {
+			dlog.Debug(ctx, sc.Text())
+		}
+	}
+
+	oi := tmgr.getNetworkInfo(ctx, cr)
 	if !userd.GetService(ctx).RootSessionInProcess() {
 		// Connect to the root daemon if it is running. It's the CLI that starts it initially
 		rootRunning, err := socket.IsRunning(ctx, socket.RootDaemonPath(ctx))
@@ -239,32 +262,25 @@ func NewSession(
 			return ctx, nil, connectError(rpc.ConnectInfo_DAEMON_FAILED, err)
 		}
 		if !rootRunning {
-			return ctx, nil, connectError(rpc.ConnectInfo_DAEMON_FAILED, errors.New("rot daemon is not running"))
+			return ctx, nil, connectError(rpc.ConnectInfo_DAEMON_FAILED, errors.New("root daemon is not running"))
 		}
 
 		if client.GetConfig(ctx).Cluster().ConnectFromRootDaemon {
 			// Root daemon needs this to authenticate with the cluster. Potential exec configurations in the kubeconfig
 			// must be executed by the user, not by root.
 			konfig, err := patcher.CreateExternalKubeConfig(ctx, config.ClientConfig, cluster.Context, func([]string) (string, string, error) {
-				s := userd.GetService(ctx)
-				if _, ok := s.Server().GetServiceInfo()[authenticator.Authenticator_ServiceDesc.ServiceName]; !ok {
-					authGrpc.RegisterAuthenticatorServer(s.Server(), config.ClientConfig)
-				}
-				return client.GetExe(ctx), s.ListenerAddress(ctx), nil
+				return client.GetExe(ctx), userd.GetService(ctx).ListenerAddress(ctx), nil
 			}, nil)
 			if err != nil {
 				return ctx, nil, connectError(rpc.ConnectInfo_DAEMON_FAILED, err)
 			}
-			patcher.AnnotateOutboundInfo(ctx, oi, konfig.CurrentContext)
+			patcher.AnnotateNetworkConfig(ctx, oi, konfig.CurrentContext)
 		}
 	}
 
 	tmgr.rootDaemon, err = tmgr.connectRootDaemon(ctx, oi, cr.IsPodDaemon)
 	if err != nil {
 		tmgr.managerConn.Close()
-		return ctx, nil, connectError(rpc.ConnectInfo_DAEMON_FAILED, err)
-	}
-	if err != nil {
 		return ctx, nil, connectError(rpc.ConnectInfo_DAEMON_FAILED, err)
 	}
 
@@ -317,10 +333,6 @@ func (s *session) ManagerVersion() semver.Version {
 	return s.managerVersion
 }
 
-func (s *session) getSessionConfig() client.Config {
-	return s.sessionConfig
-}
-
 // connectMgr returns a session for the given cluster that is connected to the traffic-manager.
 func connectMgr(
 	ctx context.Context,
@@ -333,17 +345,13 @@ func connectMgr(
 	ctx, cancel := tos.TimeoutContext(ctx, client.TimeoutTrafficManagerConnect)
 	defer cancel()
 
-	err := CheckTrafficManagerService(ctx, cluster.GetManagerNamespace())
+	mgrNs := k8s.GetManagerNamespace(ctx)
+	err := CheckTrafficManagerService(ctx, mgrNs)
 	if err != nil {
 		return nil, err
 	}
 
-	dlog.Debug(ctx, "creating port-forward")
-	pfDialer, err := dnet.NewK8sPortForwardDialer(ctx, cluster.Kubeconfig.RestConfig, k8sapi.GetK8sInterface(ctx))
-	if err != nil {
-		return nil, err
-	}
-	conn, mClient, vi, err := k8sclient.ConnectToManager(ctx, cluster.GetManagerNamespace(), pfDialer.Dial)
+	conn, mClient, vi, err := k8sclient.ConnectToManager(ctx, mgrNs)
 	if err != nil {
 		return nil, err
 	}
@@ -400,6 +408,9 @@ func connectMgr(
 			Version:   client.Version(),
 		})
 		if err != nil {
+			if st, ok := status.FromError(err); ok && st.Code() == codes.FailedPrecondition {
+				return nil, errcat.User.New(st.Message())
+			}
 			return nil, client.CheckTimeout(ctx, fmt.Errorf("manager.ArriveAsClient: %w", err))
 		}
 		if err = SaveSessionInfoToUserCache(ctx, daemonID, si); err != nil {
@@ -420,38 +431,6 @@ func connectMgr(
 		managerName = "Traffic Manager"
 	}
 
-	extraAlsoProxy, err := parseCIDR(cr.GetAlsoProxy())
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse extra also proxy: %w", err)
-	}
-
-	extraNeverProxy, err := parseCIDR(cr.GetNeverProxy())
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse extra never proxy: %w", err)
-	}
-
-	extraAllow, err := parseCIDR(cr.GetAllowConflictingSubnets())
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse extra allow conflicting subnets: %w", err)
-	}
-
-	cluster.AlsoProxy = append(cluster.AlsoProxy, extraAlsoProxy...)
-	cluster.NeverProxy = append(cluster.NeverProxy, extraNeverProxy...)
-	cluster.AllowConflictingSubnets = append(cluster.AllowConflictingSubnets, extraAllow...)
-
-	knownWorkloadKinds, err := mClient.GetKnownWorkloadKinds(ctx, si)
-	if err != nil {
-		if status.Code(err) != codes.Unimplemented {
-			return nil, fmt.Errorf("failed to get known workload kinds: %w", err)
-		}
-		// Talking to an older traffic-manager, use legacy default types
-		knownWorkloadKinds = &manager.KnownWorkloadKinds{Kinds: []manager.WorkloadInfo_Kind{
-			manager.WorkloadInfo_DEPLOYMENT,
-			manager.WorkloadInfo_REPLICASET,
-			manager.WorkloadInfo_STATEFULSET,
-		}}
-	}
-
 	sess := &session{
 		Cluster:            cluster,
 		installID:          installID,
@@ -459,12 +438,13 @@ func connectMgr(
 		clientID:           clientID,
 		managerClient:      mClient,
 		managerConn:        conn,
-		pfDialer:           pfDialer,
 		managerName:        managerName,
 		managerVersion:     managerVersion,
 		sessionInfo:        si,
+		currentIngests:     xsync.NewMapOf[ingestKey, *ingest](),
+		ingestTracker:      newPodAccessTracker(),
+		workloads:          make(map[string]map[workloadInfoKey]workloadInfo),
 		interceptWaiters:   make(map[string]*awaitIntercept),
-		wlWatcher:          newWASWatcher(knownWorkloadKinds),
 		isPodDaemon:        cr.IsPodDaemon,
 		done:               make(chan struct{}),
 		subnetViaWorkloads: cr.SubnetViaWorkloads,
@@ -492,29 +472,11 @@ func (s *session) Remain(ctx context.Context) error {
 	return nil
 }
 
-func parseCIDR(cidr []string) ([]*iputil.Subnet, error) {
-	result := make([]*iputil.Subnet, 0)
-
-	if cidr == nil {
-		return result, nil
-	}
-
-	for i := range cidr {
-		_, ipNet, err := net.ParseCIDR(cidr[i])
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse CIDR %s: %w", cidr[i], err)
-		}
-		result = append(result, (*iputil.Subnet)(ipNet))
-	}
-
-	return result, nil
-}
-
 func CheckTrafficManagerService(ctx context.Context, namespace string) error {
 	dlog.Debug(ctx, "checking that traffic-manager exists")
 	coreV1 := k8sapi.GetK8sInterface(ctx).CoreV1()
-	if _, err := coreV1.Services(namespace).Get(ctx, "traffic-manager", meta.GetOptions{}); err != nil {
-		msg := fmt.Sprintf("unable to get service traffic-manager in %s: %v", namespace, err)
+	if _, err := coreV1.Services(namespace).Get(ctx, agentmap.ManagerAppName, meta.GetOptions{}); err != nil {
+		msg := fmt.Sprintf("unable to get service %s in %s: %v", agentmap.ManagerAppName, namespace, err)
 		se := &k8serrors.StatusError{}
 		if errors.As(err, &se) {
 			if se.Status().Code == http.StatusNotFound {
@@ -550,8 +512,6 @@ func connectError(t rpc.ConnectInfo_ErrType, err error) *rpc.ConnectInfo {
 func (s *session) updateDaemonNamespaces(c context.Context) {
 	const svcDomain = "svc"
 
-	s.wlWatcher.setNamespacesToWatch(c, s.GetCurrentNamespaces(true))
-
 	domains := s.GetCurrentNamespaces(false)
 	if !slices.Contains(domains, svcDomain) {
 		domains = append(domains, svcDomain)
@@ -566,13 +526,13 @@ func (s *session) updateDaemonNamespaces(c context.Context) {
 
 func (s *session) Epilog(ctx context.Context) {
 	_, _ = s.rootDaemon.Disconnect(ctx, &empty.Empty{})
-	_ = s.pfDialer.Close()
 	dlog.Info(ctx, "-- Session ended")
 	close(s.done)
 }
 
 func (s *session) StartServices(g *dgroup.Group) {
 	g.Go("remain", s.remainLoop)
+	g.Go("agents", s.watchAgentsLoop)
 	g.Go("intercept-port-forward", s.watchInterceptsHandler)
 	g.Go("dial-request-watcher", s.dialRequestWatcher)
 }
@@ -587,6 +547,8 @@ func runWithRetry(ctx context.Context, f func(context.Context) error) error {
 			if backoff > 3*time.Second {
 				backoff = 3 * time.Second
 			}
+		} else {
+			break
 		}
 	}
 	return nil
@@ -601,11 +563,7 @@ func (s *session) SessionInfo() *manager.SessionInfo {
 }
 
 func (s *session) ApplyConfig(ctx context.Context) error {
-	cfg, err := client.LoadConfig(ctx)
-	if err != nil {
-		return err
-	}
-	err = client.MergeAndReplace(ctx, s.sessionConfig, cfg, false)
+	err := client.ReloadDaemonLogLevel(ctx, false)
 	if err != nil {
 		return err
 	}
@@ -615,7 +573,7 @@ func (s *session) ApplyConfig(ctx context.Context) error {
 			s.SetMappedNamespaces(ctx, mns)
 		}
 	}
-	return err
+	return nil
 }
 
 // getInfosForWorkloads returns a list of workloads found in the given namespace that fulfils the given filter criteria.
@@ -623,54 +581,47 @@ func (s *session) getInfosForWorkloads(
 	ctx context.Context,
 	namespaces []string,
 	iMap map[string][]*manager.InterceptInfo,
-	sMap map[string]*rpc.WorkloadInfo_Sidecar,
+	gMap map[string][]*rpc.IngestInfo,
+	sMap map[string]string,
 	filter rpc.ListRequest_Filter,
 ) []*rpc.WorkloadInfo {
-	wiMap := make(map[types.UID]*rpc.WorkloadInfo)
-	s.wlWatcher.eachService(ctx, s.GetManagerNamespace(), namespaces, func(svc *core.Service) {
-		wls, err := s.wlWatcher.findMatchingWorkloads(ctx, svc)
-		if err != nil {
+	wiMap := make(map[string]*rpc.WorkloadInfo)
+	s.eachWorkload(namespaces, func(wlKind manager.WorkloadInfo_Kind, name, namespace string, info workloadInfo) {
+		kind := wlKind.String()
+		wlInfo := &rpc.WorkloadInfo{
+			Name:                 name,
+			Namespace:            namespace,
+			WorkloadResourceType: kind,
+			Uid:                  string(info.uid),
+		}
+		if info.state != workload.StateAvailable {
+			wlInfo.NotInterceptableReason = info.state.String()
+		}
+
+		var ok bool
+		filterMatch := rpc.ListRequest_EVERYTHING
+
+		filterMatch &= ^(rpc.ListRequest_REPLACEMENTS | rpc.ListRequest_INTERCEPTS)
+		if wlInfo.InterceptInfos, ok = iMap[name]; ok {
+			for _, ii := range wlInfo.InterceptInfos {
+				if ii.Spec.NoDefaultPort {
+					filterMatch |= rpc.ListRequest_REPLACEMENTS
+				} else {
+					filterMatch |= rpc.ListRequest_INTERCEPTS
+				}
+			}
+		}
+		if wlInfo.IngestInfos, ok = gMap[name]; !ok {
+			filterMatch &= ^rpc.ListRequest_INGESTS
+		}
+		if wlInfo.AgentVersion, ok = sMap[name]; !ok {
+			filterMatch &= ^rpc.ListRequest_INSTALLED_AGENTS
+		}
+		dlog.Debugf(ctx, "filter %d, filterMatch %d", filter, filterMatch)
+		if filter != 0 && filter&filterMatch == 0 {
 			return
 		}
-		for _, workload := range wls {
-			serviceUID := string(svc.UID)
-
-			if wlInfo, ok := wiMap[workload.GetUID()]; ok {
-				if _, ok := wlInfo.Services[serviceUID]; !ok {
-					wlInfo.Services[serviceUID] = &rpc.WorkloadInfo_ServiceReference{
-						Name:      svc.Name,
-						Namespace: svc.Namespace,
-						Ports:     getServicePorts(svc),
-					}
-				}
-				continue
-			}
-
-			name := workload.GetName()
-			dlog.Debugf(ctx, "Getting info for %s %s.%s, matching service %s.%s", workload.GetKind(), name, workload.GetNamespace(), svc.Name, svc.Namespace)
-
-			wlInfo := &rpc.WorkloadInfo{
-				Name:                 name,
-				Namespace:            workload.GetNamespace(),
-				WorkloadResourceType: workload.GetKind(),
-				Uid:                  string(workload.GetUID()),
-				Services: map[string]*rpc.WorkloadInfo_ServiceReference{
-					string(svc.UID): {
-						Name:      svc.Name,
-						Namespace: svc.Namespace,
-						Ports:     getServicePorts(svc),
-					},
-				},
-			}
-			var ok bool
-			if wlInfo.InterceptInfos, ok = iMap[name]; !ok && filter <= rpc.ListRequest_INTERCEPTS {
-				continue
-			}
-			if wlInfo.Sidecar, ok = sMap[name]; !ok && filter <= rpc.ListRequest_INSTALLED_AGENTS {
-				continue
-			}
-			wiMap[workload.GetUID()] = wlInfo
-		}
+		wiMap[fmt.Sprintf("%s:%s.%s", kind, name, namespace)] = wlInfo
 	})
 	wiz := make([]*rpc.WorkloadInfo, len(wiMap))
 	i := 0
@@ -682,47 +633,76 @@ func (s *session) getInfosForWorkloads(
 	return wiz
 }
 
-func getServicePorts(svc *core.Service) []*rpc.WorkloadInfo_ServiceReference_Port {
-	ports := make([]*rpc.WorkloadInfo_ServiceReference_Port, len(svc.Spec.Ports))
-	for i, p := range svc.Spec.Ports {
-		ports[i] = &rpc.WorkloadInfo_ServiceReference_Port{
-			Name: p.Name,
-			Port: p.Port,
-		}
-	}
-	return ports
-}
-
-func (s *session) waitForSync(ctx context.Context) {
-	s.wlWatcher.setNamespacesToWatch(ctx, s.GetCurrentNamespaces(true))
-	s.wlWatcher.waitForSync(ctx)
-}
-
 func (s *session) WatchWorkloads(c context.Context, wr *rpc.WatchWorkloadsRequest, stream userd.WatchWorkloadsStream) error {
-	s.waitForSync(c)
-	s.ensureWatchers(c, wr.Namespaces)
-	sCtx, sCancel := context.WithCancel(c)
-	// We need to make sure the subscription ends when we leave this method, since this is the one consuming the snapshotAvailable channel.
-	// Otherwise, the goroutine that writes to the channel will leak.
-	defer sCancel()
-	snapshotAvailable := s.wlWatcher.subscribe(sCtx)
+	id := uuid.New()
+	ch := make(chan struct{})
+	s.workloadsLock.Lock()
+	if s.workloadSubscribers == nil {
+		s.workloadSubscribers = make(map[uuid.UUID]chan struct{})
+	}
+	s.workloadSubscribers[id] = ch
+	s.workloadsLock.Unlock()
+
+	defer func() {
+		s.workloadsLock.Lock()
+		delete(s.workloadSubscribers, id)
+		s.workloadsLock.Unlock()
+	}()
+
+	send := func() error {
+		ws, err := s.WorkloadInfoSnapshot(c, wr.Namespaces, rpc.ListRequest_UNSPECIFIED)
+		if err != nil {
+			return err
+		}
+		return stream.Send(ws)
+	}
+
+	// Send initial snapshot
+	if err := send(); err != nil {
+		return err
+	}
 	for {
 		select {
-		case <-c.Done(): // if context is done (usually the session's context).
+		case <-c.Done():
 			return nil
-		case <-stream.Context().Done(): // if stream context is done.
-			return nil
-		case <-snapshotAvailable:
-			snapshot, err := s.workloadInfoSnapshot(c, wr.GetNamespaces(), rpc.ListRequest_INTERCEPTABLE)
-			if err != nil {
-				return status.Errorf(codes.Unavailable, "failed to create WorkloadInfoSnapshot: %v", err)
-			}
-			if err := stream.Send(snapshot); err != nil {
-				dlog.Errorf(c, "WatchWorkloads.Send() failed: %v", err)
+		case <-ch:
+			if err := send(); err != nil {
 				return err
 			}
 		}
 	}
+}
+
+func (s *session) ensureWatchers(ctx context.Context,
+	namespaces []string,
+) {
+	managerHasWatcherSupport := s.compareFinalizedManagerVersion(2, 20, 0) > 0
+
+	wg := sync.WaitGroup{}
+	wg.Add(len(namespaces))
+	for _, ns := range namespaces {
+		s.workloadsLock.Lock()
+		_, ok := s.workloads[ns]
+		s.workloadsLock.Unlock()
+		if ok {
+			wg.Done()
+		} else {
+			go func() {
+				var err error
+				if managerHasWatcherSupport {
+					err = s.workloadsWatcher(ctx, ns, &wg)
+				} else {
+					err = s.localWorkloadsWatcher(ctx, ns, &wg)
+				}
+				if err != nil {
+					dlog.Errorf(ctx, "error ensuring watcher for namespace %s: %v", ns, err)
+					return
+				}
+			}()
+			dlog.Debugf(ctx, "watcher for namespace %s started", ns)
+		}
+	}
+	wg.Wait()
 }
 
 func (s *session) WorkloadInfoSnapshot(
@@ -730,60 +710,30 @@ func (s *session) WorkloadInfoSnapshot(
 	namespaces []string,
 	filter rpc.ListRequest_Filter,
 ) (*rpc.WorkloadInfoSnapshot, error) {
-	s.waitForSync(ctx)
-	return s.workloadInfoSnapshot(ctx, namespaces, filter)
-}
-
-func (s *session) ensureWatchers(ctx context.Context,
-	namespaces []string,
-) {
-	dlog.Debugf(ctx, "Ensure watchers %v", namespaces)
-	wg := sync.WaitGroup{}
-	wg.Add(len(namespaces))
-	for _, ns := range namespaces {
-		if ns == "" {
-			ns = s.Namespace
-		}
-		wgp := &wg
-		s.wlWatcher.ensureStarted(ctx, ns, func(started bool) {
-			if started {
-				dlog.Debugf(ctx, "watchers for %s started", ns)
-			}
-			if wgp != nil {
-				wgp.Done()
-				wgp = nil
-			}
-		})
-	}
-	wg.Wait()
-}
-
-func (s *session) workloadInfoSnapshot(
-	ctx context.Context,
-	namespaces []string,
-	filter rpc.ListRequest_Filter,
-) (*rpc.WorkloadInfoSnapshot, error) {
 	is := s.getCurrentIntercepts()
-	s.ensureWatchers(ctx, namespaces)
 
 	var nss []string
-	if filter == rpc.ListRequest_INTERCEPTS {
-		// Special case, we don't care about namespaces in general. Instead, we use the connected namespace
-		nss = []string{s.Namespace}
-	} else {
-		nss = make([]string, 0, len(namespaces))
-		for _, ns := range namespaces {
-			ns = s.ActualNamespace(ns)
-			if ns != "" {
-				nss = append(nss, ns)
-			}
+	var sMap map[string]string
+	nss = make([]string, 0, len(namespaces))
+	for _, ns := range namespaces {
+		ns = s.ActualNamespace(ns)
+		if ns != "" {
+			nss = append(nss, ns)
 		}
 	}
 	if len(nss) == 0 {
 		// none of the namespaces are currently mapped
+		dlog.Debug(ctx, "No namespaces are mapped")
 		return &rpc.WorkloadInfoSnapshot{}, nil
 	}
-
+	if len(nss) == 1 && nss[0] == s.Namespace {
+		cas := s.getCurrentAgents()
+		sMap = make(map[string]string, len(cas))
+		for _, a := range cas {
+			sMap[a.Name] = a.Version
+		}
+	}
+	s.ensureWatchers(ctx, nss)
 	iMap := make(map[string][]*manager.InterceptInfo, len(is))
 nextIs:
 	for _, i := range is {
@@ -794,19 +744,13 @@ nextIs:
 			}
 		}
 	}
+	gMap := make(map[string][]*rpc.IngestInfo, s.currentIngests.Size())
+	s.currentIngests.Range(func(key ingestKey, ig *ingest) bool {
+		gMap[key.workload] = append(gMap[key.workload], ig.response())
+		return true
+	})
 
-	sMap := make(map[string]*rpc.WorkloadInfo_Sidecar)
-	for _, ns := range nss {
-		for k, v := range s.getCurrentSidecarsInNamespace(ctx, ns) {
-			data, err := json.Marshal(v)
-			if err != nil {
-				continue
-			}
-			sMap[k] = &rpc.WorkloadInfo_Sidecar{Json: data}
-		}
-	}
-
-	workloadInfos := s.getInfosForWorkloads(ctx, nss, iMap, sMap, filter)
+	workloadInfos := s.getInfosForWorkloads(ctx, nss, iMap, gMap, sMap, filter)
 	return &rpc.WorkloadInfoSnapshot{Workloads: workloadInfos}, nil
 }
 
@@ -827,7 +771,8 @@ func (s *session) remainLoop(c context.Context) error {
 				dlog.Errorf(c, "failed to delete session from user cache: %v", err)
 			}
 		}
-		s.managerConn.Close()
+		// Call Close() in separate go-routine because it might block.
+		go s.managerConn.Close()
 	}()
 
 	for {
@@ -844,7 +789,7 @@ func (s *session) remainLoop(c context.Context) error {
 
 func (s *session) UpdateStatus(c context.Context, cri userd.ConnectRequest) *rpc.ConnectInfo {
 	cr := cri.Request()
-	config, err := client.DaemonKubeconfig(c, cr)
+	c, config, err := client.DaemonKubeconfig(c, cr)
 	if err != nil {
 		return connectError(rpc.ConnectInfo_CLUSTER_FAILED, err)
 	}
@@ -869,7 +814,6 @@ func (s *session) UpdateStatus(c context.Context, cri userd.ConnectRequest) *rpc
 				Error:            rpc.ConnectInfo_MUST_RESTART,
 				ClusterContext:   s.Kubeconfig.Context,
 				ClusterServer:    s.Kubeconfig.Server,
-				ClusterId:        s.GetClusterId(c),
 				ManagerInstallId: s.GetManagerInstallId(c),
 			}
 		}
@@ -884,7 +828,7 @@ func (s *session) UpdateStatus(c context.Context, cri userd.ConnectRequest) *rpc
 	}
 
 	if s.SetMappedNamespaces(c, namespaces) {
-		if len(namespaces) == 0 && k8sclient.CanWatchNamespaces(c) {
+		if len(namespaces) == 0 && k8sapi.CanWatchNamespaces(c) {
 			s.StartNamespaceWatcher(c)
 		}
 		s.currentInterceptsLock.Lock()
@@ -904,18 +848,18 @@ func (s *session) status(c context.Context, initial bool) *rpc.ConnectInfo {
 	ret := &rpc.ConnectInfo{
 		ClusterContext:   cfg.Context,
 		ClusterServer:    cfg.Server,
-		ClusterId:        s.GetClusterId(c),
 		ManagerInstallId: s.GetManagerInstallId(c),
 		SessionInfo:      s.SessionInfo(),
 		ConnectionName:   s.daemonID.Name,
 		KubeFlags:        s.OriginalFlagMap,
 		Namespace:        s.Namespace,
+		Ingests:          s.getCurrentIngests(),
 		Intercepts:       &manager.InterceptInfoSnapshot{Intercepts: s.getCurrentInterceptInfos()},
 		ManagerVersion: &manager.VersionInfo2{
 			Name:    s.managerName,
 			Version: "v" + s.managerVersion.String(),
 		},
-		ManagerNamespace:   cfg.GetManagerNamespace(),
+		ManagerNamespace:   k8s.GetManagerNamespace(c),
 		SubnetViaWorkloads: s.subnetViaWorkloads,
 		Version: &common.VersionInfo{
 			ApiVersion: client.APIVersion,
@@ -927,7 +871,7 @@ func (s *session) status(c context.Context, initial bool) *rpc.ConnectInfo {
 	if !initial {
 		ret.Error = rpc.ConnectInfo_ALREADY_CONNECTED
 	}
-	if len(s.MappedNamespaces) > 0 || len(s.sessionConfig.Cluster().MappedNamespaces) > 0 {
+	if len(s.MappedNamespaces) > 0 || len(client.GetConfig(c).Cluster().MappedNamespaces) > 0 {
 		ret.MappedNamespaces = s.GetCurrentNamespaces(true)
 	}
 	var err error
@@ -942,6 +886,20 @@ func (s *session) status(c context.Context, initial bool) *rpc.ConnectInfo {
 //
 // Uninstalling all or specific agents require that the client can get and update the agents ConfigMap.
 func (s *session) Uninstall(ctx context.Context, ur *rpc.UninstallRequest) (*common.Result, error) {
+	_, err := s.managerClient.UninstallAgents(ctx, &manager.UninstallAgentsRequest{
+		SessionInfo: s.sessionInfo,
+		Agents:      ur.Agents,
+	})
+	if err != nil {
+		if status.Code(err) == codes.Unimplemented {
+			return s.legacyUninstall(ctx, ur)
+		}
+		dlog.Errorf(ctx, "uninstall agents failed: %v", err)
+	}
+	return errcat.ToResult(err), nil
+}
+
+func (s *session) legacyUninstall(ctx context.Context, ur *rpc.UninstallRequest) (*common.Result, error) {
 	api := k8sapi.GetK8sInterface(ctx).CoreV1()
 	loadAgentConfigMap := func(ns string) (*core.ConfigMap, error) {
 		cm, err := api.ConfigMaps(ns).Get(ctx, agentconfig.ConfigMap, meta.GetOptions{})
@@ -966,11 +924,9 @@ func (s *session) Uninstall(ctx context.Context, ur *rpc.UninstallRequest) (*com
 	// to prevent the clients from doing it.
 	if ur.UninstallType == rpc.UninstallRequest_NAMED_AGENTS {
 		// must have a valid namespace in order to uninstall named agents
-		s.waitForSync(ctx)
 		if ur.Namespace == "" {
 			ur.Namespace = s.Namespace
 		}
-		s.wlWatcher.ensureStarted(ctx, ur.Namespace, nil)
 		namespace := s.ActualNamespace(ur.Namespace)
 		if namespace == "" {
 			// namespace is not mapped
@@ -1003,7 +959,7 @@ func (s *session) Uninstall(ctx context.Context, ur *rpc.UninstallRequest) (*com
 		return nil, status.Error(codes.InvalidArgument, "invalid uninstall request")
 	}
 
-	_ = s.ClearIntercepts(ctx)
+	_ = s.ClearIngestsAndIntercepts(ctx)
 	clearAgentsConfigMap := func(ns string) error {
 		cm, err := loadAgentConfigMap(ns)
 		if err != nil {
@@ -1020,11 +976,9 @@ func (s *session) Uninstall(ctx context.Context, ur *rpc.UninstallRequest) (*com
 	}
 
 	if ur.Namespace != "" {
-		s.waitForSync(ctx)
 		if ur.Namespace == "" {
 			ur.Namespace = s.Namespace
 		}
-		s.wlWatcher.ensureStarted(ctx, ur.Namespace, nil)
 		namespace := s.ActualNamespace(ur.Namespace)
 		if namespace == "" {
 			// namespace is not mapped
@@ -1043,93 +997,27 @@ func (s *session) Uninstall(ctx context.Context, ur *rpc.UninstallRequest) (*com
 	return errcat.ToResult(nil), nil
 }
 
-func (s *session) getOutboundInfo(ctx context.Context, cr *rpc.ConnectRequest) *rootdRpc.OutboundInfo {
-	// We'll figure out the IP address of the API server(s) so that we can tell the daemon never to proxy them.
-	// This is because in some setups the API server will be in the same CIDR range as the pods, and the
-	// daemon will attempt to proxy traffic to it. This usually results in a loss of all traffic to/from
-	// the cluster, since an open tunnel to the traffic-manager (via the API server) is itself required
-	// to communicate with the cluster.
-	neverProxy := make([]*manager.IPNet, 0, 1+len(s.NeverProxy))
-	serverURL, err := url.Parse(s.Server)
-	if err != nil {
-		// This really shouldn't happen as we are connected to the server
-		dlog.Errorf(ctx, "Unable to parse url for k8s server %s: %v", s.Server, err)
-	} else {
-		hostname := serverURL.Hostname()
-		rawIP := iputil.Parse(hostname)
-		ips := []net.IP{rawIP}
-		if rawIP == nil {
-			var err error
-			ips, err = net.LookupIP(hostname)
-			if err != nil {
-				dlog.Errorf(ctx, "Unable to do DNS lookup for k8s server %s: %v", hostname, err)
-				ips = []net.IP{}
-			}
-		}
-		for _, ip := range ips {
-			mask := net.CIDRMask(128, 128)
-			if ipv4 := ip.To4(); ipv4 != nil {
-				mask = net.CIDRMask(32, 32)
-				ip = ipv4
-			}
-			if !ip.IsLoopback() {
-				ipnet := &net.IPNet{IP: ip, Mask: mask}
-				neverProxy = append(neverProxy, iputil.IPNetToRPC(ipnet))
-			}
-		}
-	}
-	for _, np := range s.NeverProxy {
-		neverProxy = append(neverProxy, iputil.IPNetToRPC((*net.IPNet)(np)))
-	}
-	info := &rootdRpc.OutboundInfo{
+func (s *session) getNetworkInfo(ctx context.Context, cr *rpc.ConnectRequest) *rootdRpc.NetworkConfig {
+	cfg := client.GetConfig(ctx)
+	jsonCfg, _ := client.MarshalJSON(cfg)
+	return &rootdRpc.NetworkConfig{
 		Session:            s.sessionInfo,
-		NeverProxySubnets:  neverProxy,
+		ClientConfig:       jsonCfg,
 		HomeDir:            homedir.HomeDir(),
 		Namespace:          s.Namespace,
-		ManagerNamespace:   s.GetManagerNamespace(),
 		SubnetViaWorkloads: s.subnetViaWorkloads,
 		KubeFlags:          cr.KubeFlags,
 		KubeconfigData:     cr.KubeconfigData,
 	}
-
-	if s.DNS != nil {
-		info.Dns = &rootdRpc.DNSConfig{
-			ExcludeSuffixes: s.DNS.ExcludeSuffixes,
-			IncludeSuffixes: s.DNS.IncludeSuffixes,
-			Excludes:        s.DNS.Excludes,
-			Mappings:        s.DNS.Mappings.ToRPC(),
-			LookupTimeout:   durationpb.New(s.DNS.LookupTimeout.Duration),
-		}
-		if len(s.DNS.LocalIP) > 0 {
-			info.Dns.LocalIp = s.DNS.LocalIP.IP()
-		}
-		if len(s.DNS.RemoteIP) > 0 {
-			info.Dns.RemoteIp = s.DNS.RemoteIP.IP()
-		}
-	}
-
-	if len(s.AlsoProxy) > 0 {
-		info.AlsoProxySubnets = make([]*manager.IPNet, len(s.AlsoProxy))
-		for i, ap := range s.AlsoProxy {
-			info.AlsoProxySubnets[i] = iputil.IPNetToRPC((*net.IPNet)(ap))
-		}
-	}
-	if len(s.AllowConflictingSubnets) > 0 {
-		info.AllowConflictingSubnets = make([]*manager.IPNet, len(s.AllowConflictingSubnets))
-		for i, ap := range s.AllowConflictingSubnets {
-			info.AllowConflictingSubnets[i] = iputil.IPNetToRPC((*net.IPNet)(ap))
-		}
-	}
-	return info
 }
 
-func (s *session) connectRootDaemon(ctx context.Context, oi *rootdRpc.OutboundInfo, isPodDaemon bool) (rd rootdRpc.DaemonClient, err error) {
+func (s *session) connectRootDaemon(ctx context.Context, nc *rootdRpc.NetworkConfig, isPodDaemon bool) (rd rootdRpc.DaemonClient, err error) {
 	// establish a connection to the root daemon gRPC grpcService
 	dlog.Info(ctx, "Connecting to root daemon...")
 	svc := userd.GetService(ctx)
 	if svc.RootSessionInProcess() {
 		// Just run the root session in-process.
-		rootSession, err := rootd.NewInProcSession(ctx, oi, s.managerClient, s.managerVersion, isPodDaemon)
+		_, rootSession, err := rootd.NewInProcSession(ctx, nc, s.managerClient, s.managerVersion, isPodDaemon)
 		if err != nil {
 			return nil, err
 		}
@@ -1139,9 +1027,7 @@ func (s *session) connectRootDaemon(ctx context.Context, oi *rootdRpc.OutboundIn
 		rd = rootSession
 	} else {
 		var conn *grpc.ClientConn
-		conn, err = socket.Dial(ctx, socket.RootDaemonPath(ctx), true,
-			grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
-		)
+		conn, err = socket.Dial(ctx, socket.RootDaemonPath(ctx), true)
 		if err != nil {
 			return nil, fmt.Errorf("unable open root daemon socket: %w", err)
 		}
@@ -1152,10 +1038,11 @@ func (s *session) connectRootDaemon(ctx context.Context, oi *rootdRpc.OutboundIn
 		}()
 		rd = rootdRpc.NewDaemonClient(conn)
 
+		tmTimeout := client.GetConfig(ctx).Timeouts().Get(client.TimeoutTrafficManagerConnect)
 		for attempt := 1; ; attempt++ {
 			var rootStatus *rootdRpc.DaemonStatus
-			tCtx, tCancel := context.WithTimeout(ctx, 15*time.Second)
-			rootStatus, err = rd.Connect(tCtx, oi)
+			tCtx, tCancel := context.WithTimeout(ctx, tmTimeout/2)
+			rootStatus, err = rd.Connect(tCtx, nc)
 			tCancel()
 			if err != nil {
 				return nil, fmt.Errorf("failed to connect to root daemon: %w", err)
@@ -1165,7 +1052,7 @@ func (s *session) connectRootDaemon(ctx context.Context, oi *rootdRpc.OutboundIn
 				// This is an internal error. Something is wrong with the root daemon.
 				return nil, errors.New("root daemon's OutboundConfig has no Session")
 			}
-			if oc.Session.SessionId == oi.Session.SessionId {
+			if oc.Session.SessionId == nc.Session.SessionId {
 				break
 			}
 
@@ -1194,4 +1081,181 @@ func (s *session) connectRootDaemon(ctx context.Context, oi *rootdRpc.OutboundIn
 	}
 	dlog.Debug(ctx, "Connected to root daemon")
 	return rd, nil
+}
+
+func (s *session) eachWorkload(namespaces []string, do func(kind manager.WorkloadInfo_Kind, name, namespace string, info workloadInfo)) {
+	s.workloadsLock.Lock()
+	for _, ns := range namespaces {
+		if workloads, ok := s.workloads[ns]; ok {
+			for key, info := range workloads {
+				do(key.kind, key.name, ns, info)
+			}
+		}
+	}
+	s.workloadsLock.Unlock()
+}
+
+func (s *session) localWorkloadsWatcher(ctx context.Context, namespace string, synced *sync.WaitGroup) error {
+	defer func() {
+		if synced != nil {
+			synced.Done()
+		}
+		dlog.Debug(ctx, "client workload watcher ended")
+	}()
+
+	knownWorkloadKinds, err := s.managerClient.GetKnownWorkloadKinds(ctx, s.sessionInfo)
+	if err != nil {
+		if status.Code(err) != codes.Unimplemented {
+			return fmt.Errorf("failed to get known workload kinds: %w", err)
+		}
+		// Talking to an older traffic-manager, use legacy default types
+		knownWorkloadKinds = &manager.KnownWorkloadKinds{Kinds: []manager.WorkloadInfo_Kind{
+			manager.WorkloadInfo_DEPLOYMENT,
+			manager.WorkloadInfo_REPLICASET,
+			manager.WorkloadInfo_STATEFULSET,
+		}}
+	}
+
+	dlog.Debugf(ctx, "Watching workloads from client due to lack of workload watcher support in traffic-manager %s", s.managerVersion)
+	fc := informer.GetFactory(ctx, namespace)
+	if fc == nil {
+		ctx = informer.WithFactory(ctx, namespace)
+		fc = informer.GetFactory(ctx, namespace)
+	}
+
+	enabledWorkloadKinds := make(k8sapi.Kinds, len(knownWorkloadKinds.Kinds))
+	for i, kind := range knownWorkloadKinds.Kinds {
+		switch kind {
+		case manager.WorkloadInfo_DEPLOYMENT:
+			enabledWorkloadKinds[i] = k8sapi.DeploymentKind
+			workload.StartDeployments(ctx, namespace)
+		case manager.WorkloadInfo_REPLICASET:
+			enabledWorkloadKinds[i] = k8sapi.ReplicaSetKind
+			workload.StartReplicaSets(ctx, namespace)
+		case manager.WorkloadInfo_STATEFULSET:
+			enabledWorkloadKinds[i] = k8sapi.StatefulSetKind
+			workload.StartStatefulSets(ctx, namespace)
+		case manager.WorkloadInfo_ROLLOUT:
+			enabledWorkloadKinds[i] = k8sapi.RolloutKind
+			workload.StartRollouts(ctx, namespace)
+			af := fc.GetArgoRolloutsInformerFactory()
+			af.Start(ctx.Done())
+		}
+	}
+
+	kf := fc.GetK8sInformerFactory()
+	kf.Start(ctx.Done())
+
+	ww, err := workload.NewWatcher(ctx, namespace, enabledWorkloadKinds)
+	if err != nil {
+		return err
+	}
+	kf.WaitForCacheSync(ctx.Done())
+
+	wlCh := ww.Subscribe(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case wls := <-wlCh:
+			if wls == nil {
+				return nil
+			}
+			s.workloadsLock.Lock()
+			workloads, ok := s.workloads[namespace]
+			if !ok {
+				workloads = make(map[workloadInfoKey]workloadInfo)
+				s.workloads[namespace] = workloads
+			}
+			for _, we := range wls {
+				w := we.Workload
+				key := workloadInfoKey{kind: workload.RpcKind(w.GetKind()), name: w.GetName()}
+				if we.Type == workload.EventTypeDelete {
+					delete(workloads, key)
+				} else {
+					workloads[key] = workloadInfo{
+						state: workload.GetWorkloadState(w),
+						uid:   w.GetUID(),
+					}
+				}
+			}
+			for _, subscriber := range s.workloadSubscribers {
+				select {
+				case subscriber <- struct{}{}:
+				default:
+				}
+			}
+			s.workloadsLock.Unlock()
+			if synced != nil {
+				synced.Done()
+				synced = nil
+			}
+		}
+	}
+}
+
+func (s *session) workloadsWatcher(ctx context.Context, namespace string, synced *sync.WaitGroup) error {
+	defer func() {
+		if synced != nil {
+			synced.Done()
+		}
+	}()
+	wlc, err := s.managerClient.WatchWorkloads(ctx, &manager.WorkloadEventsRequest{SessionInfo: s.sessionInfo, Namespace: namespace})
+	if err != nil {
+		if st, ok := status.FromError(err); ok && st.Code() == codes.FailedPrecondition {
+			return errcat.User.New(st.Message())
+		}
+		return err
+	}
+
+	for ctx.Err() == nil {
+		wls, err := wlc.Recv()
+		if err != nil {
+			return err
+		}
+
+		s.workloadsLock.Lock()
+		workloads, ok := s.workloads[namespace]
+		if !ok {
+			workloads = make(map[workloadInfoKey]workloadInfo)
+			s.workloads[namespace] = workloads
+		}
+
+		for _, we := range wls.GetEvents() {
+			w := we.Workload
+			key := workloadInfoKey{kind: w.Kind, name: w.Name}
+			if we.Type == manager.WorkloadEvent_DELETED {
+				dlog.Debugf(ctx, "Deleting workload %s/%s.%s", key.kind, key.name, namespace)
+				delete(workloads, key)
+			} else {
+				var clients []string
+				if lc := len(w.InterceptClients); lc > 0 {
+					clients = make([]string, lc)
+					for i, ic := range w.InterceptClients {
+						clients[i] = ic.Client
+					}
+				}
+				state := workload.StateFromRPC(w.State)
+				dlog.Debugf(ctx, "Adding workload %s/%s.%s %s %s %s", key.kind, key.name, namespace, state, w.AgentState, clients)
+				workloads[key] = workloadInfo{
+					uid:              types.UID(w.Uid),
+					state:            state,
+					agentState:       w.AgentState,
+					interceptClients: clients,
+				}
+			}
+		}
+		for _, subscriber := range s.workloadSubscribers {
+			select {
+			case subscriber <- struct{}{}:
+			default:
+			}
+		}
+		s.workloadsLock.Unlock()
+		if synced != nil {
+			synced.Done()
+			synced = nil
+		}
+	}
+	return nil
 }

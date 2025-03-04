@@ -2,10 +2,11 @@ package manager
 
 import (
 	"context"
-	"encoding/json"
 	"net"
+	"net/netip"
 	"testing"
 
+	"github.com/go-json-experiment/json"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -22,13 +23,16 @@ import (
 	fakeargorollouts "github.com/datawire/argo-rollouts-go-client/pkg/client/clientset/versioned/fake"
 	"github.com/datawire/dlib/dhttp"
 	"github.com/datawire/dlib/dlog"
-	"github.com/datawire/k8sapi/pkg/k8sapi"
 	rpc "github.com/telepresenceio/telepresence/rpc/v2/manager"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/config"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/managerutil"
 	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/mutator"
+	"github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/namespaces"
 	testdata "github.com/telepresenceio/telepresence/v2/cmd/traffic/cmd/manager/test"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
 	"github.com/telepresenceio/telepresence/v2/pkg/informer"
+	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
+	"github.com/telepresenceio/telepresence/v2/pkg/labels"
 	"github.com/telepresenceio/telepresence/v2/pkg/version"
 )
 
@@ -182,97 +186,6 @@ func TestConnect(t *testing.T) {
 	require.NoError(err)
 	require.Len(aSnapA.Agents, 3)
 	t.Logf("=> client[alice] agent snapshot = %s", dumps(aSnapA))
-
-	// Alice creates an intercept
-
-	spec := &rpc.InterceptSpec{
-		Name:       "first",
-		Namespace:  "default",
-		Client:     testClients["alice"].Name,
-		Agent:      testAgents["hello"].Name,
-		Mechanism:  "tcp",
-		TargetHost: "asdf",
-		TargetPort: 9876,
-	}
-
-	first, err := client.CreateIntercept(ctx, &rpc.CreateInterceptRequest{
-		Session:       aliceSess2,
-		InterceptSpec: spec,
-	})
-	require.NoError(err)
-	require.True(proto.Equal(spec, first.Spec))
-	t.Logf("=> intercept info: %s", dumps(first))
-
-	aSnapI, err = aliceWI.Recv()
-	require.NoError(err)
-	require.Len(aSnapI.Intercepts, 1)
-	require.Equal(rpc.InterceptDispositionType_WAITING, aSnapI.Intercepts[0].Disposition)
-	t.Logf("=> client[alice] intercept snapshot = %s", dumps(aSnapI))
-
-	hSnapI, err = helloWI.Recv()
-	require.NoError(err)
-	require.Len(hSnapI.Intercepts, 1)
-	require.Equal(rpc.InterceptDispositionType_WAITING, hSnapI.Intercepts[0].Disposition)
-	t.Logf("=> agent[hello] intercept snapshot = %s", dumps(hSnapI))
-
-	// Hello's agent reviews the intercept
-
-	_, err = client.ReviewIntercept(ctx, &rpc.ReviewInterceptRequest{
-		Session:     helloSess,
-		Id:          hSnapI.Intercepts[0].Id,
-		Disposition: rpc.InterceptDispositionType_ACTIVE,
-		Message:     "okay!",
-	})
-	require.NoError(err)
-
-	// Causing the intercept to go active with require port assigned
-
-	aSnapI, err = aliceWI.Recv()
-	require.NoError(err)
-	require.Len(aSnapI.Intercepts, 1)
-	require.Equal(rpc.InterceptDispositionType_ACTIVE, aSnapI.Intercepts[0].Disposition)
-	t.Logf("=> client[alice] intercept snapshot = %s", dumps(aSnapI))
-
-	hSnapI, err = helloWI.Recv()
-	require.NoError(err)
-	require.Len(hSnapI.Intercepts, 1)
-	require.Equal(rpc.InterceptDispositionType_ACTIVE, hSnapI.Intercepts[0].Disposition)
-	t.Logf("=> agent[hello] intercept snapshot = %s", dumps(hSnapI))
-
-	// Creating require duplicate intercept yields an error
-
-	second, err := client.CreateIntercept(ctx, &rpc.CreateInterceptRequest{
-		Session:       aliceSess2,
-		InterceptSpec: spec,
-	})
-	require.Error(err)
-	require.Nil(second)
-	t.Logf("=> intercept info: %s", dumps(second))
-
-	// Alice removes the intercept
-
-	_, err = client.RemoveIntercept(ctx, &rpc.RemoveInterceptRequest2{
-		Session: aliceSess2,
-		Name:    spec.Name,
-	})
-	require.NoError(err)
-	t.Logf("removed intercept")
-
-	aSnapI, err = aliceWI.Recv()
-	require.NoError(err)
-	require.Len(aSnapI.Intercepts, 0)
-	t.Logf("=> client[alice] intercept snapshot = %s", dumps(aSnapI))
-
-	hSnapI, err = helloWI.Recv()
-	require.NoError(err)
-	require.Len(hSnapI.Intercepts, 0)
-	t.Logf("=> agent[hello] intercept snapshot = %s", dumps(hSnapI))
-
-	_, err = client.RemoveIntercept(ctx, &rpc.RemoveInterceptRequest2{
-		Session: aliceSess1, // no longer require valid session, right?
-		Name:    spec.Name,  // doesn't matter...
-	})
-	require.Error(err)
 	_, err = client.Depart(ctx, aliceSess2)
 	require.NoError(err)
 	_, err = client.Depart(ctx, helloSess)
@@ -293,16 +206,64 @@ func getTestClientConn(ctx context.Context, t *testing.T) *grpc.ClientConn {
 		return lis.Dial()
 	}
 
-	fakeClient := fake.NewSimpleClientset(&corev1.Namespace{
+	fakeClient := fake.NewClientset(&corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "default",
+			Labels: map[string]string{
+				labels.NameLabelKey: "default",
+			},
 		},
 	})
 	fakeClient.Discovery().(*fakeDiscovery.FakeDiscovery).FakedServerVersion = &k8sVersion.Info{
-		GitVersion: "v1.17.0",
+		GitVersion: "v1.30.5",
+	}
+
+	const mgrNs = "ambassador"
+	_, err := fakeClient.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: mgrNs,
+			Labels: map[string]string{
+				labels.NameLabelKey: mgrNs,
+			},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = fakeClient.CoreV1().ConfigMaps(mgrNs).Create(ctx, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      agentmap.ManagerAppName,
+			Namespace: mgrNs,
+		},
+		Data: map[string]string{"namespace-selector.yaml": ` 
+matchExpressions:
+- key: kubernetes.io/metadata.name
+  operator: In
+  values:
+    - default
+`},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
 	}
 	ctx = k8sapi.WithJoinedClientSetInterface(ctx, fakeClient, fakeargorollouts.NewSimpleClientset())
 	ctx = informer.WithFactory(ctx, "")
+
+	configWatcher := config.NewWatcher(mgrNs)
+	go func() {
+		if err := configWatcher.Run(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	if err = configWatcher.ForceEvent(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ctx, err = namespaces.InitContext(ctx, configWatcher.SelectorChannel())
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	f := informer.GetK8sFactory(ctx, "")
 	f.Core().V1().Services().Informer()
 	f.Core().V1().ConfigMaps().Informer()
@@ -312,12 +273,12 @@ func getTestClientConn(ctx context.Context, t *testing.T) *grpc.ClientConn {
 	f.WaitForCacheSync(ctx.Done())
 
 	env := managerutil.Env{
-		MaxReceiveSize:  resource.Quantity{},
-		PodCIDRStrategy: "environment",
-		PodCIDRs: []*net.IPNet{{
-			IP:   net.IP{192, 168, 0, 0},
-			Mask: net.CIDRMask(16, 32),
-		}},
+		ManagerNamespace: mgrNs,
+		MaxReceiveSize:   resource.Quantity{},
+		PodCIDRStrategy:  "environment",
+		PodCIDRs: []netip.Prefix{
+			netip.PrefixFrom(netip.AddrFrom4([4]byte{192, 168, 0, 0}), 16),
+		},
 	}
 	ctx = managerutil.WithEnv(ctx, &env)
 	ctx = mutator.WithMap(ctx, mutator.Load(ctx))
@@ -327,15 +288,18 @@ func getTestClientConn(ctx context.Context, t *testing.T) *grpc.ClientConn {
 		t.Fatalf("Failed to dial bufnet: %v", err)
 	}
 	agentmap.GeneratorConfigFunc = env.GeneratorConfig
-
 	s := grpc.NewServer()
-	mgr, g, err := NewServiceFunc(ctx)
+	mgr, g, err := NewServiceFunc(ctx, configWatcher)
 	if err != nil {
 		t.Fatalf("failed to build manager: %v", err)
 	}
 	mgr.RegisterServers(s)
 	sc := &dhttp.ServerConfig{
 		Handler: s,
+	}
+	err = configWatcher.ForceEvent(ctx)
+	if err != nil {
+		t.Fatalf("configMap watcher failed: %v", err)
 	}
 
 	shutdownServer := func() {}

@@ -63,7 +63,6 @@ func Test_gatherLogsZipFiles(t *testing.T) {
 
 	for _, tc := range testCases {
 		tcName := tc.name
-		tc := tc
 		t.Run(tcName, func(t *testing.T) {
 			var fileNames []string
 			fileNames = append(fileNames, tc.realFileNames...)
@@ -137,7 +136,6 @@ func Test_gatherLogsCopyFiles(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		tcName := tc.name
-		tc := tc
 		t.Run(tcName, func(t *testing.T) {
 			if tc.outputDir == "" {
 				tc.outputDir = t.TempDir()
@@ -191,6 +189,12 @@ func Test_gatherLogsNoK8s(t *testing.T) {
 			errMsg:     "",
 		},
 		{
+			name:       "successfulZipConnectorAndDaemonLogs",
+			outputFile: "",
+			daemons:    "user,root",
+			errMsg:     "",
+		},
+		{
 			name:       "successfulZipNoDaemonLogs",
 			outputFile: "",
 			daemons:    "None",
@@ -206,7 +210,6 @@ func Test_gatherLogsNoK8s(t *testing.T) {
 
 	for _, tc := range testCases {
 		tcName := tc.name
-		tc := tc
 		t.Run(tcName, func(t *testing.T) {
 			// Use this time to validate that the zip file says the
 			// files inside were modified after the test started.
@@ -261,6 +264,8 @@ func Test_gatherLogsNoK8s(t *testing.T) {
 					regexStr = "daemon"
 				case "user":
 					regexStr = "connector"
+				case "user,root":
+					regexStr = "connector|daemon"
 				case "None":
 					regexStr = "a^" // impossible to match
 				default:
@@ -416,7 +421,6 @@ func Test_gatherLogsSignificantPodNames(t *testing.T) {
 
 	for _, tc := range testCases {
 		tcName := tc.name
-		tc := tc
 		// We need a fresh anonymizer for each test
 		t.Run(tcName, func(t *testing.T) {
 			sigPodNames := getSignificantPodNames(tc.podName)

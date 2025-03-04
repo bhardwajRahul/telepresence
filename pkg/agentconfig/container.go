@@ -2,11 +2,13 @@ package agentconfig
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/blang/semver/v4"
+	"github.com/go-json-experiment/json"
 	core "k8s.io/api/core/v1"
 
 	"github.com/datawire/dlib/dlog"
@@ -18,24 +20,28 @@ func AgentContainer(
 	ctx context.Context,
 	pod *core.Pod,
 	config *Sidecar,
-) *core.Container {
+) (*core.Container, map[string]string) {
 	ports := make([]core.ContainerPort, 0, 5)
-	for _, cc := range config.Containers {
-		for _, ic := range PortUniqueIntercepts(cc) {
-			ports = append(ports, core.ContainerPort{
-				Name:          ic.ContainerPortName,
-				ContainerPort: int32(ic.AgentPort),
-				Protocol:      ic.Protocol,
-			})
+	confCns := ConfiguredContainers(ctx, pod, config)
+
+	eachConfiguredContainer(confCns, config, func(app *core.Container, cc *Container) {
+		if cc.Replace == ReplacePolicyContainer {
+			// Simply inherit the ports of the replaced container
+			ports = append(ports, app.Ports...)
+		} else if cc.Replace == ReplacePolicyIntercept {
+			for _, ic := range PortUniqueIntercepts(cc) {
+				ports = append(ports, core.ContainerPort{
+					Name:          ic.ContainerPortName,
+					ContainerPort: int32(ic.AgentPort),
+					Protocol:      ic.Protocol,
+				})
+			}
 		}
-	}
-	if len(ports) == 0 {
-		return nil
-	}
+	})
 
 	evs := make([]core.EnvVar, 0, len(config.Containers)*5)
 	efs := make([]core.EnvFromSource, 0, len(config.Containers)*3)
-	EachContainer(pod, config, func(app *core.Container, cc *Container) {
+	eachConfiguredContainer(confCns, config, func(app *core.Container, cc *Container) {
 		evs = appendAppContainerEnv(app, cc, evs)
 		efs = appendAppContainerEnvFrom(app, cc, efs)
 	})
@@ -47,11 +53,29 @@ func AgentContainer(
 	}
 	evs = append(evs,
 		core.EnvVar{
+			Name: "AGENT_CONFIG",
+			ValueFrom: &core.EnvVarSource{
+				FieldRef: &core.ObjectFieldSelector{
+					APIVersion: "v1",
+					FieldPath:  fmt.Sprintf("metadata.annotations['%s']", ConfigAnnotation),
+				},
+			},
+		},
+		core.EnvVar{
 			Name: EnvPrefixAgent + "POD_IP",
 			ValueFrom: &core.EnvVarSource{
 				FieldRef: &core.ObjectFieldSelector{
 					APIVersion: "v1",
 					FieldPath:  "status.podIP",
+				},
+			},
+		},
+		core.EnvVar{
+			Name: EnvPrefixAgent + "POD_UID",
+			ValueFrom: &core.EnvVarSource{
+				FieldRef: &core.ObjectFieldSelector{
+					APIVersion: "v1",
+					FieldPath:  "metadata.uid",
 				},
 			},
 		},
@@ -73,7 +97,7 @@ func AgentContainer(
 			dlog.Errorf(ctx, "unable to parse agent version from image name %s", config.AgentImage)
 		}
 	}
-	EachContainer(pod, config, func(app *core.Container, cc *Container) {
+	eachConfiguredContainer(confCns, config, func(app *core.Container, cc *Container) {
 		var volPaths []string
 		volPaths, mounts = appendAppContainerVolumeMounts(app, cc, mounts, pod.ObjectMeta.Annotations, agentVersion)
 		if len(volPaths) > 0 {
@@ -88,10 +112,6 @@ func AgentContainer(
 		core.VolumeMount{
 			Name:      AnnotationVolumeName,
 			MountPath: AnnotationMountPoint,
-		},
-		core.VolumeMount{
-			Name:      ConfigVolumeName,
-			MountPath: ConfigMountPoint,
 		},
 		core.VolumeMount{
 			Name:      ExportsVolumeName,
@@ -132,6 +152,23 @@ func AgentContainer(
 		efs = nil
 	}
 
+	annotations := make(map[string]string)
+	eachConfiguredContainer(confCns, config, func(app *core.Container, cc *Container) {
+		if cc.Replace == ReplacePolicyContainer {
+			cnJson, err := json.Marshal(app)
+			if err != nil {
+				dlog.Errorf(ctx, "unable to marshal container %s.%s/%s to json: %v", config.WorkloadName, config.Namespace, app.Name, err)
+			} else {
+				annotations[ReplaceAnnotationKey(cc.Name)] = string(cnJson)
+			}
+		}
+	})
+	cfg, _ := MarshalTight(config)
+	annotations[ConfigAnnotation] = cfg
+
+	if len(ports) == 0 {
+		ports = nil
+	}
 	ac := &core.Container{
 		Name:         ContainerName,
 		Image:        config.AgentImage,
@@ -160,15 +197,19 @@ func AgentContainer(
 		appSc, err = firstAppSecurityContext(pod, config)
 		if err != nil {
 			dlog.Error(ctx, err)
-			return nil
+			return nil, nil
 		}
 	}
 	ac.SecurityContext = appSc
 
-	return ac
+	return ac, annotations
 }
 
-// Find security context of the first container (with both intercepts and a set security context) and ensure
+func ReplaceAnnotationKey(cn string) string {
+	return ReplacedContainerAnnotationPrefix + cn
+}
+
+// Find the security context of the first container (with both intercepts and a set security context) and ensure
 // that any env interpolations in it are prefixed with the env-prefix of the corresponding config container.
 func firstAppSecurityContext(pod *core.Pod, config *Sidecar) (*core.SecurityContext, error) {
 	cns := pod.Spec.Containers
@@ -205,6 +246,19 @@ func InitContainer(config *Sidecar) *core.Container {
 		Args:  []string{"agent-init"},
 		Env: []core.EnvVar{
 			{
+				Name:  "LOG_LEVEL",
+				Value: config.LogLevel,
+			},
+			{
+				Name: "AGENT_CONFIG",
+				ValueFrom: &core.EnvVarSource{
+					FieldRef: &core.ObjectFieldSelector{
+						APIVersion: "v1",
+						FieldPath:  fmt.Sprintf("metadata.annotations['%s']", ConfigAnnotation),
+					},
+				},
+			},
+			{
 				Name: "POD_IP",
 				ValueFrom: &core.EnvVarSource{
 					FieldRef: &core.ObjectFieldSelector{
@@ -214,10 +268,6 @@ func InitContainer(config *Sidecar) *core.Container {
 				},
 			},
 		},
-		VolumeMounts: []core.VolumeMount{{
-			Name:      ConfigVolumeName,
-			MountPath: ConfigMountPoint,
-		}},
 		SecurityContext: &core.SecurityContext{
 			Capabilities: &core.Capabilities{
 				Add: []core.Capability{"NET_ADMIN"},
@@ -227,17 +277,13 @@ func InitContainer(config *Sidecar) *core.Container {
 	if r := config.InitResources; r != nil {
 		ic.Resources = *r
 	}
+	if s := config.InitSecurityContext; s != nil {
+		ic.SecurityContext = s
+	}
 	return ic
 }
 
 func AgentVolumes(agentName string, pod *core.Pod) []core.Volume {
-	var items []core.KeyToPath
-	if agentName != "" {
-		items = []core.KeyToPath{{
-			Key:  agentName,
-			Path: ConfigFile,
-		}}
-	}
 	volumes := []core.Volume{
 		{
 			Name: AnnotationVolumeName,
@@ -252,15 +298,6 @@ func AgentVolumes(agentName string, pod *core.Pod) []core.Volume {
 							Path: "annotations",
 						},
 					},
-				},
-			},
-		},
-		{
-			Name: ConfigVolumeName,
-			VolumeSource: core.VolumeSource{
-				ConfigMap: &core.ConfigMapVolumeSource{
-					LocalObjectReference: core.LocalObjectReference{Name: ConfigMap},
-					Items:                items,
 				},
 			},
 		},
@@ -309,6 +346,43 @@ func appendSecretVolume(env dos.Env, annotation, volumeName string, pod *core.Po
 		})
 	}
 	return volumes
+}
+
+// ConfiguredContainers will find each container in the given config and match it against a container
+// in the pod using its name. The returned slice is guaranteed to use the same index as the Sidecar.Containers slice.
+func ConfiguredContainers(ctx context.Context, pod *core.Pod, config *Sidecar) []*core.Container {
+	cns := pod.Spec.Containers
+	result := make([]*core.Container, len(config.Containers))
+	for ci, cc := range config.Containers {
+		for i := range cns {
+			app := &cns[i]
+			if app.Name == ContainerName {
+				// The pod might hold JSON of replaced containers from an earlier patch
+				annName := ReplacedContainerAnnotationPrefix + cc.Name
+				if appJson, ok := pod.ObjectMeta.Annotations[annName]; ok {
+					var cn core.Container
+					err := json.Unmarshal([]byte(appJson), &cn)
+					if err != nil {
+						dlog.Errorf(ctx, "failed to unmarshal container annotation %s: %v", annName, err)
+					}
+					result[ci] = &cn
+					break
+				}
+			} else if app.Name == cc.Name {
+				result[ci] = app
+				break
+			}
+		}
+	}
+	return result
+}
+
+func eachConfiguredContainer(configureContainers []*core.Container, config *Sidecar, f func(*core.Container, *Container)) {
+	for i, cn := range configureContainers {
+		if cn != nil {
+			f(cn, config.Containers[i])
+		}
+	}
 }
 
 // EachContainer will find each container in the given config and match it against a container
@@ -430,9 +504,14 @@ func prefixInterpolated(str, pfx string) string {
 	return bd.String()
 }
 
+var envRxReplace = regexp.MustCompile(`\$\(([^)]+)\)`)
+
 func appendAppContainerEnv(app *core.Container, cc *Container, es []core.EnvVar) []core.EnvVar {
+	pfx := EnvPrefixApp + cc.EnvPrefix
+	pfxReplace := "$(" + pfx + "$1)"
 	for _, e := range app.Env {
-		e.Name = EnvPrefixApp + cc.EnvPrefix + e.Name
+		e.Name = pfx + e.Name
+		e.Value = envRxReplace.ReplaceAllString(e.Value, pfxReplace)
 		es = append(es, e)
 	}
 	return es

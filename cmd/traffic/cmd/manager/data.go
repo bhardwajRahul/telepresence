@@ -13,6 +13,8 @@ func validateClient(client *rpc.ClientInfo) string {
 	switch {
 	case client.Name == "":
 		return "name must not be empty"
+	case client.Namespace == "":
+		return "namespace must not be empty"
 	case client.InstallId == "":
 		return "install ID must not be empty"
 	case client.Product == "":

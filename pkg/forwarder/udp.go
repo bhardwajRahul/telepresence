@@ -4,15 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"time"
-
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/rpc/v2/manager"
 	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
-	"github.com/telepresenceio/telepresence/v2/pkg/tracing"
 	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
 )
 
@@ -20,20 +17,21 @@ type udp struct {
 	interceptor
 }
 
-func newUDP(listen *net.UDPAddr, targetHost string, targetPort uint16) Interceptor {
+func newUDP(listenPort uint16, tag tunnel.Tag, targetHost string, targetPort uint16) Interceptor {
 	return &udp{
 		interceptor: interceptor{
-			listenAddr: listen,
+			tag:        tag,
+			listenPort: listenPort,
 			targetHost: targetHost,
 			targetPort: targetPort,
 		},
 	}
 }
 
-func (f *udp) Serve(ctx context.Context, initCh chan<- net.Addr) error {
+func (f *udp) Serve(ctx context.Context, initCh chan<- netip.AddrPort) error {
 	// Set up listener lifetime (same as the overall forwarder lifetime)
 	f.mu.Lock()
-	la := f.listenAddr.(*net.UDPAddr)
+	lp := f.listenPort
 	ctx, f.lCancel = context.WithCancel(ctx)
 	f.lCtx = ctx
 
@@ -46,7 +44,7 @@ func (f *udp) Serve(ctx context.Context, initCh chan<- net.Addr) error {
 			close(initCh)
 		}
 		f.lCancel()
-		dlog.Infof(ctx, "Done forwarding udp from %s", la)
+		dlog.Infof(ctx, "Done forwarding udp from :%d", lp)
 	}()
 
 	for first := true; ; first = false {
@@ -58,18 +56,19 @@ func (f *udp) Serve(ctx context.Context, initCh chan<- net.Addr) error {
 			return nil
 		}
 		lc := net.ListenConfig{}
-		pc, err := lc.ListenPacket(ctx, la.Network(), la.String())
+		pc, err := lc.ListenPacket(ctx, "udp", fmt.Sprintf(":%d", lp))
 		if err != nil {
 			return err
 		}
 		if first {
 			// The address to listen to is likely to change the first time around, because it may
 			// be ":0", so let's ensure that the same address is used next time
-			la = pc.LocalAddr().(*net.UDPAddr)
-			f.listenAddr = la
+			la := pc.LocalAddr().(*net.UDPAddr)
+			lp = uint16(la.Port)
+			f.listenPort = lp
 			dlog.Infof(ctx, "Forwarding udp from %s", la)
 			if initCh != nil {
-				initCh <- la
+				initCh <- la.AddrPort()
 				close(initCh)
 				initCh = nil
 			}
@@ -86,6 +85,11 @@ func (f *udp) forward(ctx context.Context, conn *net.UDPConn, intercept *manager
 		f.interceptConn(ctx, conn, intercept)
 		return nil
 	}
+
+	if f.targetPort == 0 {
+		dlog.Debug(ctx, "Forwarding to /dev/null")
+		return nil
+	}
 	return f.forwardConn(ctx, conn)
 }
 
@@ -97,13 +101,10 @@ func (f *udp) forwardConn(ctx context.Context, conn *net.UDPConn) error {
 	if err != nil {
 		return fmt.Errorf("error on resolve(%s): %w", iputil.JoinHostPort(f.targetHost, f.targetPort), err)
 	}
-	return ForwardUDP(ctx, conn, targetAddr)
+	return ForwardUDP(ctx, f.tag, conn, targetAddr)
 }
 
-func ForwardUDP(ctx context.Context, conn *net.UDPConn, targetAddr *net.UDPAddr) error {
-	ctx, span := otel.Tracer("").Start(ctx, "forwardConn")
-	defer span.End()
-
+func ForwardUDP(ctx context.Context, tag tunnel.Tag, conn *net.UDPConn, targetAddr *net.UDPAddr) error {
 	targets := tunnel.NewPool()
 	la := conn.LocalAddr()
 	dlog.Infof(ctx, "Forwarding udp from %s to %s", la, targetAddr)
@@ -113,7 +114,7 @@ func ForwardUDP(ctx context.Context, conn *net.UDPConn, targetAddr *net.UDPAddr)
 	}()
 
 	ch := make(chan tunnel.UdpReadResult)
-	go tunnel.UdpReader(ctx, conn, ch)
+	go tunnel.UdpReader(ctx, tag, conn, ch)
 	for {
 		select {
 		case <-ctx.Done():
@@ -123,14 +124,14 @@ func ForwardUDP(ctx context.Context, conn *net.UDPConn, targetAddr *net.UDPAddr)
 				return nil
 			}
 			id := tunnel.ConnIDFromUDP(rr.Addr, targetAddr)
-			span.SetAttributes(attribute.String("conn-id", id.String()))
-			dlog.Tracef(ctx, "<- SRC udp %s, len %d", id, len(rr.Payload))
+			dlog.Tracef(ctx, "<- %s udp %s, len %d", tag, id, len(rr.Payload))
 			h, _, err := targets.GetOrCreate(ctx, id, func(ctx context.Context, release func()) (tunnel.Handler, error) {
-				tc, err := net.DialUDP("udp", nil, id.DestinationAddr().(*net.UDPAddr))
+				tc, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(id.Destination()))
 				if err != nil {
 					return nil, err
 				}
 				return &udpHandler{
+					tag:       tag,
 					UDPConn:   tc,
 					id:        id,
 					replyWith: conn,
@@ -145,10 +146,10 @@ func ForwardUDP(ctx context.Context, conn *net.UDPConn, targetAddr *net.UDPAddr)
 			for n := 0; n < pn; {
 				wn, err := uh.Write(rr.Payload[n:])
 				if err != nil {
-					dlog.Errorf(ctx, "!! TRG udp %s write: %v", id, err)
+					dlog.Errorf(ctx, "!> %s udp %s write: %v", tag, id, err)
 					return err
 				}
-				dlog.Tracef(ctx, "-> TRG udp %s, len %d", id, wn)
+				dlog.Tracef(ctx, "-> %s udp %s, len %d", tag, id, wn)
 				n += wn
 			}
 		}
@@ -159,6 +160,7 @@ type udpHandler struct {
 	*net.UDPConn
 	id        tunnel.ConnID
 	replyWith net.PacketConn
+	tag       tunnel.Tag
 	release   func()
 }
 
@@ -172,12 +174,12 @@ func (u *udpHandler) Stop(_ context.Context) {
 }
 
 func (u *udpHandler) Start(ctx context.Context) {
-	go u.forward(ctx)
+	go u.forward(ctx, u.tag)
 }
 
-func (u *udpHandler) forward(ctx context.Context) {
+func (u *udpHandler) forward(ctx context.Context, tag tunnel.Tag) {
 	ch := make(chan tunnel.UdpReadResult)
-	go tunnel.UdpReader(ctx, u, ch)
+	go tunnel.UdpReader(ctx, tag, u, ch)
 	for {
 		select {
 		case <-ctx.Done():
@@ -186,15 +188,15 @@ func (u *udpHandler) forward(ctx context.Context) {
 			if !ok {
 				return
 			}
-			dlog.Tracef(ctx, "<- TRG udp %s, len %d", u.id, len(rr.Payload))
+			dlog.Tracef(ctx, "<- %s udp %s, len %d", tag, u.id, len(rr.Payload))
 			pn := len(rr.Payload)
 			for n := 0; n < pn; {
-				wn, err := u.replyWith.WriteTo(rr.Payload[n:], u.id.SourceAddr())
+				wn, err := u.replyWith.WriteTo(rr.Payload[n:], net.UDPAddrFromAddrPort(u.id.Source()))
 				if err != nil {
-					dlog.Errorf(ctx, "!! SRC udp %s write: %v", u.id, err)
+					dlog.Errorf(ctx, "!> %s udp %s write: %v", tag, u.id, err)
 					return
 				}
-				dlog.Tracef(ctx, "-> SRC udp %s, len %d", u.id, wn)
+				dlog.Tracef(ctx, "-> %s udp %s, len %d", tag, u.id, wn)
 				n += wn
 			}
 		}
@@ -202,17 +204,16 @@ func (u *udpHandler) forward(ctx context.Context) {
 }
 
 func (f *udp) interceptConn(ctx context.Context, conn *net.UDPConn, iCept *manager.InterceptInfo) {
-	ctx, span := otel.Tracer("").Start(ctx, "interceptConn")
-	defer span.End()
-	tracing.RecordInterceptInfo(span, iCept)
-
 	spec := iCept.Spec
-	dest := &net.UDPAddr{IP: iputil.Parse(spec.TargetHost), Port: int(spec.TargetPort)}
-
+	dest := netip.AddrPortFrom(iputil.Parse(spec.TargetHost), uint16(spec.TargetPort))
 	dlog.Infof(ctx, "Forwarding udp from %s to %s %s", conn.LocalAddr(), spec.Client, dest)
 	defer dlog.Infof(ctx, "Done forwarding udp from %s to %s %s", conn.LocalAddr(), spec.Client, dest)
-	d := tunnel.NewUDPListener(conn, dest, func(ctx context.Context, id tunnel.ConnID) (tunnel.Stream, error) {
-		return f.streamProvider.CreateClientStream(ctx, iCept.ClientSession.SessionId, id, time.Duration(spec.RoundtripLatency), time.Duration(spec.DialTimeout))
+	d := tunnel.NewUDPListener(conn, tunnel.AgentToClient, net.UDPAddrFromAddrPort(dest), func(ctx context.Context, id tunnel.ConnID) (tunnel.Stream, error) {
+		f.mu.Lock()
+		sp := f.streamProvider
+		f.mu.Unlock()
+		return sp.CreateClientStream(
+			ctx, tunnel.AgentToClient, tunnel.SessionID(iCept.ClientSession.SessionId), id, time.Duration(spec.RoundtripLatency), time.Duration(spec.DialTimeout))
 	})
 	d.Start(ctx)
 	<-d.Done()

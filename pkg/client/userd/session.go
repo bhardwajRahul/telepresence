@@ -8,6 +8,7 @@ import (
 	core "k8s.io/api/core/v1"
 	typed "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/datawire/dlib/dgroup"
 	"github.com/telepresenceio/telepresence/rpc/v2/common"
@@ -38,7 +39,7 @@ type InterceptInfo interface {
 type KubeConfig interface {
 	GetContext() string
 	GetRestConfig() *rest.Config
-	GetManagerNamespace() string
+	GetClientConfig() clientcmd.ClientConfig
 }
 
 type NamespaceListener func(context.Context)
@@ -54,9 +55,9 @@ type Session interface {
 	RemoveIntercept(context.Context, string) error
 	NewCreateInterceptRequest(*manager.InterceptSpec) *manager.CreateInterceptRequest
 
-	AddInterceptor(string, *rpc.Interceptor) error
+	AddInterceptor(context.Context, string, *rpc.Interceptor) error
 	RemoveInterceptor(string) error
-	ClearIntercepts(context.Context) error
+	ClearIngestsAndIntercepts(context.Context) error
 
 	GetInterceptInfo(string) *manager.InterceptInfo
 	GetInterceptSpec(string) *manager.InterceptSpec
@@ -84,7 +85,6 @@ type Session interface {
 	ForeachAgentPod(ctx context.Context, fn func(context.Context, typed.PodInterface, *core.Pod), filter func(*core.Pod) bool) error
 
 	GatherLogs(context.Context, *connector.LogsRequest) (*connector.LogsResponse, error)
-	GatherTraces(ctx context.Context, tr *connector.TracesRequest) *common.Result
 
 	SessionInfo() *manager.SessionInfo
 	RootDaemon() rootdRpc.DaemonClient
@@ -96,6 +96,9 @@ type Session interface {
 	Remain(ctx context.Context) error
 	Epilog(ctx context.Context)
 	Done() <-chan struct{}
+	Ingest(context.Context, *rpc.IngestRequest) (*rpc.IngestInfo, error)
+	GetIngest(*rpc.IngestIdentifier) (*rpc.IngestInfo, error)
+	LeaveIngest(context.Context, *rpc.IngestIdentifier) (*rpc.IngestInfo, error)
 }
 
 type NewSessionFunc func(context.Context, ConnectRequest, *client.Kubeconfig) (context.Context, Session, *connector.ConnectInfo)

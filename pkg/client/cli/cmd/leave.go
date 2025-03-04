@@ -21,7 +21,8 @@ import (
 )
 
 func leave() *cobra.Command {
-	return &cobra.Command{
+	var containerName string
+	cmd := &cobra.Command{
 		Use:  "leave [flags] <intercept_name>",
 		Args: cobra.ExactArgs(1),
 
@@ -33,7 +34,7 @@ func leave() *cobra.Command {
 			if err := connect.InitCommand(cmd); err != nil {
 				return err
 			}
-			return removeIntercept(cmd.Context(), strings.TrimSpace(args[0]))
+			return disengage(cmd.Context(), strings.TrimSpace(args[0]), containerName)
 		},
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 			shellCompDir := cobra.ShellCompDirectiveNoFileComp
@@ -45,7 +46,9 @@ func leave() *cobra.Command {
 			}
 			ctx := cmd.Context()
 			userD := daemon.GetUserClient(ctx)
-			resp, err := userD.List(ctx, &connector.ListRequest{Filter: connector.ListRequest_INTERCEPTS})
+			resp, err := userD.List(ctx, &connector.ListRequest{
+				Filter: connector.ListRequest_INTERCEPTS | connector.ListRequest_REPLACEMENTS | connector.ListRequest_INGESTS,
+			})
 			if err != nil {
 				return nil, shellCompDir | cobra.ShellCompDirectiveError
 			}
@@ -54,9 +57,15 @@ func leave() *cobra.Command {
 			}
 
 			var completions []string
-			for _, intercept := range resp.Workloads {
-				for _, ii := range intercept.InterceptInfos {
+			for _, wl := range resp.Workloads {
+				for _, ii := range wl.InterceptInfos {
 					name := ii.Spec.Name
+					if strings.HasPrefix(name, toComplete) {
+						completions = append(completions, name)
+					}
+				}
+				for _, ig := range wl.IngestInfos {
+					name := ig.Workload
 					if strings.HasPrefix(name, toComplete) {
 						completions = append(completions, name)
 					}
@@ -65,30 +74,69 @@ func leave() *cobra.Command {
 			return completions, shellCompDir
 		},
 	}
+	cmd.Flags().StringVarP(&containerName, "container", "c", "", "Container name")
+	return cmd
 }
 
-func removeIntercept(ctx context.Context, name string) error {
+func disengage(ctx context.Context, name, container string) error {
 	userD := daemon.GetUserClient(ctx)
-	ic, err := userD.GetIntercept(ctx, &manager.GetInterceptRequest{Name: name})
-	if err != nil {
-		if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound {
-			// User probably misspelled the name of the intercept
-			return errcat.User.Newf("Intercept named %q not found", name)
-		}
+
+	var ic *manager.InterceptInfo
+	var ig *connector.IngestInfo
+	var env map[string]string
+	var err error
+	icName := name
+	if container != "" {
+		icName += "/" + container
+	}
+	ic, err = userD.GetIntercept(ctx, &manager.GetInterceptRequest{Name: icName})
+	if err != nil && status.Code(err) != codes.NotFound {
 		return err
 	}
-	handlerContainer, stopContainer := ic.Environment["TELEPRESENCE_HANDLER_CONTAINER_NAME"]
+
+	if ic == nil {
+		ig, err = userD.GetIngest(ctx, &connector.IngestIdentifier{
+			WorkloadName:  name,
+			ContainerName: container,
+		})
+		if err != nil {
+			if status.Code(err) != codes.NotFound {
+				return err
+			}
+
+			// User probably misspelled the name of the replace/intercept/ingest
+			msg := fmt.Sprintf("Found no replace, intercept, or ingest named %q", name)
+			if container != "" {
+				msg = fmt.Sprintf("%s with container %q", msg, container)
+			}
+			return errcat.User.New(msg)
+		}
+		env = ig.Environment
+	} else {
+		env = ic.Environment
+	}
+
+	handlerContainer, stopContainer := env["TELEPRESENCE_HANDLER_CONTAINER_NAME"]
 	if stopContainer {
-		// Stop the intercept handler's container. The daemon is most likely running in another
+		// Stop the handler's container. The daemon is most likely running in another
 		// container, and won't be able to.
 		err = docker.StopContainer(docker.EnableClient(ctx), handlerContainer)
 		if err != nil {
 			dlog.Error(ctx, err)
 		}
 	}
-	if err := intercept.Result(userD.RemoveIntercept(ctx, &manager.RemoveInterceptRequest2{Name: name})); err != nil {
+
+	if ic != nil {
+		err = intercept.Result(userD.RemoveIntercept(ctx, &manager.RemoveInterceptRequest2{Name: ic.Spec.Name}))
+	} else if ig != nil {
+		_, err = userD.LeaveIngest(ctx, &connector.IngestIdentifier{
+			WorkloadName:  ig.Workload,
+			ContainerName: ig.Container,
+		})
+	}
+	if err != nil {
 		if stopContainer && strings.Contains(err.Error(), fmt.Sprintf("%q not found", name)) {
-			// race condition between stopping the intercept handler, which causes the intercept to leave, and this call
+			// race condition between stopping the handler (which causes the ingest/intercept to leave) and this call
 			err = nil
 		}
 	}

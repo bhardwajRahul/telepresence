@@ -5,16 +5,13 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"time"
-
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/rpc/v2/manager"
 	"github.com/telepresenceio/telepresence/v2/pkg/ipproto"
 	"github.com/telepresenceio/telepresence/v2/pkg/iputil"
-	"github.com/telepresenceio/telepresence/v2/pkg/tracing"
 	"github.com/telepresenceio/telepresence/v2/pkg/tunnel"
 )
 
@@ -22,30 +19,32 @@ type tcp struct {
 	interceptor
 }
 
-func newTCP(listen net.Addr, targetHost string, targetPort uint16) Interceptor {
+func newTCP(listenPort uint16, tag tunnel.Tag, targetHost string, targetPort uint16) Interceptor {
 	return &tcp{
 		interceptor: interceptor{
-			listenAddr: listen,
+			tag:        tag,
+			listenPort: listenPort,
 			targetHost: targetHost,
 			targetPort: targetPort,
 		},
 	}
 }
 
-func (f *tcp) Serve(ctx context.Context, initCh chan<- net.Addr) error {
+func (f *tcp) Serve(ctx context.Context, initCh chan<- netip.AddrPort) error {
 	listener, err := f.listen(ctx)
 	if err != nil {
 		return err
 	}
 	defer listener.Close()
 
+	la := listener.Addr().(*net.TCPAddr)
 	if initCh != nil {
-		initCh <- listener.Addr()
+		initCh <- la.AddrPort()
 		close(initCh)
 	}
 
-	dlog.Debugf(ctx, "Forwarding from %s", f.listenAddr.String())
-	defer dlog.Debugf(ctx, "Done forwarding from %s", f.listenAddr.String())
+	dlog.Debugf(ctx, "Forwarding from %s", la)
+	defer dlog.Debugf(ctx, "Done forwarding from %s", la)
 
 	go func() {
 		<-ctx.Done()
@@ -80,21 +79,19 @@ func (f *tcp) listen(ctx context.Context) (*net.TCPListener, error) {
 
 	// Set up listener lifetime (same as the overall forwarder lifetime)
 	f.lCtx, f.lCancel = context.WithCancel(ctx)
-	f.lCtx = dlog.WithField(f.lCtx, "lis", f.listenAddr.String())
+	f.lCtx = dlog.WithField(f.lCtx, "lis", f.listenPort)
 
 	// Set up target lifetime
 	f.tCtx, f.tCancel = context.WithCancel(f.lCtx)
-	listenAddr := f.listenAddr
+	listenPort := f.listenPort
 
 	f.mu.Unlock()
-	return net.ListenTCP("tcp", listenAddr.(*net.TCPAddr))
+	return net.ListenTCP("tcp", &net.TCPAddr{Port: int(listenPort)})
 }
 
 func (f *tcp) forwardConn(clientConn *net.TCPConn) error {
 	f.mu.Lock()
 	ctx := f.tCtx
-	ctx, span := otel.Tracer("").Start(ctx, "forwardConn")
-	defer span.End()
 	targetHost := f.targetHost
 	targetPort := f.targetPort
 	intercept := f.intercept
@@ -103,22 +100,23 @@ func (f *tcp) forwardConn(clientConn *net.TCPConn) error {
 		return f.interceptConn(ctx, clientConn, intercept)
 	}
 
+	defer dlog.Debug(ctx, "Done forwarding")
+	defer clientConn.Close()
+
+	if targetPort == 0 {
+		dlog.Debug(ctx, "Forwarding to /dev/null")
+		_, _ = io.Copy(io.Discard, clientConn)
+		return nil
+	}
+
 	targetAddr, err := net.ResolveTCPAddr("tcp", iputil.JoinHostPort(targetHost, targetPort))
 	if err != nil {
 		return fmt.Errorf("error on resolve(%s): %w", iputil.JoinHostPort(targetHost, targetPort), err)
 	}
-
-	span.SetAttributes(
-		attribute.String("client", clientConn.RemoteAddr().String()),
-		attribute.String("target", targetAddr.String()),
-	)
 	ctx = dlog.WithField(ctx, "client", clientConn.RemoteAddr().String())
 	ctx = dlog.WithField(ctx, "target", targetAddr.String())
 
 	dlog.Debug(ctx, "Forwarding...")
-	defer dlog.Debug(ctx, "Done forwarding")
-
-	defer clientConn.Close()
 
 	targetConn, err := net.DialTCP("tcp", nil, targetAddr)
 	if err != nil {
@@ -156,28 +154,32 @@ func (f *tcp) forwardConn(clientConn *net.TCPConn) error {
 }
 
 func (f *tcp) interceptConn(ctx context.Context, conn net.Conn, iCept *manager.InterceptInfo) error {
-	ctx, span := otel.Tracer("").Start(ctx, "interceptConn")
-	defer span.End()
-	tracing.RecordInterceptInfo(span, iCept)
-	addr := conn.RemoteAddr()
-	dlog.Debugf(ctx, "Accept got connection from %s", addr)
-	defer dlog.Debugf(ctx, "Done serving connection from %s", addr)
+	spec := iCept.Spec
+	return f.rerouteConn(
+		ctx,
+		conn,
+		tunnel.SessionID(iCept.ClientSession.SessionId),
+		netip.AddrPortFrom(iputil.Parse(spec.TargetHost), uint16(spec.TargetPort)),
+		time.Duration(spec.RoundtripLatency),
+		time.Duration(spec.DialTimeout))
+}
 
-	srcIp, srcPort, err := iputil.SplitToIPPort(addr)
+func (f *tcp) rerouteConn(ctx context.Context, conn net.Conn, clientSession tunnel.SessionID, dst netip.AddrPort, latency, timeout time.Duration) error {
+	srcAddr := conn.RemoteAddr()
+	dlog.Debugf(ctx, "Accept got connection from %s", srcAddr)
+	defer dlog.Debugf(ctx, "Done serving connection from %s", srcAddr)
+
+	src, err := iputil.SplitToIPPort(conn.RemoteAddr())
 	if err != nil {
-		return fmt.Errorf("failed to parse intercept source address %s: %w", addr, err)
+		return fmt.Errorf("failed to parse intercept source address %s: %w", srcAddr, err)
 	}
 
-	spec := iCept.Spec
-	destIp := iputil.Parse(spec.TargetHost)
-	clientSession := iCept.ClientSession.SessionId
-	id := tunnel.NewConnID(ipproto.Parse(addr.Network()), srcIp, destIp, srcPort, uint16(spec.TargetPort))
-	id.SpanRecord(span)
+	id := tunnel.NewConnID(ipproto.Parse(srcAddr.Network()), src, dst)
 	ctx, cancel := context.WithCancel(ctx)
 	f.mu.Lock()
 	sp := f.streamProvider
 	f.mu.Unlock()
-	s, err := sp.CreateClientStream(ctx, clientSession, id, time.Duration(spec.RoundtripLatency), time.Duration(spec.DialTimeout))
+	s, err := sp.CreateClientStream(ctx, tunnel.AgentToClient, clientSession, id, latency, timeout)
 	if err != nil {
 		cancel()
 		return err
@@ -193,7 +195,7 @@ func (f *tcp) interceptConn(ctx context.Context, conn net.Conn, iCept *manager.I
 	<-d.Done()
 
 	sp.ReportMetrics(ctx, &manager.TunnelMetrics{
-		ClientSessionId: clientSession,
+		ClientSessionId: string(clientSession),
 		IngressBytes:    ingressBytes.GetValue(),
 		EgressBytes:     egressBytes.GetValue(),
 	})

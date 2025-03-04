@@ -14,6 +14,7 @@ import (
 
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
+	"github.com/telepresenceio/telepresence/v2/pkg/client"
 )
 
 type multipleServicesSuite struct {
@@ -32,10 +33,25 @@ func init() {
 }
 
 func (s *multipleServicesSuite) Test_LargeRequest() {
-	client := &http.Client{Timeout: 15 * time.Minute}
-	const sendSize = 1024 * 1024 * 20
-	const varyMax = 1 << 15 // vary last 64Ki
-	const concurrentRequests = 13
+	if !(s.ManagerIsVersion(">2.21.x") && s.ClientIsVersion(">2.21.x")) {
+		s.T().Skip("Not part of compatibility tests. TUN-device isn't stable enough in versions <2.22.0")
+	}
+	// This particular cannot run with recursion detection, because it will trigger on the very high concurrency.
+	ctx := s.Context()
+	itest.TelepresenceQuitOk(ctx)
+	ctx = itest.WithConfig(ctx, func(config client.Config) {
+		config.Routing().RecursionBlockDuration = 0
+	})
+	s.TelepresenceConnect(ctx)
+	defer func() {
+		// Restore the connection to what it was before the test.
+		itest.TelepresenceQuitOk(ctx)
+		s.TelepresenceConnect(s.Context())
+	}()
+
+	const sendSize = 1024 * 1024 * 12
+	const varyMax = 1024 * 1024 * 4 // vary last 4Mi
+	const concurrentRequests = 64
 
 	tb := [sendSize + varyMax]byte{}
 	tb[0] = '!'
@@ -47,47 +63,55 @@ func (s *multipleServicesSuite) Test_LargeRequest() {
 	time.Sleep(3 * time.Second)
 	wg := sync.WaitGroup{}
 	wg.Add(concurrentRequests)
-	for i := 0; i < concurrentRequests; i++ {
-		go func(x int) {
-			defer wg.Done()
-			sendSize := sendSize + rand.Int()%varyMax // vary the last 64Ki to get random buffer sizes
-			b := tb[:sendSize]
+	pingPong := func(x int) {
+		defer wg.Done()
+		sendSize := sendSize + rand.Int()%varyMax // vary the last 64Ki to get random buffer sizes
+		b := tb[:sendSize]
 
-			// Distribute the requests over all services
-			url := fmt.Sprintf("http://%s-%d.%s/put", s.Name(), x%s.ServiceCount(), s.AppNamespace())
-			req, err := http.NewRequest(http.MethodPut, url, bytes.NewBuffer(b))
-			if !s.NoError(err) {
-				return
-			}
+		// Distribute the requests over all services
+		url := fmt.Sprintf("http://%s-%d.%s/put", s.Name(), x%s.ServiceCount(), s.AppNamespace())
+		req, err := http.NewRequest(http.MethodPut, url, bytes.NewBuffer(b))
+		req.ContentLength = int64(len(b))
+		if !s.NoError(err) {
+			return
+		}
 
-			resp, err := client.Do(req)
-			if !s.NoError(err) {
-				return
-			}
-			bdy := resp.Body
-			defer bdy.Close()
-			if !s.Equal(resp.StatusCode, 200) {
-				return
-			}
+		client := &http.Client{Timeout: 60 * time.Second}
+		resp, err := client.Do(req)
+		if !s.NoError(err) {
+			return
+		}
+		bdy := resp.Body
+		defer bdy.Close()
+		if !s.Equal(resp.StatusCode, 200) {
+			return
+		}
 
-			cl := sendSize + 1024
-			buf := make([]byte, cl)
-			i := 0
-			for i < cl && err == nil {
-				var j int
-				j, err = bdy.Read(buf[i:])
-				i += j
-			}
-			if errors.Is(err, io.EOF) {
-				err = nil
-			}
-			if s.NoError(err) {
-				ei := bytes.Index(buf, []byte{'!', '\n'})
-				s.GreaterOrEqual(ei, 0)
-				// Do this instead of require.Equal(b, buf[ei:i]) so that on failure we don't print two very large buffers to the terminal
-				s.Equal(true, bytes.Equal(b, buf[ei:i]))
-			}
-		}(i)
+		cl := sendSize + 1024
+		buf := make([]byte, cl)
+		i := 0
+		for i < cl && err == nil {
+			var j int
+			j, err = bdy.Read(buf[i:])
+			i += j
+		}
+		if errors.Is(err, io.EOF) {
+			err = nil
+		}
+		if s.NoError(err) {
+			ei := bytes.Index(buf, []byte{'!', '\n'})
+			s.GreaterOrEqual(ei, 0)
+			// Do this instead of require.Equal(b, buf[ei:i]) so that on failure we don't print two very large buffers to the terminal
+			s.Equal(true, bytes.Equal(b, buf[ei:i]))
+		}
+	}
+	for i := 0; i < concurrentRequests; i += 4 {
+		go func() {
+			pingPong(i)
+			pingPong(i + 1)
+			pingPong(i + 2)
+			pingPong(i + 3)
+		}()
 	}
 	wg.Wait()
 }
@@ -95,7 +119,7 @@ func (s *multipleServicesSuite) Test_LargeRequest() {
 func (s *multipleServicesSuite) Test_List() {
 	stdout := itest.TelepresenceOk(s.Context(), "-n", s.AppNamespace(), "list")
 	for i := 0; i < s.ServiceCount(); i++ {
-		s.Regexp(fmt.Sprintf(`%s-%d\s*: ready to intercept`, s.Name(), i), stdout)
+		s.Regexp(fmt.Sprintf(`%s-%d\s*: ready to (engage|intercept)`, s.Name(), i), stdout)
 	}
 }
 
@@ -111,13 +135,13 @@ func (s *multipleServicesSuite) Test_ListOnlyMapped() {
 	s.TelepresenceConnect(ctx, "--mapped-namespaces", "default")
 
 	stdout := itest.TelepresenceOk(ctx, "list")
-	require.Contains(stdout, "No Workloads (Deployments, StatefulSets, ReplicaSets or Rollouts)")
+	require.Contains(stdout, "No Workloads")
 
 	stdout = s.TelepresenceConnect(ctx, "--mapped-namespaces", "all")
 	require.Empty(stdout)
 
 	stdout = itest.TelepresenceOk(ctx, "list")
-	require.NotContains(stdout, "No Workloads (Deployments, StatefulSets, ReplicaSets or Rollouts)")
+	require.NotContains(stdout, "No Workloads")
 }
 
 func (s *multipleServicesSuite) Test_RepeatedConnect() {

@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -52,6 +53,9 @@ type Request struct {
 
 	// proxyVia holds the string version for the --proxy-via flag values.
 	proxyVia []string
+
+	// vnats holds the string version for the --vnat flag values.
+	vnats []string
 }
 
 type CobraRequest struct {
@@ -81,10 +85,14 @@ func InitRequest(cmd *cobra.Command) *CobraRequest {
 	nwFlags.StringSliceVar(&cr.NeverProxy,
 		"never-proxy", nil, ``+
 			`Comma separated list of CIDR to never proxy`)
+	nwFlags.StringSliceVar(&cr.vnats,
+		"vnat", nil, ``+
+			`Use Network Address Translation to create virtual IPs for the given CIDR. CIDR can be substituted for the `+
+			`symblic name "service", "pods", "also", or "all".`)
 	nwFlags.StringSliceVar(&cr.proxyVia,
 		"proxy-via", nil, ``+
-			`Locally translate cluster DNS responses matching CIDR to virtual IPs that are routed (with reverse `+
-			`translation) via WORKLOAD. Must be in the form CIDR=WORKLOAD. CIDR can be substituted for the symblic name "service", "pods", "also", or "all".`)
+			`Use Network Address Translation to create virtual IPs for the given CIDR, and route via WORKLOAD. Must be in the`+
+			`form CIDR=WORKLOAD. CIDR can be substituted for the symblic name "service", "pods", "also", or "all".`)
 	nwFlags.StringSliceVar(&cr.AllowConflictingSubnets,
 		"allow-conflicting-subnets", nil, ``+
 			`Comma separated list of CIDR that will be allowed to conflict with local subnets`)
@@ -114,6 +122,8 @@ func InitRequest(cmd *cobra.Command) *CobraRequest {
 	cr.kubeFlagSet = pflag.NewFlagSet("Kubernetes flags", 0)
 	cr.kubeConfig.AddFlags(cr.kubeFlagSet)
 	flags.AddFlagSet(cr.kubeFlagSet)
+	_ = cmd.RegisterFlagCompletionFunc("mapped-namespaces", cr.autocompleteNamespaces)
+	_ = cmd.RegisterFlagCompletionFunc("manager-namespace", cr.autocompleteNamespace)
 	_ = cmd.RegisterFlagCompletionFunc("namespace", cr.autocompleteNamespace)
 	_ = cmd.RegisterFlagCompletionFunc("cluster", cr.autocompleteCluster)
 	return &cr
@@ -142,6 +152,12 @@ func (cr *CobraRequest) CommitFlags(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+
+	// A --vnat CIDR is the same as --proxy-via CIDR=local
+	for _, vnat := range cr.vnats {
+		cr.proxyVia = append(cr.proxyVia, vnat+"=local")
+	}
+
 	err = cr.setGlobalConnectFlags(cmd)
 	if err != nil {
 		return errcat.User.New(err)
@@ -384,19 +400,51 @@ func (cr *CobraRequest) GetAllNamespaces(cmd *cobra.Command) ([]string, error) {
 }
 
 func (cr *CobraRequest) autocompleteNamespace(cmd *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	dlog.Debugf(cmd.Context(), "autocompleteNamespace %q", toComplete)
+	var stripFunc func(s string) bool
+	if toComplete != "" {
+		stripFunc = func(s string) bool { return !strings.HasPrefix(s, toComplete) }
+	}
+	return cr.autocompleteNamespaceFunc(cmd, stripFunc)
+}
+
+func (cr *CobraRequest) autocompleteNamespaces(cmd *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	var stripFunc func(s string) bool
+	var pfx string
+	if toComplete != "" {
+		found := strings.Split(toComplete, ",")
+		ll := len(found) - 1
+		last := found[ll]
+		if ll > 0 {
+			pfx = strings.Join(found[:ll], ",") + ","
+			if last != "" {
+				stripFunc = func(s string) bool { return slices.Contains(found, s) || !strings.HasPrefix(s, last) }
+			} else {
+				stripFunc = func(s string) bool { return slices.Contains(found, s) }
+			}
+		} else {
+			stripFunc = func(s string) bool { return !strings.HasPrefix(s, last) }
+		}
+	}
+	nss, d := cr.autocompleteNamespaceFunc(cmd, stripFunc)
+	if pfx != "" {
+		for i, ns := range nss {
+			nss[i] = pfx + ns
+		}
+	}
+	return nss, d
+}
+
+func (cr *CobraRequest) autocompleteNamespaceFunc(cmd *cobra.Command, stripFunc func(s string) bool) ([]string, cobra.ShellCompDirective) {
 	ctx := cmd.Context()
 	nss, err := cr.GetAllNamespaces(cmd)
 	if err != nil {
 		dlog.Error(ctx, err)
 		return nil, cobra.ShellCompDirectiveError
 	}
-
-	var ctName string
-	if cp := cr.kubeConfig.Context; cp != nil {
-		ctName = *cp
+	if stripFunc != nil {
+		nss = slices.DeleteFunc(nss, stripFunc)
 	}
-	dlog.Debugf(ctx, "namespace completion: context %q, %q", ctName, toComplete)
-
 	return nss, cobra.ShellCompDirectiveNoFileComp
 }
 
@@ -407,12 +455,6 @@ func (cr *CobraRequest) autocompleteCluster(cmd *cobra.Command, _ []string, toCo
 		dlog.Error(ctx, err)
 		return nil, cobra.ShellCompDirectiveError
 	}
-
-	var ctName string
-	if cp := cr.kubeConfig.Context; cp != nil {
-		ctName = *cp
-	}
-	dlog.Debugf(ctx, "namespace completion: context %q, %q", ctName, toComplete)
 
 	cxl := config.Clusters
 	cs := make([]string, len(cxl))

@@ -19,7 +19,7 @@ import (
 
 type dockerDaemonSuite struct {
 	itest.Suite
-	itest.NamespacePair
+	itest.TrafficManager
 	ctx context.Context
 }
 
@@ -28,8 +28,8 @@ func (s *dockerDaemonSuite) SuiteName() string {
 }
 
 func init() {
-	itest.AddTrafficManagerSuite("", func(h itest.NamespacePair) itest.TestingSuite {
-		return &dockerDaemonSuite{Suite: itest.Suite{Harness: h}, NamespacePair: h}
+	itest.AddTrafficManagerSuite("", func(h itest.TrafficManager) itest.TestingSuite {
+		return &dockerDaemonSuite{Suite: itest.Suite{Harness: h}, TrafficManager: h}
 	})
 }
 
@@ -84,13 +84,14 @@ func (s *dockerDaemonSuite) Test_DockerDaemon_alsoProxy32() {
 
 	// Figure out where the current end of the logfile is. This must be done before any
 	// of the tests run because the queries that the DNS resolver receives are dependent
-	// on how the system's DNS resolver handle search paths and caching.
+	// on how the system's DNS resolver handles search paths and caching.
 	st, err := rootLog.Stat()
 	rq.NoError(err)
 	pos := st.Size()
 
-	// Make an attempt to curl the also-proxied IP.
-	_, _ = itest.Output(ctx, "docker", "run", "--network", "container:tp-a", "--rm", "curlimages/curl", "--silent", "--max-time", "1", "169.254.169.254")
+	// Make an attempt to curl the also-proxied IP. The attempt will fail (there's nothing at the
+	// other end), and that's OK. We're just interested in seeing it logged.
+	_, _, _ = itest.Telepresence(ctx, "curl", "--silent", "--max-time", "1", "169.254.169.254") //nolint:dogsled // X
 
 	// Verify that the attempt is visible in the root log.
 	_, err = rootLog.Seek(pos, io.SeekStart)

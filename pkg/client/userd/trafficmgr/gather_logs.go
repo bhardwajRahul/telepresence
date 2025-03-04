@@ -16,10 +16,11 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/datawire/dlib/dlog"
-	"github.com/datawire/k8sapi/pkg/k8sapi"
 	"github.com/telepresenceio/telepresence/rpc/v2/connector"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentconfig"
 	"github.com/telepresenceio/telepresence/v2/pkg/agentmap"
+	"github.com/telepresenceio/telepresence/v2/pkg/client/userd/k8s"
+	"github.com/telepresenceio/telepresence/v2/pkg/k8sapi"
 )
 
 // getPodLog obtains the log and optionally the YAML for a given pod and stores it in
@@ -144,10 +145,10 @@ func (s *session) GatherLogs(ctx context.Context, request *connector.LogsRequest
 	// any errors in the traffic-manager getting the traffic-agent pods, we
 	// want those logs to appear in what we export
 	if request.TrafficManager {
-		ns := s.GetManagerNamespace()
+		ns := k8s.GetManagerNamespace(ctx)
 		podsAPI := coreAPI.Pods(ns)
 		selector := labels.SelectorFromSet(labels.Set{
-			"app":          "traffic-manager",
+			"app":          agentmap.ManagerAppName,
 			"telepresence": "manager",
 		})
 		podList, err := podsAPI.List(ctx, meta.ListOptions{LabelSelector: selector.String()})
@@ -160,7 +161,7 @@ func (s *session) GatherLogs(ctx context.Context, request *connector.LogsRequest
 			pod := &podList.Items[0]
 			podAndNs := fmt.Sprintf("%s.%s", pod.Name, ns)
 			dlog.Debugf(ctx, "gathering logs for %s, yaml = %t", podAndNs, request.GetPodYaml)
-			getPodLog(ctx, exportDir, &result, podsAPI, pod, "traffic-manager", request.GetPodYaml, false)
+			getPodLog(ctx, exportDir, &result, podsAPI, pod, agentmap.ManagerAppName, request.GetPodYaml, false)
 		case len(podList.Items) > 1:
 			err = fmt.Errorf("multiple traffic managers found in namespace %s using selector %s", ns, selector.String())
 			dlog.Error(ctx, err)

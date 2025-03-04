@@ -14,11 +14,12 @@ import (
 
 func kubeauthCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:    "kubeauth",
-		Args:   cobra.ExactArgs(2),
-		Short:  "Resolve kubeconfig context using gRPC to kubeauth server",
-		RunE:   authenticateContext,
-		Hidden: true,
+		Use:               "kubeauth",
+		Args:              cobra.ExactArgs(2),
+		Short:             "Resolve kubeconfig context using gRPC to kubeauth server",
+		RunE:              authenticateContext,
+		Hidden:            true,
+		ValidArgsFunction: cobra.NoFileCompletions,
 	}
 	return cmd
 }
