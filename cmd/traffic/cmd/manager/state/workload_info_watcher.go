@@ -212,7 +212,7 @@ func (wf *workloadInfoWatcher) handleWorkloadsSnapshot(ctx context.Context, wes 
 		if w, ok := wf.workloadEvents[wl.GetName()]; ok {
 			if we.Type == workload.EventTypeDelete && w.Type != rpc.WorkloadEvent_DELETED {
 				w.Type = rpc.WorkloadEvent_DELETED
-				dlog.Debugf(ctx, "WorkloadInfoEvent: Workload %s %s %s.%s %s", we.Type, wl.GetKind(), wl.GetName(), wl.GetNamespace(), workload.GetWorkloadState(wl))
+				dlog.Debugf(ctx, "WorkloadInfoEvent: Workload %s %s %s", we.Type, wl, workload.GetWorkloadState(wl))
 				wf.resetTicker()
 			}
 		} else {
@@ -236,7 +236,7 @@ func (wf *workloadInfoWatcher) handleWorkloadsSnapshot(ctx context.Context, wes 
 					break
 				}
 			}
-			dlog.Debugf(ctx, "WorkloadInfoEvent: Workload %s %s %s.%s %s %s", we.Type, wl.GetKind(), wl.GetName(), wl.GetNamespace(), as, workload.GetWorkloadState(wl))
+			dlog.Debugf(ctx, "WorkloadInfoEvent: Workload %s %s %s %s", we.Type, wl, as, workload.GetWorkloadState(wl))
 			wf.addEvent(we.Type, wl, as, iClients)
 		}
 	}
@@ -320,7 +320,7 @@ func (wf *workloadInfoWatcher) handleInterceptSnapshot(ctx context.Context, iis 
 					wf.resetTicker()
 				}
 			} else if wl, err := agentmap.GetWorkload(ctx, name, wf.namespace, ""); err == nil {
-				dlog.Debugf(ctx, "WorkloadInfoEvent: InterceptInfo %s.%s %s %s", wl.GetName(), wl.GetNamespace(), as, workload.GetWorkloadState(wl))
+				dlog.Debugf(ctx, "WorkloadInfoEvent: InterceptInfo %s %s %s", wl, as, workload.GetWorkloadState(wl))
 				wf.addEvent(workload.EventTypeUpdate, wl, as, nil)
 			}
 		}
@@ -346,7 +346,7 @@ func (wf *workloadInfoWatcher) handleInterceptSnapshot(ctx context.Context, iis 
 				wf.resetTicker()
 			}
 		} else if wl, err := agentmap.GetWorkload(ctx, name, wf.namespace, ""); err == nil {
-			dlog.Debugf(ctx, "WorkloadInfoEvent: InterceptInfo %s.%s %s %s", wl.GetName(), wl.GetNamespace(), as, workload.GetWorkloadState(wl))
+			dlog.Debugf(ctx, "WorkloadInfoEvent: InterceptInfo %s %s %s", wl, as, workload.GetWorkloadState(wl))
 			wf.addEvent(workload.EventTypeUpdate, wl, as, iClients)
 		}
 	}

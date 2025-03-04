@@ -129,7 +129,7 @@ func (c *configWatcher) updateSvc(ctx context.Context, svc *core.Service, trustU
 			}
 			if err != nil {
 				if errors.IsNotFound(err) {
-					dlog.Debugf(ctx, "Deleting config entry for %s %s.%s", ac.WorkloadKind, ac.WorkloadName, ac.Namespace)
+					dlog.Debugf(ctx, "Deleting config entry for %s", wl)
 					c.Delete(ac.AgentName, ac.Namespace)
 				} else {
 					dlog.Error(ctx, err)
@@ -137,7 +137,7 @@ func (c *configWatcher) updateSvc(ctx context.Context, svc *core.Service, trustU
 				continue
 			}
 		}
-		dlog.Debugf(ctx, "Regenerating config entry for %s %s.%s", ac.WorkloadKind, ac.WorkloadName, ac.Namespace)
+		dlog.Debugf(ctx, "Regenerating config entry for %s", wl)
 		acn, err := cfg.Generate(ctx, wl, ac)
 		if err != nil {
 			if strings.Contains(err.Error(), "unable to find") {
@@ -147,10 +147,9 @@ func (c *configWatcher) updateSvc(ctx context.Context, svc *core.Service, trustU
 			}
 			continue
 		}
-		ac = acn.AgentConfig()
 		c.Store(acn)
-		dlog.Debugf(ctx, "deleting pods with config mismatch for %s %s.%s", ac.WorkloadKind, ac.WorkloadName, ac.Namespace)
-		err = c.EvictPodsWithAgentConfigMismatch(ctx, acn)
+		dlog.Debugf(ctx, "deleting pods with config mismatch for %s", wl)
+		err = c.EvictPodsWithAgentConfigMismatch(ctx, wl, acn)
 		if err != nil {
 			dlog.Error(ctx, err)
 		}

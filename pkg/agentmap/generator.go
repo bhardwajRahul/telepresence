@@ -98,7 +98,7 @@ func portsFromAnnotationValue(wl k8sapi.Workload, annotation, value string) (por
 	for i, cp := range cps {
 		pi := agentconfig.PortIdentifier(cp)
 		if err = pi.Validate(); err != nil {
-			return nil, fmt.Errorf("unable to parse annotation %s of workload %s.%s: %w", annotation, wl.GetName(), wl.GetNamespace(), err)
+			return nil, fmt.Errorf("unable to parse annotation %s of %s: %w", annotation, wl, err)
 		}
 		ports[i] = pi
 	}
@@ -111,7 +111,7 @@ func (cfg *BasicGeneratorConfig) Generate(
 	existingConfig agentconfig.SidecarExt,
 ) (sc agentconfig.SidecarExt, err error) {
 	if TrafficManagerSelector.Matches(labels.Set(wl.GetLabels())) {
-		return nil, fmt.Errorf("deployment %s.%s is the Telepresence Traffic Manager. It can not have a traffic-agent", wl.GetName(), wl.GetNamespace())
+		return nil, fmt.Errorf("%s is the Telepresence Traffic Manager. It can not have a traffic-agent", wl)
 	}
 
 	pod := wl.GetPodTemplate()

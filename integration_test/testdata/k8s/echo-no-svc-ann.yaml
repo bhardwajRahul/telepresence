@@ -13,6 +13,7 @@ spec:
     metadata:
       labels:
         app: echo-no-svc-ann
+        budget: telepresence-test
       annotations:
         telepresence.getambassador.io/inject-container-ports: http
     spec:

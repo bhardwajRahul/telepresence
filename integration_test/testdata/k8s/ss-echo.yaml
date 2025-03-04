@@ -28,6 +28,7 @@ spec:
     metadata:
       labels:
         app: ss-echo
+        budget: telepresence-test
     spec:
       containers:
         - name: ss-echo

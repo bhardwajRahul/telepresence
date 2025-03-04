@@ -145,6 +145,10 @@ func (o *service) Selector() (labels.Selector, error) {
 	return labels.SelectorFromSet(o.Spec.Selector), nil
 }
 
+func (o *service) String() string {
+	return String(o)
+}
+
 func (o *service) Update(c context.Context) error {
 	d, err := o.ki(c).Update(c, o.Service, meta.UpdateOptions{})
 	if err == nil {
@@ -198,6 +202,10 @@ func (o *pod) Refresh(c context.Context) error {
 
 func (o *pod) Selector() (labels.Selector, error) {
 	return nil, nil
+}
+
+func (o *pod) String() string {
+	return String(o)
 }
 
 func (o *pod) Update(c context.Context) error {

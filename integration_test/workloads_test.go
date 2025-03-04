@@ -1,18 +1,62 @@
 package integration_test
 
 import (
+	"bytes"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/datawire/dlib/dlog"
 	"github.com/telepresenceio/telepresence/v2/integration_test/itest"
+	"github.com/telepresenceio/telepresence/v2/pkg/dos"
 )
+
+func (s *connectedSuite) uninstall(wl string) {
+	ctx := s.Context()
+
+	itest.TelepresenceOk(ctx, "uninstall", wl)
+	s.Require().Eventually(
+		func() bool {
+			stdout, _, err := itest.Telepresence(ctx, "list", "--agents")
+			return err == nil && !strings.Contains(stdout, wl)
+		},
+		180*time.Second, // waitFor
+		6*time.Second,   // polling interval
+	)
+}
 
 func (s *connectedSuite) successfulIntercept(tp, wl, port string) {
 	ctx := s.Context()
 	s.ApplyApp(ctx, wl, strings.ToLower(tp)+"/"+wl)
 	defer s.DeleteSvcAndWorkload(ctx, tp, wl)
 
+	s.doIntercept(tp, wl, port)
+	if !s.ClientIsVersion(">2.21.x") && s.ManagerIsVersion(">2.21.x") {
+		// An <2.22.0 client will not be able to uninstall an agent when the traffic-manager is >=2.22.0
+		// because the client will attempt to remove the entry in the telepresence-agents configmap. It
+		// is no longer present in versions >=2.22.0
+		return
+	}
+	s.uninstall(wl)
+	tpl := itest.DisruptionBudget{
+		Name:         "telepresence-test",
+		MinAvailable: 1,
+	}
+
+	// Do the intercept again, this time with a disruption budget with minAvailable=1 in place.
+	rq := s.Require()
+	db, err := itest.ReadTemplate(ctx, filepath.Join("testdata", "k8s", "disruption-budget.goyaml"), &tpl)
+	rq.NoError(err)
+	rq.NoError(s.Kubectl(dos.WithStdin(ctx, bytes.NewReader(db)), "apply", "-f", "-"))
+	defer func() {
+		_ = s.Kubectl(dos.WithStdin(ctx, bytes.NewReader(db)), "delete", "-f", "-")
+	}()
+	s.doIntercept(tp, wl, port)
+}
+
+func (s *connectedSuite) doIntercept(tp, wl, port string) {
+	ctx := s.Context()
 	require := s.Require()
 
 	require.Eventually(
@@ -24,31 +68,26 @@ func (s *connectedSuite) successfulIntercept(tp, wl, port string) {
 		2*time.Second, // polling interval
 	)
 
+	out, err := s.KubectlOut(ctx, "get", strings.ToLower(tp), wl, "-o", "jsonpath={.spec.replicas}")
+	require.NoError(err)
+	replicas, err := strconv.Atoi(out)
+	require.NoError(err)
+
 	stdout := itest.TelepresenceOk(ctx, "intercept", "--mount", "false", "--port", port, wl)
 	require.Contains(stdout, "Using "+tp+" "+wl)
 	stdout = itest.TelepresenceOk(ctx, "list", "--intercepts")
 	require.Contains(stdout, wl+": intercepted")
 	require.NotContains(stdout, "Volume Mount Point")
+	s.Eventually(func() bool {
+		ras := itest.RunningPodsWithAgents(ctx, wl, s.AppNamespace())
+		dlog.Infof(ctx, "pod with agent count %d, expected %d", len(ras), replicas)
+		return len(ras) == replicas
+	}, 60*time.Second, 5*time.Second)
 	s.CapturePodLogs(ctx, wl, "traffic-agent", s.AppNamespace())
+	time.Sleep(10 * time.Second)
 	itest.TelepresenceOk(ctx, "leave", wl)
 	stdout = itest.TelepresenceOk(ctx, "list", "--intercepts")
 	require.NotContains(stdout, wl+": intercepted")
-
-	if !s.ClientIsVersion(">2.21.x") && s.ManagerIsVersion(">2.21.x") {
-		// An <2.22.0 client will not be able to uninstall an agent when the traffic-manager is >=2.22.0
-		// because the client will attempt to remove the entry in the telepresence-agents configmap. It
-		// is no longer present in versions >=2.22.0
-		return
-	}
-	itest.TelepresenceOk(ctx, "uninstall", wl)
-	require.Eventually(
-		func() bool {
-			stdout, _, err := itest.Telepresence(ctx, "list", "--agents")
-			return err == nil && !strings.Contains(stdout, wl)
-		},
-		180*time.Second, // waitFor
-		6*time.Second,   // polling interval
-	)
 }
 
 func (s *connectedSuite) successfulIngest(tp, wl string) {
@@ -76,31 +115,13 @@ func (s *connectedSuite) successfulIngest(tp, wl string) {
 	itest.TelepresenceOk(ctx, "leave", wl)
 	stdout = itest.TelepresenceOk(ctx, "list", "--ingests")
 	require.NotContains(stdout, wl+": ingested")
-
 	if !s.ClientIsVersion(">2.21.x") && s.ManagerIsVersion(">2.21.x") {
 		// An <2.22.0 client will not be able to uninstall an agent when the traffic-manager is >=2.22.0
 		// because the client will attempt to remove the entry in the telepresence-agents configmap. It
 		// is no longer present in versions >=2.22.0
 		return
 	}
-
-	itest.TelepresenceOk(ctx, "uninstall", wl)
-	require.Eventually(
-		func() bool {
-			stdout, _, err := itest.Telepresence(ctx, "list", "--agents")
-			if err != nil {
-				dlog.Error(ctx, err)
-				return false
-			}
-			if strings.Contains(stdout, wl) {
-				dlog.Errorf(ctx, "Expected %q to not contain %q", stdout, wl)
-				return false
-			}
-			return true
-		},
-		60*time.Second, // waitFor
-		6*time.Second,  // polling interval
-	)
+	s.uninstall(wl)
 }
 
 func (s *connectedSuite) Test_SuccessfullyInterceptsDeploymentWithProbes() {

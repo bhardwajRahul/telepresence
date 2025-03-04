@@ -169,7 +169,7 @@ func (is *installSuite) Test_MultiOnDemandInjectOnInstall() {
 			ras := itest.RunningPodsWithAgents(ctx, "quote-", is.AppNamespace())
 			dlog.Infof(ctx, "pod with agent count %d, expected 0", len(ras))
 			return len(ras) == 0
-		}, 120*time.Second, 5*time.Second)
+		}, 60*time.Second, 5*time.Second)
 	}()
 
 	// And check that all pods receive a traffic-agent
@@ -177,7 +177,7 @@ func (is *installSuite) Test_MultiOnDemandInjectOnInstall() {
 		ras := itest.RunningPodsWithAgents(ctx, "quote-", is.AppNamespace())
 		dlog.Infof(ctx, "pod with agent count %d, expected %d", len(ras), svcCount)
 		return len(ras) == svcCount
-	}, 120*time.Second, 5*time.Second)
+	}, 60*time.Second, 5*time.Second)
 }
 
 func (is *installSuite) Test_MultiOnDemandInjectOnApply() {

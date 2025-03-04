@@ -48,6 +48,12 @@ type PersistentVolume struct {
 	MountDirectory string
 }
 
+type DisruptionBudget struct {
+	Name           string
+	MinAvailable   int
+	MaxUnavailable int
+}
+
 func OpenTemplate(ctx context.Context, name string, data any) (io.Reader, error) {
 	b, err := ReadTemplate(ctx, name, data)
 	if err != nil {

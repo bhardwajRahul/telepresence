@@ -27,6 +27,7 @@ spec:
     metadata:
       labels:
         app: rs-echo
+        budget: telepresence-test
     spec:
       containers:
         - name: rs-echo
